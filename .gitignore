@@ -1,0 +1,30 @@
+# Build artifacts
+/target/
+
+# Database files
+*.db
+
+# Log files
+*.log
+logs/
+
+# Cargo lock for libraries (uncomment if this is a library)
+# Cargo.lock
+
+# IDE and editor directories
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Hidden directories - ignore all except explicitly allowed
+.**/
+# Currently no hidden directories are allowed
+
+# Markdown files - ignore all except explicitly allowed
+*.md
+**/*.md
+# Allow README.md at root
+!README.md

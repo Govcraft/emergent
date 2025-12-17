@@ -1,0 +1,136 @@
+# Emergent Engine Configuration
+#
+# This example configuration demonstrates the Timer -> Filter -> Log/Console
+# example pipeline included with Emergent.
+#
+# Usage:
+#   cargo build --release
+#   ./target/release/emergent --config ./config/emergent.toml
+
+# =============================================================================
+# Engine Settings
+# =============================================================================
+
+[engine]
+# Name of this engine instance (used in socket path and logging)
+name = "emergent"
+
+# Socket path for IPC connections
+# Use "auto" for XDG-compliant automatic path (recommended)
+# Or specify an explicit path like "/tmp/emergent.sock"
+socket_path = "auto"
+
+# Wire format for IPC communication
+# "messagepack" - Binary format, more efficient (default)
+# "json" - Human-readable, useful for debugging
+wire_format = "messagepack"
+
+# =============================================================================
+# Event Store Settings
+# =============================================================================
+
+[event_store]
+# Directory for JSON log files (append-only, one file per day)
+json_log_dir = "./logs"
+
+# Path to SQLite database for structured event storage and replay
+sqlite_path = "./events.db"
+
+# How many days to retain events before cleanup
+retention_days = 30
+
+# =============================================================================
+# Sources
+# =============================================================================
+# Sources are ingress components that publish messages into the system.
+# They can only publish (fire-and-forget), not subscribe.
+
+[[sources]]
+name = "timer"
+path = "./target/release/timer_source"
+args = ["--interval", "5000"]  # 5 second interval
+enabled = true
+publishes = ["timer.tick"]
+
+# Example: disabled webhook source (for future use)
+# [[sources]]
+# name = "webhook"
+# path = "./target/release/webhook_source"
+# args = ["--port", "8080"]
+# enabled = false
+# publishes = ["webhook.received"]
+
+# =============================================================================
+# Handlers
+# =============================================================================
+# Handlers subscribe to messages, process them, and publish new messages.
+# They form the processing pipeline of your workflow.
+
+[[handlers]]
+name = "filter"
+path = "./target/release/filter_handler"
+args = ["--filter-every", "5"]  # Pass through every 5th tick
+enabled = true
+subscribes = ["timer.tick"]
+publishes = ["timer.filtered"]
+
+# Example: disabled enrichment handler
+# [[handlers]]
+# name = "enricher"
+# path = "./target/release/enricher_handler"
+# enabled = false
+# subscribes = ["timer.filtered"]
+# publishes = ["timer.enriched"]
+
+# =============================================================================
+# Sinks
+# =============================================================================
+# Sinks are egress components that consume messages from the system.
+# They can only subscribe, not publish.
+
+[[sinks]]
+name = "log_sink"
+path = "./target/release/log_sink"
+args = ["--output", "./timer_events.log"]
+enabled = true
+subscribes = ["timer.filtered"]
+
+# Deno-based console sink (demonstrates multi-language support)
+# Note: Update the path to match your deno installation (run: which deno)
+[[sinks]]
+name = "console_sink"
+path = "/home/rodzilla/.deno/bin/deno"
+args = [
+    "run",
+    "--allow-env",
+    "--allow-read",
+    "--allow-write",
+    "--allow-net=unix",
+    "./examples/console_sink_deno/main.ts",
+    "timer.tick,timer.filtered"
+]
+enabled = true  # Enable to see colored console output
+subscribes = ["timer.tick", "timer.filtered"]
+
+# =============================================================================
+# Message Flow
+# =============================================================================
+#
+# This configuration creates the following message flow:
+#
+#   timer_source
+#       │
+#       │ publishes timer.tick every 5 seconds
+#       ▼
+#   filter_handler
+#       │
+#       │ filters to every 5th tick
+#       │ publishes timer.filtered
+#       ▼
+#   ┌───┴───┐
+#   │       │
+#   ▼       ▼
+# log_sink  console_sink
+# (file)    (stdout, disabled by default)
+#
+# =============================================================================

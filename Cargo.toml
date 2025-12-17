@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "emergent-engine",
+    "emergent-client",
+    "examples/timer_source",
+    "examples/filter_handler",
+    "examples/log_sink",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/govcraft/emergent"
+authors = ["Govcraft <info@govcraft.ai>"]
+
+[workspace.dependencies]
+# Core async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"
+
+# Configuration
+toml = "0.8"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Tracing/Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# IDs
+mti = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# acton-reactive (local path for development)
+acton-reactive = { version = "7.1.0", features = ["ipc", "ipc-messagepack"] }

@@ -1,0 +1,18 @@
+[package]
+name = "emergent-client"
+description = "Client library for Emergent event-based workflow platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+acton-reactive.workspace = true
+mti.workspace = true
+rmp-serde.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
