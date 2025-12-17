@@ -162,7 +162,7 @@ impl EmergentMessage {
     ///
     /// Returns an error if serialization fails.
     pub fn to_msgpack(&self) -> Result<Vec<u8>, rmp_serde::encode::Error> {
-        rmp_serde::to_vec(self)
+        rmp_serde::to_vec_named(self)
     }
 
     /// Deserialize a message from MessagePack bytes.

@@ -27,6 +27,9 @@ pub enum EventStoreError {
 
     #[error("Event store not initialized")]
     NotInitialized,
+
+    #[error("Lock poisoned: {0}")]
+    LockPoisoned(String),
 }
 
 /// Trait for event storage backends.

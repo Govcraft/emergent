@@ -6,10 +6,11 @@
 use serde::{Deserialize, Serialize};
 
 /// The kind of primitive (Source, Handler, or Sink).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PrimitiveKind {
     /// A Source publishes messages (ingress from external world).
+    #[default]
     Source,
     /// A Handler subscribes to and publishes messages (transformation).
     Handler,
@@ -28,10 +29,11 @@ impl std::fmt::Display for PrimitiveKind {
 }
 
 /// The lifecycle state of a primitive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PrimitiveState {
     /// The primitive is configured but not yet started.
+    #[default]
     Configured,
     /// The primitive is in the process of starting.
     Starting,
@@ -62,7 +64,7 @@ impl std::fmt::Display for PrimitiveState {
 }
 
 /// Information about a registered primitive.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PrimitiveInfo {
     /// Unique name of the primitive.
     pub name: String,

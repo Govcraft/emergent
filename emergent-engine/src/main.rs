@@ -187,11 +187,6 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    println!("====================================================================");
-    println!("       Emergent Engine - Event-based Workflow Platform");
-    println!("====================================================================");
-    println!();
-
     // Load configuration
     let mut config = load_config(args.config).context("Failed to load configuration")?;
 
@@ -209,7 +204,11 @@ async fn main() -> Result<()> {
     let event_store = Arc::new(init_event_stores(&config)?);
 
     // Initialize process manager
-    let process_manager = ProcessManager::new(socket_path.clone());
+    let mut process_manager = ProcessManager::new(socket_path.clone());
+
+    // Create channel for system events
+    let (system_event_tx, mut system_event_rx) = tokio::sync::mpsc::channel::<emergent_engine::messages::EmergentMessage>(256);
+    process_manager.set_event_sender(system_event_tx);
 
     // Register sources, handlers, and sinks from config
     for source in &config.sources {
@@ -235,11 +234,10 @@ async fn main() -> Result<()> {
 
     // List registered primitives
     let primitives = process_manager.list_all().await;
-    println!("Registered {} primitive(s):", primitives.len());
+    info!("Registered {} primitive(s)", primitives.len());
     for p in &primitives {
-        println!("  - {} ({}): {:?}", p.name, p.kind, p.state);
+        info!("  {} ({}): {:?}", p.name, p.kind, p.state);
     }
-    println!();
 
     // Create IPC configuration with our socket path
     let ipc_config = create_ipc_config(&socket_path);
@@ -296,7 +294,16 @@ async fn main() -> Result<()> {
     });
 
     let broker_handle = broker_actor.start().await;
-    runtime.ipc_expose("message_broker", broker_handle);
+    runtime.ipc_expose("message_broker", broker_handle.clone());
+
+    // Spawn task to forward system events to the broker
+    let broker_for_events = broker_handle.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = system_event_rx.recv().await {
+            let ipc_msg = IpcEmergentMessage::from(msg);
+            broker_for_events.send(ipc_msg).await;
+        }
+    });
 
     // Wait a moment for the listener to be ready
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -315,16 +322,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!();
-    println!("====================================================================");
-    println!("  Emergent Engine is ready!");
-    println!();
-    println!("  Socket: {}", socket_path.display());
-    println!("  Wire format: {:?}", config.engine.wire_format);
-    println!();
-    println!("  Press Ctrl+C to shutdown...");
-    println!("====================================================================");
-    println!();
+    info!("Engine ready - socket: {} wire_format: {:?}", socket_path.display(), config.engine.wire_format);
 
     // Spawn health check task
     let process_manager_clone = process_manager.clone();
@@ -345,11 +343,9 @@ async fn main() -> Result<()> {
 
         tokio::select! {
             _ = sigterm.recv() => {
-                println!();
                 info!("Received SIGTERM");
             }
             _ = sigint.recv() => {
-                println!();
                 info!("Received SIGINT (Ctrl+C)");
             }
         }

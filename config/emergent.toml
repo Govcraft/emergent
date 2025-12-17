@@ -72,7 +72,7 @@ path = "./target/release/filter_handler"
 args = ["--filter-every", "5"]  # Pass through every 5th tick
 enabled = true
 subscribes = ["timer.tick"]
-publishes = ["timer.filtered"]
+publishes = ["timer.filtered", "filter.processed"]
 
 # Example: disabled enrichment handler
 # [[handlers]]
@@ -88,17 +88,27 @@ publishes = ["timer.filtered"]
 # Sinks are egress components that consume messages from the system.
 # They can only subscribe, not publish.
 
+# Plain Rust console sink for domain and system events
+[[sinks]]
+name = "console_sink"
+path = "./target/release/console_sink"
+args = []
+enabled = true
+subscribes = ["timer.filtered", "filter.processed", "system.started.*", "system.stopped.*", "system.error.*"]
+
+# Log sink for file persistence of domain and system events
 [[sinks]]
 name = "log_sink"
 path = "./target/release/log_sink"
 args = ["--output", "./timer_events.log"]
 enabled = true
-subscribes = ["timer.filtered"]
+subscribes = ["timer.filtered", "filter.processed", "system.started.*", "system.stopped.*", "system.error.*"]
 
-# Deno-based console sink (demonstrates multi-language support)
+# Deno-based console sink with colored output for timer.tick events
+# Demonstrates multi-language support
 # Note: Update the path to match your deno installation (run: which deno)
 [[sinks]]
-name = "console_sink"
+name = "console_sink_deno"
 path = "/home/rodzilla/.deno/bin/deno"
 args = [
     "run",
@@ -106,11 +116,10 @@ args = [
     "--allow-read",
     "--allow-write",
     "--allow-net=unix",
-    "./examples/console_sink_deno/main.ts",
-    "timer.tick,timer.filtered"
+    "./examples/console_sink_deno/main.ts"
 ]
-enabled = true  # Enable to see colored console output
-subscribes = ["timer.tick", "timer.filtered"]
+enabled = true  # Enable to see colored output for timer.tick events
+subscribes = ["timer.tick"]
 
 # =============================================================================
 # Message Flow
@@ -118,19 +127,30 @@ subscribes = ["timer.tick", "timer.filtered"]
 #
 # This configuration creates the following message flow:
 #
-#   timer_source
+#   Engine publishes: system.started.*, system.stopped.*, system.error.*
 #       │
-#       │ publishes timer.tick every 5 seconds
-#       ▼
-#   filter_handler
-#       │
-#       │ filters to every 5th tick
-#       │ publishes timer.filtered
-#       ▼
-#   ┌───┴───┐
-#   │       │
-#   ▼       ▼
-# log_sink  console_sink
-# (file)    (stdout, disabled by default)
+#       └───────────────────────────────────────────┐
+#                                                   │
+#   timer_source                                    │
+#       │                                           │
+#       │ publishes timer.tick every 5 seconds      │
+#       ▼                                           │
+#   filter_handler                                  │
+#       │                                           │
+#       ├─ timer.filtered (every 5th tick)          │
+#       │                                           │
+#       └─ filter.processed (for each tick)         │
+#                                                   │
+#       ┌───────────────────────────────────────────┤
+#       │                                           │
+#       ▼                                           ▼
+#   console_sink_deno                    console_sink & log_sink
+#   (colored timer.tick)                 (domain events + system lifecycle)
+#
+# Design Philosophy:
+#   - Sources/Handlers are SILENT - they only emit domain messages
+#   - Engine emits system lifecycle events
+#   - Sinks handle ALL egress (console, file, web, etc.)
+#   - Subscription IS filtering - each sink subscribes to what it needs
 #
 # =============================================================================

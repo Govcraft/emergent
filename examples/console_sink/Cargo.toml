@@ -1,6 +1,6 @@
 [package]
-name = "filter_handler"
-description = "Example filter handler for Emergent"
+name = "console_sink"
+description = "Plain console output sink for Emergent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,10 +8,11 @@ repository.workspace = true
 authors.workspace = true
 
 [[bin]]
-name = "filter_handler"
+name = "console_sink"
 path = "src/main.rs"
 
 [dependencies]
+chrono = "0.4.42"
 clap = { version = "4.5.53", features = ["derive"] }
 emergent-client = { version = "0.1.0", path = "../../emergent-client" }
 serde = { workspace = true, features = ["derive"] }

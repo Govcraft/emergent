@@ -3,6 +3,14 @@
 //! A Handler that subscribes to `timer.tick` events and publishes `timer.filtered`
 //! events for every Nth tick. Demonstrates the Handler pattern in Emergent.
 //!
+//! Handlers are SILENT - they only produce domain messages.
+//! All lifecycle events are published by the engine.
+//!
+//! # Messages Published
+//!
+//! - `timer.filtered` - For ticks that pass the filter
+//! - `filter.processed` - Status of each tick (passed or filtered)
+//!
 //! # Usage
 //!
 //! ```bash
@@ -49,6 +57,17 @@ struct FilteredPayload {
     filter_every: u64,
 }
 
+/// Payload for filter.processed domain events.
+#[derive(Debug, Serialize)]
+struct FilterProcessedPayload {
+    /// Original sequence number from timer.tick.
+    original_sequence: u64,
+    /// Action taken: "passed" or "filtered".
+    action: String,
+    /// Reason for the action.
+    reason: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -56,29 +75,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get the handler name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "filter_handler".to_string());
 
-    println!("Filter Handler starting...");
-    println!("  Name: {name}");
-    println!("  Filter: pass every {}th tick", args.filter_every);
-
-    // Connect to the Emergent engine
+    // Connect to the Emergent engine (silently - lifecycle events come from engine)
     let handler = match EmergentHandler::connect(&name).await {
-        Ok(h) => {
-            println!("Connected to Emergent engine");
-            h
-        }
+        Ok(h) => h,
         Err(e) => {
             eprintln!("Failed to connect to Emergent engine: {e}");
-            eprintln!("Make sure the engine is running and EMERGENT_SOCKET is set.");
             std::process::exit(1);
         }
     };
 
     // Subscribe to timer.tick events
     let mut stream = match handler.subscribe(&["timer.tick"]).await {
-        Ok(s) => {
-            println!("Subscribed to timer.tick events");
-            s
-        }
+        Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to subscribe: {e}");
             std::process::exit(1);
@@ -88,17 +96,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up SIGTERM handler for graceful shutdown
     let mut sigterm = signal(SignalKind::terminate())?;
 
-    println!("Waiting for timer.tick events...");
-
     // Process incoming messages
     loop {
         tokio::select! {
             // Handle SIGTERM for graceful shutdown
             _ = sigterm.recv() => {
-                println!("Received SIGTERM, disconnecting gracefully...");
-                if let Err(e) = handler.disconnect().await {
-                    eprintln!("Error during disconnect: {e}");
-                }
+                let _ = handler.disconnect().await;
                 break;
             }
 
@@ -109,20 +112,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // Parse the timer tick payload
                         let tick: TimerTickPayload = match msg.payload_as() {
                             Ok(t) => t,
-                            Err(e) => {
-                                eprintln!("Failed to parse timer.tick payload: {e}");
-                                continue;
-                            }
+                            Err(_) => continue,
                         };
 
                         // Check if this tick passes the filter
                         if tick.sequence.is_multiple_of(args.filter_every) {
-                            println!(
-                                "[tick #{}] PASSED - publishing timer.filtered",
-                                tick.sequence
-                            );
-
-                            // Create filtered message with causation chain
+                            // Publish timer.filtered (the domain event for passed ticks)
                             let filtered_payload = FilteredPayload {
                                 original_sequence: tick.sequence,
                                 original_interval_ms: tick.interval_ms,
@@ -134,22 +129,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .with_causation_id(msg.id())
                                 .with_payload(json!(filtered_payload));
 
-                            if let Err(e) = handler.publish(output).await {
-                                eprintln!("Failed to publish timer.filtered: {e}");
-                            }
+                            let _ = handler.publish(output).await;
+
+                            // Publish filter.processed status event
+                            let processed = FilterProcessedPayload {
+                                original_sequence: tick.sequence,
+                                action: "passed".to_string(),
+                                reason: format!("every_{}th", args.filter_every),
+                            };
+
+                            let status = EmergentMessage::new("filter.processed")
+                                .with_causation_id(msg.id())
+                                .with_payload(json!(processed));
+
+                            let _ = handler.publish(status).await;
                         } else {
-                            println!("[tick #{}] filtered out", tick.sequence);
+                            // Publish filter.processed for filtered ticks
+                            let processed = FilterProcessedPayload {
+                                original_sequence: tick.sequence,
+                                action: "filtered".to_string(),
+                                reason: format!("not_multiple_of_{}", args.filter_every),
+                            };
+
+                            let status = EmergentMessage::new("filter.processed")
+                                .with_causation_id(msg.id())
+                                .with_payload(json!(processed));
+
+                            let _ = handler.publish(status).await;
                         }
                     }
-                    None => {
-                        println!("Stream ended, exiting...");
-                        break;
-                    }
+                    None => break,
                 }
             }
         }
     }
 
-    println!("Filter Handler stopped.");
     Ok(())
 }

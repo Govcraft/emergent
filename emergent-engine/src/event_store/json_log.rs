@@ -55,8 +55,12 @@ impl JsonEventLog {
     fn get_writer(&self) -> Result<std::sync::MutexGuard<'_, Option<BufWriter<File>>>, EventStoreError> {
         let today = Utc::now().format("%Y-%m-%d").to_string();
 
-        let mut writer = self.writer.lock().unwrap();
-        let mut current_date = self.current_date.lock().unwrap();
+        let mut writer = self.writer.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("writer lock: {e}"))
+        })?;
+        let mut current_date = self.current_date.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("current_date lock: {e}"))
+        })?;
 
         // Check if we need to rotate to a new file
         let needs_rotation = current_date.as_ref() != Some(&today);
@@ -105,7 +109,9 @@ impl EventStore for JsonEventLog {
     }
 
     fn flush(&self) -> Result<(), EventStoreError> {
-        let mut writer = self.writer.lock().unwrap();
+        let mut writer = self.writer.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("writer lock: {e}"))
+        })?;
         if let Some(ref mut w) = *writer {
             w.flush()?;
         }

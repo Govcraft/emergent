@@ -6,6 +6,7 @@ members = [
     "examples/timer_source",
     "examples/filter_handler",
     "examples/log_sink",
+    "examples/console_sink",
 ]
 
 [workspace.package]
@@ -14,6 +15,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/govcraft/emergent"
 authors = ["Govcraft <info@govcraft.ai>"]
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
 
 [workspace.dependencies]
 # Core async runtime

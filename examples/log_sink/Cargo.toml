@@ -18,3 +18,6 @@ emergent-client = { version = "0.1.0", path = "../../emergent-client" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

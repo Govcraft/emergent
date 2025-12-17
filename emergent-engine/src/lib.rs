@@ -23,9 +23,14 @@
 pub mod config;
 pub mod event_store;
 pub mod messages;
+pub mod primitive_actor;
 pub mod primitives;
 pub mod process_manager;
 
 pub use config::EmergentConfig;
 pub use messages::EmergentMessage;
+pub use primitive_actor::{
+    build_primitive_actor, IpcSystemEvent, PrimitiveActorConfig, PrimitiveActorState,
+    SystemEventPayload,
+};
 pub use primitives::{PrimitiveKind, PrimitiveState};

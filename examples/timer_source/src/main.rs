@@ -3,6 +3,9 @@
 //! A Source that emits `timer.tick` events at a configurable interval.
 //! Demonstrates the Source pattern in Emergent.
 //!
+//! Sources are SILENT - they only produce domain messages.
+//! All lifecycle events are published by the engine.
+//!
 //! # Usage
 //!
 //! ```bash
@@ -17,7 +20,7 @@ use clap::Parser;
 use emergent_client::{EmergentMessage, EmergentSource};
 use serde_json::json;
 use std::time::Duration;
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::{signal, SignalKind};
 
 /// Timer Source - emits periodic tick events.
 #[derive(Parser, Debug)]
@@ -49,22 +52,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get the source name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "timer_source".to_string());
 
-    // println!("Timer Source starting...");
-    // println!("  Name: {name}");
-    // println!("  Interval: {}ms", args.interval);
-    // if args.max_ticks > 0 {
-    //     println!("  Max ticks: {}", args.max_ticks);
-    // }
-
-    // Connect to the Emergent engine
+    // Connect to the Emergent engine (silently - lifecycle events come from engine)
     let source = match EmergentSource::connect(&name).await {
-        Ok(s) => {
-            // println!("Connected to Emergent engine");
-            s
-        }
+        Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to connect to Emergent engine: {e}");
-            eprintln!("Make sure the engine is running and EMERGENT_SOCKET is set.");
             std::process::exit(1);
         }
     };
@@ -76,16 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut interval = tokio::time::interval(Duration::from_millis(args.interval));
     let mut sequence: u64 = 0;
 
-    println!("Starting to emit timer.tick events...");
-
     loop {
         tokio::select! {
             // Handle SIGTERM for graceful shutdown
             _ = sigterm.recv() => {
-                // println!("Received SIGTERM, disconnecting gracefully...");
-                if let Err(e) = source.disconnect().await {
-                    eprintln!("Error during disconnect: {e}");
-                }
+                let _ = source.disconnect().await;
                 break;
             }
 
@@ -101,28 +88,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let message = EmergentMessage::new("timer.tick").with_payload(json!(payload));
 
-                // Publish the tick
-                match source.publish(message).await {
-                    Ok(()) => {
-                        // println!("[tick #{}] Published timer.tick", sequence);
-                    }
-                    Err(_e) => {
-                        // eprintln!("[tick #{}] Failed to publish: {}", sequence, e);
-                    }
-                }
+                // Publish the tick (silently - errors are ignored, sink will handle output)
+                let _ = source.publish(message).await;
 
                 // Check if we've reached max ticks
                 if args.max_ticks > 0 && sequence >= args.max_ticks {
-                    // println!("Reached max ticks ({}), disconnecting...", args.max_ticks);
-                    if let Err(e) = source.disconnect().await {
-                        eprintln!("Error during disconnect: {e}");
-                    }
+                    let _ = source.disconnect().await;
                     break;
                 }
             }
         }
     }
 
-    // println!("Timer Source stopped.");
     Ok(())
 }

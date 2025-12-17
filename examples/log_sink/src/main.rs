@@ -1,7 +1,10 @@
 //! Log Sink Example
 //!
-//! A Sink that subscribes to `timer.filtered` events and logs them to a file.
+//! A Sink that subscribes to events and logs them to a file.
 //! Demonstrates the Sink pattern in Emergent.
+//!
+//! Sinks are SILENT on the console - they handle egress to their destination.
+//! This sink writes to a file; the console_sink handles console output.
 //!
 //! # Usage
 //!
@@ -24,14 +27,14 @@ use tokio::signal::unix::{signal, SignalKind};
 /// Log Sink - writes received events to a log file.
 #[derive(Parser, Debug)]
 #[command(name = "log_sink")]
-#[command(about = "Logs timer.filtered events to a file")]
+#[command(about = "Logs events to a file")]
 struct Args {
     /// Output log file path.
     #[arg(short, long, default_value = "./timer_events.log")]
     output: PathBuf,
 
     /// Message types to subscribe to (comma-separated).
-    #[arg(short, long, default_value = "timer.filtered")]
+    #[arg(short, long, default_value = "timer.filtered,filter.processed,system.started.*,system.stopped.*,system.error.*")]
     subscribe: String,
 }
 
@@ -67,18 +70,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get the sink name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "log_sink".to_string());
 
-    println!("Log Sink starting...");
-    println!("  Name: {name}");
-    println!("  Output: {}", args.output.display());
-    println!("  Subscribing to: {:?}", topics);
-
     // Open log file for appending
     let mut log_file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&args.output)?;
 
-    // Write startup marker
+    // Write startup marker to file (not console)
     let startup_line = format!(
         "[{}] === Log Sink started, subscribing to: {:?} ===\n",
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC"),
@@ -87,25 +85,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_file.write_all(startup_line.as_bytes())?;
     log_file.flush()?;
 
-    // Connect to the Emergent engine
+    // Connect to the Emergent engine (silently)
     let sink = match EmergentSink::connect(&name).await {
-        Ok(s) => {
-            println!("Connected to Emergent engine");
-            s
-        }
+        Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to connect to Emergent engine: {e}");
-            eprintln!("Make sure the engine is running and EMERGENT_SOCKET is set.");
             std::process::exit(1);
         }
     };
 
     // Subscribe to configured message types
     let mut stream = match sink.subscribe(&topics).await {
-        Ok(s) => {
-            println!("Subscribed to message types");
-            s
-        }
+        Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to subscribe: {e}");
             std::process::exit(1);
@@ -115,17 +106,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up SIGTERM handler for graceful shutdown
     let mut sigterm = signal(SignalKind::terminate())?;
 
-    println!("Waiting for messages...");
-
     // Process incoming messages
     loop {
         tokio::select! {
             // Handle SIGTERM for graceful shutdown
             _ = sigterm.recv() => {
-                println!("Received SIGTERM, disconnecting gracefully...");
-                if let Err(e) = sink.disconnect().await {
-                    eprintln!("Error during disconnect: {e}");
-                }
+                let _ = sink.disconnect().await;
                 break;
             }
 
@@ -141,47 +127,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             message_id: msg.id().to_string(),
                             message_type: msg.message_type().to_string(),
                             source: msg.source().to_string(),
-                            payload: serde_json::to_string(&msg.payload()).unwrap_or_else(|_| "{}".to_string()),
+                            payload: serde_json::to_string(msg.payload()).unwrap_or_else(|_| "{}".to_string()),
                         };
 
-                        // Write to log file
+                        // Write to log file (silently - no console output)
                         let log_line = entry.to_log_line();
-                        if let Err(e) = log_file.write_all(log_line.as_bytes()) {
-                            eprintln!("Failed to write to log file: {e}");
-                        } else if let Err(e) = log_file.flush() {
-                            eprintln!("Failed to flush log file: {e}");
-                        }
-
-                        // Also print to console for visibility
-                        println!(
-                            "[{}] Logged: {} from {} (seq: {})",
-                            timestamp.format("%H:%M:%S"),
-                            msg.message_type(),
-                            msg.source(),
-                            msg.payload()
-                                .get("original_sequence")
-                                .and_then(|v| v.as_u64())
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "?".to_string())
-                        );
+                        let _ = log_file.write_all(log_line.as_bytes());
+                        let _ = log_file.flush();
                     }
-                    None => {
-                        println!("Stream ended, exiting...");
-                        break;
-                    }
+                    None => break,
                 }
             }
         }
     }
 
-    // Write shutdown marker
+    // Write shutdown marker to file
     let shutdown_line = format!(
         "[{}] === Log Sink stopped ===\n",
         Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC")
     );
-    log_file.write_all(shutdown_line.as_bytes())?;
-    log_file.flush()?;
+    let _ = log_file.write_all(shutdown_line.as_bytes());
+    let _ = log_file.flush();
 
-    println!("Log Sink stopped.");
     Ok(())
 }

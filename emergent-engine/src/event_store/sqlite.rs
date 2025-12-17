@@ -91,7 +91,9 @@ impl SqliteEventStore {
     ///
     /// Returns an error if the query fails.
     pub fn query_by_type(&self, message_type: &str) -> Result<Vec<EmergentMessage>, EventStoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
+        })?;
         let mut stmt = conn.prepare(
             r"
             SELECT id, message_type, source, correlation_id, causation_id,
@@ -117,7 +119,9 @@ impl SqliteEventStore {
         start_ms: u64,
         end_ms: u64,
     ) -> Result<Vec<EmergentMessage>, EventStoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
+        })?;
         let mut stmt = conn.prepare(
             r"
             SELECT id, message_type, source, correlation_id, causation_id,
@@ -141,7 +145,9 @@ impl SqliteEventStore {
     ///
     /// Returns an error if the query fails.
     pub fn query_by_correlation(&self, correlation_id: &str) -> Result<Vec<EmergentMessage>, EventStoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
+        })?;
         let mut stmt = conn.prepare(
             r"
             SELECT id, message_type, source, correlation_id, causation_id,
@@ -165,7 +171,9 @@ impl SqliteEventStore {
     ///
     /// Returns an error if the query fails.
     pub fn count(&self) -> Result<u64, EventStoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
+        })?;
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
         Ok(u64::try_from(count).unwrap_or(0))
     }
@@ -176,7 +184,9 @@ impl SqliteEventStore {
     ///
     /// Returns an error if the deletion fails.
     pub fn delete_before(&self, timestamp_ms: u64) -> Result<u64, EventStoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
+        })?;
         let deleted = conn.execute(
             "DELETE FROM events WHERE timestamp_ms < ?",
             [timestamp_ms],
@@ -203,7 +213,9 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<EmergentMessage, rusqlite::
 
 impl EventStore for SqliteEventStore {
     fn store(&self, message: &EmergentMessage) -> Result<(), EventStoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
+        })?;
 
         let payload_json = serde_json::to_string(&message.payload)?;
         let metadata_json = message
@@ -235,7 +247,9 @@ impl EventStore for SqliteEventStore {
 
     fn flush(&self) -> Result<(), EventStoreError> {
         // SQLite commits are automatic, but we can force a checkpoint
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|e| {
+            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
+        })?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }

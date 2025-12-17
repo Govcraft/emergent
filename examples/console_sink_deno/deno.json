@@ -1,6 +1,4 @@
 {
-  "name": "@emergent/console-sink-deno",
-  "version": "0.1.0",
   "tasks": {
     "start": "deno run --allow-env --allow-read --allow-write --allow-net=unix main.ts",
     "check": "deno check main.ts",

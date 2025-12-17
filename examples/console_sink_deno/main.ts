@@ -107,31 +107,22 @@ async function main(): Promise<void> {
   const name = Deno.env.get("EMERGENT_NAME") || "console_sink_deno";
 
   // Parse command-line arguments for subscription topics
+  // Default to timer.tick only (colored output for tick events)
   const args = Deno.args;
-  let topics = ["timer.tick", "timer.filtered"];
+  let topics = ["timer.tick"];
 
   if (args.length > 0) {
     // Allow comma-separated or space-separated topics
     topics = args.flatMap((arg) => arg.split(",")).filter((t) => t.length > 0);
   }
 
-  console.log(`${colors.bold}Console Sink (Deno)${colors.reset}`);
-  console.log(`${colors.dim}===================${colors.reset}`);
-  console.log(`  Name: ${colors.cyan}${name}${colors.reset}`);
-  console.log(`  Topics: ${colors.yellow}${topics.join(", ")}${colors.reset}`);
-  console.log();
-
-  // Connect to the Emergent engine
+  // Connect to the Emergent engine (silently - no startup messages)
   let sink: EmergentSink;
   try {
     sink = await EmergentSink.connect(name);
-    console.log(`${colors.green}Connected to Emergent engine${colors.reset}`);
   } catch (err) {
     if (err instanceof ConnectionError) {
       console.error(`${colors.red}Connection failed:${colors.reset} ${err.message}`);
-      console.error();
-      console.error("Make sure the Emergent engine is running and has set");
-      console.error("the EMERGENT_SOCKET environment variable.");
       Deno.exit(1);
     }
     throw err;
@@ -141,39 +132,27 @@ async function main(): Promise<void> {
   let stream;
   try {
     stream = await sink.subscribe(topics);
-    console.log(`${colors.green}Subscribed to topics${colors.reset}`);
   } catch (err) {
     console.error(`${colors.red}Subscription failed:${colors.reset} ${err}`);
     sink.close();
     Deno.exit(1);
   }
 
-  console.log();
-  console.log(`${colors.dim}Waiting for messages...${colors.reset}`);
-  console.log(`${colors.dim}Press Ctrl+C to stop${colors.reset}`);
-  console.log();
-
-  // Handle shutdown signals
+  // Handle shutdown signals (silently)
   const abortController = new AbortController();
   Deno.addSignalListener("SIGINT", () => {
-    console.log();
-    console.log(`${colors.yellow}Received SIGINT, shutting down...${colors.reset}`);
     abortController.abort();
   });
   Deno.addSignalListener("SIGTERM", () => {
-    console.log();
-    console.log(`${colors.yellow}Received SIGTERM, shutting down...${colors.reset}`);
     abortController.abort();
   });
 
   // Process incoming messages
-  let messageCount = 0;
   try {
     for await (const msg of stream) {
       if (abortController.signal.aborted) {
         break;
       }
-      messageCount++;
       printMessage(msg);
     }
   } catch (err) {
@@ -182,12 +161,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // Cleanup
+  // Cleanup (silently)
   sink.close();
-  console.log(
-    `${colors.dim}Console Sink stopped. ` +
-      `Received ${messageCount} messages.${colors.reset}`
-  );
 }
 
 // Run main
