@@ -3,10 +3,10 @@ resolver = "2"
 members = [
     "emergent-engine",
     "emergent-client",
-    "examples/timer_source",
-    "examples/filter_handler",
-    "examples/log_sink",
-    "examples/console_sink",
+    "examples/sources/timer",
+    "examples/handlers/filter",
+    "examples/sinks/log",
+    "examples/sinks/console",
 ]
 
 [workspace.package]

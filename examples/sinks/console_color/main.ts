@@ -6,7 +6,7 @@
  * When the engine signals shutdown, the message stream closes gracefully.
  */
 
-import { EmergentSink } from "../../sdks/ts/mod.ts";
+import { EmergentSink } from "../../../sdks/ts/mod.ts";
 
 const dim = "\x1b[2m";
 const blue = "\x1b[34m";

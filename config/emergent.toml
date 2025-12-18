@@ -47,7 +47,7 @@ retention_days = 30
 
 [[sources]]
 name = "timer"
-path = "./target/release/timer_source"
+path = "./target/release/timer"
 args = ["--interval", "5000"]  # 5 second interval
 enabled = true
 publishes = ["timer.tick"]
@@ -68,7 +68,7 @@ publishes = ["timer.tick"]
 
 [[handlers]]
 name = "filter"
-path = "./target/release/filter_handler"
+path = "./target/release/filter"
 args = ["--filter-every", "5"]  # Pass through every 5th tick
 enabled = true
 subscribes = ["timer.tick"]
@@ -90,16 +90,16 @@ publishes = ["timer.filtered", "filter.processed"]
 
 # Plain Rust console sink for domain and system events
 [[sinks]]
-name = "console_sink"
-path = "./target/release/console_sink"
+name = "console"
+path = "./target/release/console"
 args = []
 enabled = true
 subscribes = ["timer.filtered", "filter.processed", "system.started.*", "system.stopped.*", "system.error.*"]
 
 # Log sink for file persistence of domain and system events
 [[sinks]]
-name = "log_sink"
-path = "./target/release/log_sink"
+name = "log"
+path = "./target/release/log"
 args = ["--output", "./timer_events.log"]
 enabled = true
 subscribes = ["timer.filtered", "filter.processed", "system.started.*", "system.stopped.*", "system.error.*"]
@@ -108,7 +108,7 @@ subscribes = ["timer.filtered", "filter.processed", "system.started.*", "system.
 # Demonstrates multi-language support
 # Note: Update the path to match your deno installation (run: which deno)
 [[sinks]]
-name = "console_sink_deno"
+name = "console_color"
 path = "/home/rodzilla/.deno/bin/deno"
 args = [
     "run",
@@ -116,7 +116,7 @@ args = [
     "--allow-read",
     "--allow-write",
     "--allow-net=unix",
-    "./examples/console_sink_deno/main.ts"
+    "./examples/sinks/console_color/main.ts"
 ]
 enabled = true  # Enable to see colored output for timer.tick events
 subscribes = ["timer.tick"]
