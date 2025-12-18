@@ -3,6 +3,7 @@
  * @module
  */
 
+import { encode, decode } from "npm:@msgpack/msgpack@3.0.0";
 import { ProtocolError } from "./errors.ts";
 
 // ============================================================================
@@ -18,13 +19,16 @@ export const MAX_FRAME_SIZE = 16 * 1024 * 1024;
 /** Frame header size: length(4) + version(1) + msgType(1) + format(1) */
 export const HEADER_SIZE = 7;
 
-// Message types
+// Message types (matching acton-reactive/src/common/ipc/protocol.rs)
 export const MSG_TYPE_REQUEST = 0x01;
 export const MSG_TYPE_RESPONSE = 0x02;
-export const MSG_TYPE_DISCOVER = 0x03;
+export const MSG_TYPE_ERROR = 0x03;
+export const MSG_TYPE_HEARTBEAT = 0x04;
 export const MSG_TYPE_PUSH = 0x05;
 export const MSG_TYPE_SUBSCRIBE = 0x06;
 export const MSG_TYPE_UNSUBSCRIBE = 0x07;
+export const MSG_TYPE_DISCOVER = 0x08;
+export const MSG_TYPE_STREAM = 0x09;
 
 // Serialization formats
 export const FORMAT_JSON = 0x01;
@@ -50,11 +54,13 @@ const textDecoder = new TextDecoder();
 export function encodeFrame(
   msgType: number,
   payload: unknown,
-  format = FORMAT_JSON,
+  format = FORMAT_MSGPACK,
 ): Uint8Array {
   let payloadBytes: Uint8Array;
 
-  if (format === FORMAT_JSON) {
+  if (format === FORMAT_MSGPACK) {
+    payloadBytes = encode(payload);
+  } else if (format === FORMAT_JSON) {
     const jsonStr = JSON.stringify(payload);
     payloadBytes = textEncoder.encode(jsonStr);
   } else {
@@ -139,12 +145,11 @@ export function tryDecodeFrame(buffer: Uint8Array): DecodedFrame | null {
   const payloadBytes = buffer.subarray(HEADER_SIZE, totalLen);
   let payload: unknown;
 
-  if (format === FORMAT_JSON) {
+  if (format === FORMAT_MSGPACK) {
+    payload = decode(payloadBytes);
+  } else if (format === FORMAT_JSON) {
     const jsonStr = textDecoder.decode(payloadBytes);
     payload = JSON.parse(jsonStr);
-  } else if (format === FORMAT_MSGPACK) {
-    // MessagePack not implemented yet - would need a library
-    throw new ProtocolError("MessagePack format not supported");
   } else {
     throw new ProtocolError(`Unknown format: ${format}`);
   }

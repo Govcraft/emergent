@@ -252,12 +252,16 @@ class BaseClient:
         wire_dict = message.to_wire().model_dump(exclude_none=True)
         wire_dict["source"] = self.name  # Always use client name as source
 
+        # Wrap in IpcEmergentMessage format (matches Rust: IpcEmergentMessage { inner: message })
+        ipc_message = {"inner": wire_dict}
+
         # Wrap in IPC envelope (fire-and-forget, no reply expected)
+        # Target "message_broker" and type "EmergentMessage" match engine expectations
         envelope = IpcEnvelope(
             correlation_id=generate_correlation_id("pub"),
-            target="broker",
-            message_type="Publish",
-            payload=wire_dict,
+            target="message_broker",
+            message_type="EmergentMessage",
+            payload=ipc_message,
             expects_reply=False,
         )
 
@@ -308,6 +312,44 @@ class BaseClient:
                 for p in disc_resp.primitives
             ),
         )
+
+    async def _get_my_subscriptions(self) -> list[str]:
+        """
+        Get the configured subscription types for this primitive.
+
+        Queries the engine's config service to get the message types
+        this primitive should subscribe to based on the config.
+
+        Returns:
+            List of message type names to subscribe to
+
+        Raises:
+            ConnectionError: If the request fails
+        """
+        self._ensure_connected()
+
+        correlation_id = generate_correlation_id("getsub")
+
+        envelope = IpcEnvelope(
+            correlation_id=correlation_id,
+            target="config_service",
+            message_type="GetSubscriptions",
+            payload={"name": self.name},
+            expects_reply=True,
+        )
+
+        response = await self._send_request(
+            MessageType.REQUEST,
+            envelope.model_dump(),
+            correlation_id,
+        )
+
+        if not response.success:
+            raise ConnectionError(response.error or "GetSubscriptions failed")
+
+        # Response payload has { "subscribes": [...] }
+        payload = response.payload or {}
+        return payload.get("subscribes", [])
 
     def close(self) -> None:
         """

@@ -65,6 +65,24 @@ impl From<IpcEmergentMessage> for EmergentMessage {
     }
 }
 
+/// Request for a primitive's configured subscriptions.
+///
+/// SDKs send this to get the subscription types from config before subscribing.
+#[acton_message(ipc)]
+#[derive(Clone)]
+struct GetSubscriptions {
+    /// Name of the primitive requesting its subscriptions.
+    name: String,
+}
+
+/// Response containing configured subscription types.
+#[acton_message(ipc)]
+#[derive(Clone)]
+struct SubscriptionsResponse {
+    /// The message types this primitive should subscribe to.
+    subscribes: Vec<String>,
+}
+
 // ============================================================================
 // Engine State
 // ============================================================================
@@ -75,6 +93,10 @@ struct MessageBrokerState {
     /// Count of messages processed.
     message_count: u64,
 }
+
+/// Empty state for config service actor.
+#[derive(Default, Clone, Debug)]
+struct ConfigServiceState;
 
 /// Event store wrapper for async operations.
 struct EventStoreWrapper {
@@ -217,6 +239,8 @@ async fn main() -> Result<()> {
     let registry = runtime.ipc_registry();
     registry.register::<IpcEmergentMessage>("EmergentMessage");
     registry.register::<IpcSystemEvent>("SystemEvent");
+    registry.register::<GetSubscriptions>("GetSubscriptions");
+    registry.register::<SubscriptionsResponse>("SubscriptionsResponse");
     info!("Registered {} IPC message type(s)", registry.len());
 
     // Start the IPC listener first to get the subscription manager
@@ -298,6 +322,38 @@ async fn main() -> Result<()> {
 
     let broker_handle = broker_actor.start().await;
     runtime.ipc_expose("message_broker", broker_handle.clone());
+
+    // Create config service actor for SDK subscription lookups
+    let mut config_service =
+        runtime.new_actor_with_name::<ConfigServiceState>("config_service".to_string());
+
+    // Handle GetSubscriptions requests from SDKs
+    // Uses reply_envelope pattern for IPC request-response
+    let pm_for_handler = process_manager.clone();
+    config_service.mutate_on::<GetSubscriptions>(move |_actor, envelope| {
+        let pm = pm_for_handler.clone();
+        let msg = envelope.message();
+        let name = msg.name.clone();
+
+        let reply_envelope = envelope.reply_envelope();
+        Reply::pending(async move {
+            // Look up the primitive's configured subscriptions
+            let subscribes = if let Some(info) = pm.get_info(&name).await {
+                info.subscribes
+            } else {
+                Vec::new()
+            };
+
+            info!("GetSubscriptions for '{}': {:?}", name, subscribes);
+
+            reply_envelope
+                .send(SubscriptionsResponse { subscribes })
+                .await;
+        })
+    });
+
+    let config_handle = config_service.start().await;
+    runtime.ipc_expose("config_service", config_handle);
 
     // Wait a moment for the listener to be ready
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

@@ -52,13 +52,13 @@ args = ["--interval", "5000"]  # 5 second interval
 enabled = true
 publishes = ["timer.tick"]
 
-# Example: disabled webhook source (for future use)
-# [[sources]]
-# name = "webhook"
-# path = "./target/release/webhook_source"
-# args = ["--port", "8080"]
-# enabled = false
-# publishes = ["webhook.received"]
+# Python webhook source - HTTP listener that publishes on POST /webhook
+[[sources]]
+name = "webhook"
+path = "/usr/bin/uv"
+args = ["run", "--project", "./examples/sources/webhook", "python", "./examples/sources/webhook/main.py", "--port", "8080"]
+enabled = true
+publishes = ["webhook.received"]
 
 # =============================================================================
 # Handlers
@@ -104,7 +104,7 @@ args = ["--output", "./timer_events.log"]
 enabled = true
 subscribes = ["timer.filtered", "filter.processed", "system.started.*", "system.stopped.*", "system.error.*"]
 
-# Deno-based console sink with colored output for timer.tick events
+# Deno-based console sink with colored output for timer.tick
 # Demonstrates multi-language support
 # Note: Update the path to match your deno installation (run: which deno)
 [[sinks]]
@@ -118,8 +118,16 @@ args = [
     "--allow-net=unix",
     "./examples/sinks/console_color/main.ts"
 ]
-enabled = true  # Enable to see colored output for timer.tick events
+enabled = true
 subscribes = ["timer.tick"]
+
+# Python sink for webhook events only - testing isolation
+[[sinks]]
+name = "webhook_console"
+path = "/usr/bin/uv"
+args = ["run", "--project", "./examples/sources/webhook", "python", "./examples/sinks/webhook_console/main.py"]
+enabled = true
+subscribes = ["webhook.received"]
 
 # =============================================================================
 # Message Flow

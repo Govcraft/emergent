@@ -1,0 +1,22 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:@msgpack/msgpack@3": "3.0.0",
+    "npm:@msgpack/msgpack@3.0.0": "3.0.0"
+  },
+  "npm": {
+    "@msgpack/msgpack@3.0.0": {
+      "integrity": "sha512-s/OZQ1QUtSYr9tgFZh4HSFLvTR2o81r0zfQj7pClC7oFUqZaAgkQ+vADV9JBioJLK9lJoAjBEhuPhVuOIJnbhg=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:@msgpack/msgpack@3.0.0"
+    ],
+    "packageJson": {
+      "dependencies": [
+        "npm:@msgpack/msgpack@3"
+      ]
+    }
+  }
+}

@@ -113,9 +113,12 @@ class EmergentSink(BaseClient):
         Connects, subscribes, and yields messages. Automatically cleans up
         when the iteration completes or breaks.
 
+        The SDK queries the engine for configured subscriptions before subscribing.
+        The `types` parameter is ignored - the engine's config is the source of truth.
+
         Args:
             name: Unique name for this sink
-            types: Message types to subscribe to
+            types: Message types (ignored - engine config determines subscriptions)
             socket_path: Custom socket path (overrides EMERGENT_SOCKET env var)
             timeout: Request timeout in seconds
             format_: Serialization format
@@ -142,7 +145,10 @@ class EmergentSink(BaseClient):
         )
 
         try:
-            stream = await sink.subscribe(types)
+            # Query engine for configured subscriptions (config is source of truth)
+            configured_types = await sink.get_my_subscriptions()
+
+            stream = await sink.subscribe(configured_types)
             try:
                 async for msg in stream:
                     yield msg
@@ -207,6 +213,23 @@ class EmergentSink(BaseClient):
             >>> print("Connected primitives:", info.primitives)
         """
         return await self._discover()
+
+    async def get_my_subscriptions(self) -> list[str]:
+        """
+        Get the configured subscription types for this primitive.
+
+        Queries the engine's config service to get the message types
+        this sink should subscribe to based on the engine configuration.
+
+        Returns:
+            List of message type names to subscribe to
+
+        Example:
+            >>> sink = await EmergentSink.connect("my_sink")
+            >>> types = await sink.get_my_subscriptions()
+            >>> print("Configured to receive:", types)
+        """
+        return await self._get_my_subscriptions()
 
     async def __aenter__(self) -> EmergentSink:
         """Enter the async context manager."""

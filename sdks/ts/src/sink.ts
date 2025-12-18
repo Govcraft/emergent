@@ -71,8 +71,11 @@ export class EmergentSink extends BaseClient
    * Connects, subscribes, and yields messages. Automatically cleans up
    * when the iteration completes or breaks.
    *
+   * The SDK queries the engine for configured subscriptions before subscribing.
+   * The `types` parameter is ignored - the engine's config is the source of truth.
+   *
    * @param name - Unique name for this sink
-   * @param types - Message types to subscribe to
+   * @param types - Message types (ignored - engine config determines subscriptions)
    * @param options - Connection options
    *
    * @example
@@ -93,13 +96,16 @@ export class EmergentSink extends BaseClient
    */
   static async *messages(
     name: string,
-    types: string[],
+    _types: string[],
     options?: ConnectOptions,
   ): AsyncGenerator<EmergentMessage, void, unknown> {
     const sink = await EmergentSink.connect(name, options);
 
     try {
-      const stream = await sink.subscribe(types);
+      // Query engine for configured subscriptions (config is source of truth)
+      const configuredTypes = await sink.getMySubscriptions();
+
+      const stream = await sink.subscribe(configuredTypes);
 
       try {
         for await (const msg of stream) {
@@ -166,6 +172,23 @@ export class EmergentSink extends BaseClient
    */
   async discover(): Promise<DiscoveryInfo> {
     return await this.discoverInternal();
+  }
+
+  /**
+   * Get the configured subscription types for this primitive.
+   *
+   * Queries the engine's config service to get the message types
+   * this sink should subscribe to based on the engine configuration.
+   *
+   * @example
+   * ```typescript
+   * const sink = await EmergentSink.connect("my_sink");
+   * const types = await sink.getMySubscriptions();
+   * console.log("Configured to receive:", types);
+   * ```
+   */
+  async getMySubscriptions(): Promise<string[]> {
+    return await this.getMySubscriptionsInternal();
   }
 
   /**

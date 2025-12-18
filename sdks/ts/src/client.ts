@@ -328,6 +328,42 @@ export class BaseClient {
   }
 
   /**
+   * Get the configured subscription types for this primitive.
+   *
+   * Queries the engine's config service to get the message types
+   * this primitive should subscribe to based on the config.
+   *
+   * @internal
+   */
+  protected async getMySubscriptionsInternal(): Promise<string[]> {
+    this.#ensureConnected();
+
+    const correlationId = generateCorrelationId("getsub");
+
+    const envelope: IpcEnvelope = {
+      correlation_id: correlationId,
+      target: "config_service",
+      message_type: "GetSubscriptions",
+      payload: { name: this.name },
+      expects_reply: true,
+    };
+
+    const response = await this.#sendRequest<IpcEnvelope>(
+      MSG_TYPE_REQUEST,
+      envelope,
+      correlationId,
+    );
+
+    if (!response.success) {
+      throw new ConnectionError(response.error ?? "GetSubscriptions failed");
+    }
+
+    // Response payload has { subscribes: [...] }
+    const payload = response.payload as { subscribes?: string[] } | null;
+    return payload?.subscribes ?? [];
+  }
+
+  /**
    * Close the connection.
    */
   close(): void {

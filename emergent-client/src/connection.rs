@@ -84,9 +84,9 @@ async fn discover_impl(
     writer: &mut OwnedWriteHalf,
 ) -> Result<DiscoveryInfo> {
     let request = IpcDiscoverRequest::new();
-    let payload = serde_json::to_vec(&request)?;
+    let payload = rmp_serde::to_vec(&request)?;
 
-    write_frame(writer, MSG_TYPE_DISCOVER, Format::Json, &payload)
+    write_frame(writer, MSG_TYPE_DISCOVER, Format::MessagePack, &payload)
         .await
         .map_err(ClientError::from)?;
 
@@ -101,7 +101,7 @@ async fn discover_impl(
         )));
     }
 
-    let response: IpcDiscoverResponse = serde_json::from_slice(&payload)?;
+    let response: IpcDiscoverResponse = rmp_serde::from_slice(&payload)?;
 
     if !response.success {
         return Err(ClientError::DiscoveryFailed(
@@ -130,9 +130,9 @@ async fn subscribe_impl(
     types: &[&str],
 ) -> Result<Vec<String>> {
     let request = IpcSubscribeRequest::new(types.iter().map(|s| (*s).to_string()).collect());
-    let payload = serde_json::to_vec(&request)?;
+    let payload = rmp_serde::to_vec(&request)?;
 
-    write_frame(writer, MSG_TYPE_SUBSCRIBE, Format::Json, &payload)
+    write_frame(writer, MSG_TYPE_SUBSCRIBE, Format::MessagePack, &payload)
         .await
         .map_err(ClientError::from)?;
 
@@ -147,7 +147,7 @@ async fn subscribe_impl(
         )));
     }
 
-    let response: IpcSubscriptionResponse = serde_json::from_slice(&payload)?;
+    let response: IpcSubscriptionResponse = rmp_serde::from_slice(&payload)?;
 
     if !response.success {
         return Err(ClientError::SubscriptionFailed(
@@ -169,9 +169,9 @@ async fn unsubscribe_impl(
     } else {
         IpcUnsubscribeRequest::new(types.iter().map(|s| (*s).to_string()).collect())
     };
-    let payload = serde_json::to_vec(&request)?;
+    let payload = rmp_serde::to_vec(&request)?;
 
-    write_frame(writer, MSG_TYPE_UNSUBSCRIBE, Format::Json, &payload)
+    write_frame(writer, MSG_TYPE_UNSUBSCRIBE, Format::MessagePack, &payload)
         .await
         .map_err(ClientError::from)?;
 
@@ -186,7 +186,7 @@ async fn unsubscribe_impl(
         )));
     }
 
-    let response: IpcSubscriptionResponse = serde_json::from_slice(&payload)?;
+    let response: IpcSubscriptionResponse = rmp_serde::from_slice(&payload)?;
 
     if !response.success {
         return Err(ClientError::SubscriptionFailed(
@@ -206,8 +206,8 @@ async fn publish_impl(writer: &mut OwnedWriteHalf, message: EmergentMessage) -> 
         serde_json::to_value(&ipc_message)?,
     );
 
-    let payload = serde_json::to_vec(&envelope)?;
-    write_frame(writer, MSG_TYPE_REQUEST, Format::Json, &payload)
+    let payload = rmp_serde::to_vec(&envelope)?;
+    write_frame(writer, MSG_TYPE_REQUEST, Format::MessagePack, &payload)
         .await
         .map_err(ClientError::from)?;
 
@@ -316,10 +316,10 @@ impl EmergentSource {
         let mut writer = self.writer.lock().await;
 
         let request = IpcUnsubscribeRequest::unsubscribe_all();
-        let payload = serde_json::to_vec(&request)?;
+        let payload = rmp_serde::to_vec(&request)?;
 
         // Send the unsubscribe request
-        if write_frame(&mut *writer, MSG_TYPE_UNSUBSCRIBE, Format::Json, &payload)
+        if write_frame(&mut *writer, MSG_TYPE_UNSUBSCRIBE, Format::MessagePack, &payload)
             .await
             .is_err()
         {
@@ -437,7 +437,7 @@ impl EmergentHandler {
                 match read_frame(&mut reader, MAX_FRAME_SIZE).await {
                     Ok((msg_type, _, payload)) => {
                         if msg_type == MSG_TYPE_PUSH {
-                            match serde_json::from_slice::<IpcPushNotification>(&payload) {
+                            match rmp_serde::from_slice::<IpcPushNotification>(&payload) {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
@@ -651,7 +651,7 @@ impl EmergentSink {
                 match read_frame(&mut reader, MAX_FRAME_SIZE).await {
                     Ok((msg_type, _, payload)) => {
                         if msg_type == MSG_TYPE_PUSH {
-                            match serde_json::from_slice::<IpcPushNotification>(&payload) {
+                            match rmp_serde::from_slice::<IpcPushNotification>(&payload) {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {

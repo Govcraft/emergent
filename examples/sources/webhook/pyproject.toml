@@ -1,0 +1,12 @@
+[project]
+name = "webhook"
+version = "0.1.0"
+description = "HTTP webhook source for Emergent"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9",
+    "emergent-client",
+]
+
+[tool.uv.sources]
+emergent-client = { path = "../../../sdks/py" }

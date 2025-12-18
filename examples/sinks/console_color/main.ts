@@ -16,8 +16,12 @@ const reset = "\x1b[0m";
 const name = Deno.env.get("EMERGENT_NAME") || "console_sink_deno";
 
 // The SDK handles system.shutdown internally - stream closes gracefully on shutdown
-for await (const msg of EmergentSink.messages(name, ["timer.tick"])) {
-  const time = new Date(msg.timestampMs).toISOString().slice(11, 23);
-  const { sequence } = msg.payloadAs<{ sequence: number }>();
-  console.log(`${dim}[${time}]${reset} ${blue}${msg.messageType}${reset} ${cyan}#${sequence}${reset}`);
+try {
+  for await (const msg of EmergentSink.messages(name, ["timer.tick"])) {
+    const time = new Date(msg.timestampMs).toISOString().slice(11, 23);
+    const { sequence } = msg.payloadAs<{ sequence: number }>();
+    console.log(`${dim}[${time}]${reset} ${blue}${msg.messageType}${reset} ${cyan}#${sequence}${reset}`);
+  }
+} catch (err) {
+  console.error("[console_color] Error:", err);
 }
