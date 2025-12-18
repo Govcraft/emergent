@@ -91,6 +91,7 @@ pub struct PrimitiveActorState {
 }
 
 /// Configuration for building a primitive actor.
+#[derive(Clone)]
 pub struct PrimitiveActorConfig {
     /// Primitive information (name, kind, publishes, subscribes).
     pub info: PrimitiveInfo,

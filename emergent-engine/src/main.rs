@@ -4,7 +4,7 @@
 //! - Loads configuration from TOML
 //! - Initializes the event store (JSON logs + SQLite)
 //! - Starts the IPC server for client connections
-//! - Manages Source, Handler, and Sink processes
+//! - Manages Source, Handler, and Sink processes via actors
 //! - Handles graceful shutdown
 
 use acton_reactive::ipc::{IpcConfig, IpcPushNotification};
@@ -37,6 +37,7 @@ struct Args {
 use emergent_engine::config::EmergentConfig;
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
 use emergent_engine::messages::EmergentMessage;
+use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::ProcessManager;
 
 // ============================================================================
@@ -204,40 +205,7 @@ async fn main() -> Result<()> {
     let event_store = Arc::new(init_event_stores(&config)?);
 
     // Initialize process manager
-    let mut process_manager = ProcessManager::new(socket_path.clone());
-
-    // Create channel for system events
-    let (system_event_tx, mut system_event_rx) = tokio::sync::mpsc::channel::<emergent_engine::messages::EmergentMessage>(256);
-    process_manager.set_event_sender(system_event_tx);
-
-    // Register sources, handlers, and sinks from config
-    for source in &config.sources {
-        if source.enabled {
-            info!("Registering source: {}", source.name);
-            process_manager.register_source(source).await;
-        }
-    }
-
-    for handler in &config.handlers {
-        if handler.enabled {
-            info!("Registering handler: {}", handler.name);
-            process_manager.register_handler(handler).await;
-        }
-    }
-
-    for sink in &config.sinks {
-        if sink.enabled {
-            info!("Registering sink: {}", sink.name);
-            process_manager.register_sink(sink).await;
-        }
-    }
-
-    // List registered primitives
-    let primitives = process_manager.list_all().await;
-    info!("Registered {} primitive(s)", primitives.len());
-    for p in &primitives {
-        info!("  {} ({}): {:?}", p.name, p.kind, p.state);
-    }
+    let process_manager = ProcessManager::new(socket_path.clone());
 
     // Create IPC configuration with our socket path
     let ipc_config = create_ipc_config(&socket_path);
@@ -248,6 +216,7 @@ async fn main() -> Result<()> {
     // Register IPC message types
     let registry = runtime.ipc_registry();
     registry.register::<IpcEmergentMessage>("EmergentMessage");
+    registry.register::<IpcSystemEvent>("SystemEvent");
     info!("Registered {} IPC message type(s)", registry.len());
 
     // Start the IPC listener first to get the subscription manager
@@ -267,12 +236,15 @@ async fn main() -> Result<()> {
     let mut broker_actor =
         runtime.new_actor_with_name::<MessageBrokerState>("message_broker".to_string());
 
+    // Handle IpcEmergentMessage (from external clients)
+    let event_store_for_emergent = event_store_clone.clone();
+    let sub_mgr_for_emergent = sub_mgr_clone.clone();
     broker_actor.mutate_on::<IpcEmergentMessage>(move |actor, envelope| {
         let msg = envelope.message();
         actor.model.message_count += 1;
 
         // Log to event store
-        if let Err(e) = event_store_clone.store(&msg.inner) {
+        if let Err(e) = event_store_for_emergent.store(&msg.inner) {
             error!("Failed to store event: {}", e);
         }
 
@@ -282,28 +254,50 @@ async fn main() -> Result<()> {
         );
 
         // Forward to IPC subscribers based on the inner message_type
-        // This routes "timer.tick" messages to clients subscribed to "timer.tick"
         let notification = IpcPushNotification::new(
             msg.inner.message_type.clone(),
             Some(msg.inner.source.clone()),
             serde_json::to_value(&msg.inner).unwrap_or_default(),
         );
-        sub_mgr_clone.forward_to_subscribers(&notification);
+        sub_mgr_for_emergent.forward_to_subscribers(&notification);
 
         Reply::ready()
     });
 
+    // Handle IpcSystemEvent (from PrimitiveActors)
+    let event_store_for_system = event_store_clone.clone();
+    let sub_mgr_for_system = sub_mgr_clone.clone();
+    broker_actor.mutate_on::<IpcSystemEvent>(move |actor, envelope| {
+        let msg = envelope.message();
+        actor.model.message_count += 1;
+
+        // Log to event store
+        if let Err(e) = event_store_for_system.store(&msg.inner) {
+            error!("Failed to store system event: {}", e);
+        }
+
+        info!(
+            "System event #{}: {} from {}",
+            actor.model.message_count, msg.inner.message_type, msg.inner.source
+        );
+
+        // Forward to IPC subscribers based on the inner message_type
+        let notification = IpcPushNotification::new(
+            msg.inner.message_type.clone(),
+            Some(msg.inner.source.clone()),
+            serde_json::to_value(&msg.inner).unwrap_or_default(),
+        );
+        sub_mgr_for_system.forward_to_subscribers(&notification);
+
+        Reply::ready()
+    });
+
+    // Subscribe to IpcSystemEvent broadcasts from PrimitiveActors
+    // This is REQUIRED - .mutate_on() only defines the handler, not the subscription
+    broker_actor.handle().subscribe::<IpcSystemEvent>().await;
+
     let broker_handle = broker_actor.start().await;
     runtime.ipc_expose("message_broker", broker_handle.clone());
-
-    // Spawn task to forward system events to the broker
-    let broker_for_events = broker_handle.clone();
-    tokio::spawn(async move {
-        while let Some(msg) = system_event_rx.recv().await {
-            let ipc_msg = IpcEmergentMessage::from(msg);
-            broker_for_events.send(ipc_msg).await;
-        }
-    });
 
     // Wait a moment for the listener to be ready
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -314,25 +308,29 @@ async fn main() -> Result<()> {
         error!("IPC socket not created: {}", socket_path.display());
     }
 
-    // Start all registered processes
-    if !primitives.is_empty() {
-        info!("Starting registered processes...");
-        if let Err(e) = process_manager.start_all().await {
-            error!("Failed to start some processes: {}", e);
-        }
+    // Collect enabled primitives
+    let enabled_sinks: Vec<_> = config.sinks.iter().filter(|s| s.enabled).collect();
+    let enabled_handlers: Vec<_> = config.handlers.iter().filter(|h| h.enabled).collect();
+    let enabled_sources: Vec<_> = config.sources.iter().filter(|s| s.enabled).collect();
+
+    let total_primitives = enabled_sinks.len() + enabled_handlers.len() + enabled_sources.len();
+    info!("Starting {} primitive(s)...", total_primitives);
+
+    // Start all registered processes in order: Sinks → Handlers → Sources
+    // Each primitive is started by its actor in after_start, which broadcasts system.started.*
+    if total_primitives > 0
+        && let Err(e) = process_manager
+            .start_all(&mut runtime, &enabled_sinks, &enabled_handlers, &enabled_sources)
+            .await
+    {
+        error!("Failed to start some processes: {}", e);
     }
 
-    info!("Engine ready - socket: {} wire_format: {:?}", socket_path.display(), config.engine.wire_format);
-
-    // Spawn health check task
-    let process_manager_clone = process_manager.clone();
-    let health_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-            process_manager_clone.health_check().await;
-        }
-    });
+    info!(
+        "Engine ready - socket: {} wire_format: {:?}",
+        socket_path.display(),
+        config.engine.wire_format
+    );
 
     // Wait for Ctrl+C or SIGTERM
     #[cfg(unix)]
@@ -360,9 +358,6 @@ async fn main() -> Result<()> {
 
     info!("Shutdown signal received...");
 
-    // Cancel health check task
-    health_task.abort();
-
     // Stop all processes (Sources → Handlers → Sinks)
     info!("Stopping processes...");
     process_manager.stop_all().await;
@@ -384,4 +379,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-
