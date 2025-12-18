@@ -33,11 +33,12 @@ struct Args {
     #[arg(short, long, default_value = "./timer_events.log")]
     output: PathBuf,
 
-    /// Message types to subscribe to (comma-separated).
+    /// Override subscription types (comma-separated).
+    /// By default, queries the engine for configured subscriptions.
     ///
     /// Note: The SDK automatically handles `system.shutdown` for graceful shutdown.
-    #[arg(short, long, default_value = "timer.filtered,filter.processed,system.started.*,system.stopped.*,system.error.*")]
-    subscribe: String,
+    #[arg(short, long)]
+    subscribe: Option<String>,
 }
 
 /// Log entry format written to the file.
@@ -66,11 +67,33 @@ impl LogEntry {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Parse subscription topics
-    let topics: Vec<&str> = args.subscribe.split(',').map(|s| s.trim()).collect();
-
     // Get the sink name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "log_sink".to_string());
+
+    // Connect to the Emergent engine
+    // The SDK automatically handles system.shutdown for graceful shutdown
+    let sink = match EmergentSink::connect(&name).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to connect to Emergent engine: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Get subscription topics: from command line or query engine
+    let topics: Vec<String> = if let Some(ref subscribe) = args.subscribe {
+        // Use command line override
+        subscribe.split(',').map(|s| s.trim().to_string()).collect()
+    } else {
+        // Query engine for configured subscriptions
+        match sink.get_my_subscriptions().await {
+            Ok(subs) => subs,
+            Err(e) => {
+                eprintln!("Failed to get subscriptions from engine: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
 
     // Open log file for appending
     let mut log_file = OpenOptions::new()
@@ -87,18 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_file.write_all(startup_line.as_bytes())?;
     log_file.flush()?;
 
-    // Connect to the Emergent engine
-    // The SDK automatically handles system.shutdown for graceful shutdown
-    let sink = match EmergentSink::connect(&name).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to connect to Emergent engine: {e}");
-            std::process::exit(1);
-        }
-    };
-
     // Subscribe to configured message types
-    let mut stream = match sink.subscribe(&topics).await {
+    let topics_refs: Vec<&str> = topics.iter().map(|s| s.as_str()).collect();
+    let mut stream = match sink.subscribe(&topics_refs).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to subscribe: {e}");

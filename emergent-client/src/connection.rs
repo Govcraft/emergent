@@ -16,10 +16,11 @@ use acton_reactive::ipc::protocol::{
 };
 use acton_reactive::ipc::{
     socket_exists, socket_is_alive, IpcConfig, IpcDiscoverRequest, IpcDiscoverResponse,
-    IpcEnvelope, IpcPushNotification, IpcSubscribeRequest, IpcSubscriptionResponse,
+    IpcEnvelope, IpcPushNotification, IpcResponse, IpcSubscribeRequest, IpcSubscriptionResponse,
     IpcUnsubscribeRequest,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -212,6 +213,59 @@ async fn publish_impl(writer: &mut OwnedWriteHalf, message: EmergentMessage) -> 
         .map_err(ClientError::from)?;
 
     Ok(())
+}
+
+/// Response from GetSubscriptions request.
+#[derive(Debug, Deserialize)]
+struct SubscriptionsResponse {
+    subscribes: Vec<String>,
+}
+
+/// Get configured subscriptions from the engine's config service.
+async fn get_my_subscriptions_impl(
+    reader: &mut OwnedReadHalf,
+    writer: &mut OwnedWriteHalf,
+    name: &str,
+) -> Result<Vec<String>> {
+    let envelope = IpcEnvelope::new_request(
+        "config_service",
+        "GetSubscriptions",
+        json!({ "name": name }),
+    );
+
+    let payload = rmp_serde::to_vec(&envelope)?;
+    write_frame(writer, MSG_TYPE_REQUEST, Format::MessagePack, &payload)
+        .await
+        .map_err(ClientError::from)?;
+
+    let (msg_type, _, payload) = timeout(DEFAULT_TIMEOUT, read_frame(reader, MAX_FRAME_SIZE))
+        .await
+        .map_err(|_| ClientError::Timeout)?
+        .map_err(ClientError::from)?;
+
+    if msg_type != MSG_TYPE_RESPONSE {
+        return Err(ClientError::ProtocolError(format!(
+            "Expected RESPONSE, got message type {msg_type}"
+        )));
+    }
+
+    // Parse IPC response using acton-reactive's type
+    let response: IpcResponse = rmp_serde::from_slice(&payload)?;
+
+    if !response.success {
+        return Err(ClientError::SubscriptionFailed(
+            response.error.unwrap_or_else(|| "GetSubscriptions failed".to_string()),
+        ));
+    }
+
+    // Extract subscribes from payload
+    let subs_response: SubscriptionsResponse = response
+        .payload
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or(SubscriptionsResponse { subscribes: vec![] });
+
+    Ok(subs_response.subscribes)
 }
 
 // ============================================================================
@@ -735,6 +789,20 @@ impl EmergentSink {
         let stream = connect_to_engine(&self.name).await?;
         let (mut reader, mut writer) = stream.into_split();
         discover_impl(&mut reader, &mut writer).await
+    }
+
+    /// Get the configured subscription types for this primitive.
+    ///
+    /// Queries the engine's config service to get the message types
+    /// this sink should subscribe to based on the engine configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn get_my_subscriptions(&self) -> Result<Vec<String>> {
+        let stream = connect_to_engine(&self.name).await?;
+        let (mut reader, mut writer) = stream.into_split();
+        get_my_subscriptions_impl(&mut reader, &mut writer, &self.name).await
     }
 
     /// Get the name of this sink.

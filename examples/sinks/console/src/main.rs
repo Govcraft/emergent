@@ -26,16 +26,13 @@ use tokio::signal::unix::{signal, SignalKind};
 #[command(name = "console_sink")]
 #[command(about = "Plain console output for Emergent events")]
 struct Args {
-    /// Message types to subscribe to (comma-separated).
+    /// Override subscription types (comma-separated).
+    /// By default, queries the engine for configured subscriptions.
     /// Supports wildcards like "system.started.*"
     ///
     /// Note: The SDK automatically handles `system.shutdown` for graceful shutdown.
-    #[arg(
-        short,
-        long,
-        default_value = "timer.filtered,filter.processed,system.started.*,system.stopped.*,system.error.*"
-    )]
-    subscribe: String,
+    #[arg(short, long)]
+    subscribe: Option<String>,
 }
 
 /// Payload for system events.
@@ -114,9 +111,6 @@ fn format_message(message_type: &str, message_id: &str, payload: &serde_json::Va
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Parse subscription topics
-    let topics: Vec<&str> = args.subscribe.split(',').map(|s| s.trim()).collect();
-
     // Get the sink name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "console_sink".to_string());
 
@@ -131,8 +125,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Get subscription topics: from command line or query engine
+    let topics: Vec<String> = if let Some(ref subscribe) = args.subscribe {
+        // Use command line override
+        subscribe.split(',').map(|s| s.trim().to_string()).collect()
+    } else {
+        // Query engine for configured subscriptions
+        match sink.get_my_subscriptions().await {
+            Ok(subs) => subs,
+            Err(e) => {
+                eprintln!("Failed to get subscriptions from engine: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+
     // Subscribe to configured message types
-    let mut stream = match sink.subscribe(&topics).await {
+    let topics_refs: Vec<&str> = topics.iter().map(|s| s.as_str()).collect();
+    let mut stream = match sink.subscribe(&topics_refs).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to subscribe: {e}");
