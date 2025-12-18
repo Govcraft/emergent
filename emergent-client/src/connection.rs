@@ -489,15 +489,10 @@ impl EmergentHandler {
 
             loop {
                 match read_frame(&mut reader, MAX_FRAME_SIZE).await {
-                    Ok((msg_type, format, payload)) => {
+                    Ok((msg_type, _format, payload)) => {
                         if msg_type == MSG_TYPE_PUSH {
-                            // Deserialize based on format from frame header
-                            // Server sends push notifications in JSON format
-                            let notification_result: std::result::Result<IpcPushNotification, String> = match format {
-                                Format::Json => serde_json::from_slice(&payload).map_err(|e| e.to_string()),
-                                Format::MessagePack => rmp_serde::from_slice(&payload).map_err(|e| e.to_string()),
-                            };
-                            match notification_result {
+                            // Deserialize push notification (server sends MessagePack by default)
+                            match rmp_serde::from_slice::<IpcPushNotification>(&payload) {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
@@ -709,15 +704,10 @@ impl EmergentSink {
 
             loop {
                 match read_frame(&mut reader, MAX_FRAME_SIZE).await {
-                    Ok((msg_type, format, payload)) => {
+                    Ok((msg_type, _format, payload)) => {
                         if msg_type == MSG_TYPE_PUSH {
-                            // Deserialize based on format from frame header
-                            // Server sends push notifications in JSON format
-                            let notification_result: std::result::Result<IpcPushNotification, String> = match format {
-                                Format::Json => serde_json::from_slice(&payload).map_err(|e| e.to_string()),
-                                Format::MessagePack => rmp_serde::from_slice(&payload).map_err(|e| e.to_string()),
-                            };
-                            match notification_result {
+                            // Deserialize push notification (server sends MessagePack by default)
+                            match rmp_serde::from_slice::<IpcPushNotification>(&payload) {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
