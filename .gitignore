@@ -28,3 +28,4 @@ Thumbs.db
 **/*.md
 # Allow README.md at root
 !README.md
+node_modules/
