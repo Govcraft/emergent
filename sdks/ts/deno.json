@@ -1,0 +1,21 @@
+{
+  "name": "@emergent/client",
+  "version": "0.1.0",
+  "exports": "./mod.ts",
+  "publish": {
+    "include": ["mod.ts", "src/**/*.ts", "README.md", "LICENSE"],
+    "exclude": ["**/*_test.ts", "tests/"]
+  },
+  "tasks": {
+    "test": "deno test --allow-env --allow-read --allow-net",
+    "check": "deno check mod.ts",
+    "lint": "deno lint",
+    "fmt": "deno fmt"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  }
+}

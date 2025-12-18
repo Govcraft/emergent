@@ -4,7 +4,7 @@
  *
  * A Sink that subscribes to timer events and prints them to the console
  * with colored output. Demonstrates the Sink pattern in Emergent using
- * Deno/TypeScript.
+ * the @emergent/client SDK.
  *
  * Usage:
  *   # Make sure EMERGENT_SOCKET is set by the engine, then:
@@ -22,7 +22,7 @@ import {
   EmergentSink,
   type EmergentMessage,
   ConnectionError,
-} from "./emergent_client.ts";
+} from "../../sdks/ts/mod.ts";
 
 // ANSI color codes for pretty output
 const colors = {
@@ -65,13 +65,13 @@ function getColor(messageType: string): string {
  * Format and print a message to the console.
  */
 function printMessage(msg: EmergentMessage): void {
-  const timestamp = formatTimestamp(msg.timestamp_ms);
-  const color = getColor(msg.message_type);
+  const timestamp = formatTimestamp(msg.timestampMs);
+  const color = getColor(msg.messageType);
 
   // Header line
   console.log(
     `${colors.dim}[${timestamp}]${colors.reset} ` +
-      `${color}${colors.bold}${msg.message_type}${colors.reset} ` +
+      `${color}${colors.bold}${msg.messageType}${colors.reset} ` +
       `${colors.dim}from${colors.reset} ${colors.cyan}${msg.source}${colors.reset}`
   );
 
@@ -79,14 +79,14 @@ function printMessage(msg: EmergentMessage): void {
   console.log(`  ${colors.dim}id:${colors.reset} ${msg.id}`);
 
   // Causation chain (if present)
-  if (msg.causation_id) {
+  if (msg.causationId) {
     console.log(
-      `  ${colors.dim}caused by:${colors.reset} ${msg.causation_id}`
+      `  ${colors.dim}caused by:${colors.reset} ${msg.causationId}`
     );
   }
 
-  // Payload
-  const payload = msg.payload as Record<string, unknown>;
+  // Payload (use type-safe accessor)
+  const payload = msg.payloadAs<Record<string, unknown>>();
   if (payload && typeof payload === "object") {
     console.log(`  ${colors.dim}payload:${colors.reset}`);
     for (const [key, value] of Object.entries(payload)) {
