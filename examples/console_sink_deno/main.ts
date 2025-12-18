@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-env --allow-read --allow-write --allow-net=unix
+#!/usr/bin/env -S deno run --allow-env --allow-read --allow-net=unix
 /**
  * Console Sink Example
  *
@@ -33,7 +33,6 @@ const colors = {
   green: "\x1b[32m",
   yellow: "\x1b[33m",
   blue: "\x1b[34m",
-  magenta: "\x1b[35m",
   cyan: "\x1b[36m",
   white: "\x1b[37m",
 };
