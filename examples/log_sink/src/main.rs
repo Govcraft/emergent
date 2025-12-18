@@ -34,6 +34,8 @@ struct Args {
     output: PathBuf,
 
     /// Message types to subscribe to (comma-separated).
+    ///
+    /// Note: The SDK automatically handles `system.shutdown` for graceful shutdown.
     #[arg(short, long, default_value = "timer.filtered,filter.processed,system.started.*,system.stopped.*,system.error.*")]
     subscribe: String,
 }
@@ -85,7 +87,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_file.write_all(startup_line.as_bytes())?;
     log_file.flush()?;
 
-    // Connect to the Emergent engine (silently)
+    // Connect to the Emergent engine
+    // The SDK automatically handles system.shutdown for graceful shutdown
     let sink = match EmergentSink::connect(&name).await {
         Ok(s) => s,
         Err(e) => {
@@ -107,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sigterm = signal(SignalKind::terminate())?;
 
     // Process incoming messages
+    // The SDK automatically handles system.shutdown and closes the stream gracefully
     loop {
         tokio::select! {
             // Handle SIGTERM for graceful shutdown
@@ -135,7 +139,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = log_file.write_all(log_line.as_bytes());
                         let _ = log_file.flush();
                     }
-                    None => break,
+                    None => {
+                        // Stream ended (graceful shutdown)
+                        break;
+                    }
                 }
             }
         }

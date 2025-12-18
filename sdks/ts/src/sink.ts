@@ -37,7 +37,7 @@ import { BaseClient } from "./client.ts";
 export class EmergentSink extends BaseClient
   implements Disposable, AsyncDisposable {
   private constructor(name: string, options?: ConnectOptions) {
-    super(name, options);
+    super(name, "Sink", options);
   }
 
   /**

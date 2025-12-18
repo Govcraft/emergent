@@ -174,6 +174,11 @@ pub fn build_primitive_actor(
                 cmd.env("EMERGENT_SOCKET", socket_path.to_string_lossy().as_ref());
                 cmd.env("EMERGENT_NAME", &name);
 
+                // Isolate child from terminal SIGINT - only engine handles Ctrl+C
+                // Children get their own process group so Ctrl+C only affects the engine
+                #[cfg(unix)]
+                cmd.process_group(0);
+
                 // Spawn the child process
                 match cmd.spawn() {
                     Ok(mut child) => {
@@ -266,15 +271,14 @@ pub fn build_primitive_actor(
             }
         })
         .before_stop(move |actor| {
-            let broker = actor.broker().clone();
             let name = actor.model.info.name.clone();
-            let kind = actor.model.info.kind;
             let pid = actor.model.child_pid;
 
             async move {
                 info!("Stopping {}", name);
 
                 // Use stored PID to send SIGTERM - no Mutex needed!
+                // The monitor task will broadcast system.stopped when child exits
                 if let Some(pid) = pid {
                     #[cfg(unix)]
                     {
@@ -293,10 +297,6 @@ pub fn build_primitive_actor(
                         warn!("SIGTERM not supported on this platform for {}", name);
                     }
                 }
-
-                // Broadcast system.stopped event
-                let event = create_system_event("system.stopped", &name, kind, pid, None);
-                broker.broadcast(event).await;
             }
         })
         .mutate_on::<ChildSpawned>(|actor, envelope| {

@@ -397,6 +397,9 @@ impl EmergentHandler {
 
     /// Subscribe to message types and return a stream of incoming messages.
     ///
+    /// The SDK automatically handles `system.shutdown` messages - when the engine
+    /// signals shutdown for handlers, the stream will close gracefully.
+    ///
     /// # Errors
     ///
     /// Returns an error if the subscription fails.
@@ -405,13 +408,19 @@ impl EmergentHandler {
         let stream = connect_to_engine(&self.name).await?;
         let (mut reader, mut writer) = stream.into_split();
 
-        // Subscribe
-        let subscribed = subscribe_impl(&mut reader, &mut writer, types).await?;
+        // Add system.shutdown to subscriptions (SDK handles it internally)
+        let mut all_types: Vec<&str> = types.to_vec();
+        if !all_types.contains(&"system.shutdown") {
+            all_types.push("system.shutdown");
+        }
 
-        // Update tracked subscriptions
+        // Subscribe
+        let subscribed = subscribe_impl(&mut reader, &mut writer, &all_types).await?;
+
+        // Update tracked subscriptions (excluding internal system.shutdown)
         {
             let mut subs = self.subscribed_types.lock().await;
-            *subs = subscribed;
+            *subs = subscribed.into_iter().filter(|s| s != "system.shutdown").collect();
         }
 
         // Create channel for message stream
@@ -430,6 +439,17 @@ impl EmergentHandler {
                         if msg_type == MSG_TYPE_PUSH {
                             match serde_json::from_slice::<IpcPushNotification>(&payload) {
                                 Ok(notification) => {
+                                    // Check for shutdown signal
+                                    if notification.message_type == "system.shutdown" {
+                                        if let Some(kind) = notification.payload.get("kind").and_then(|v| v.as_str()) {
+                                            if kind == "handler" {
+                                                // Graceful shutdown - close the stream
+                                                break;
+                                            }
+                                        }
+                                        continue; // Don't forward system.shutdown to user
+                                    }
+
                                     // Try to extract EmergentMessage from payload
                                     // The broker sends EmergentMessage directly as the payload
                                     if let Ok(msg) = serde_json::from_value::<EmergentMessage>(
@@ -592,6 +612,9 @@ impl EmergentSink {
 
     /// Subscribe to message types and return a stream of incoming messages.
     ///
+    /// The SDK automatically handles `system.shutdown` messages - when the engine
+    /// signals shutdown for sinks, the stream will close gracefully.
+    ///
     /// # Errors
     ///
     /// Returns an error if the subscription fails.
@@ -599,13 +622,19 @@ impl EmergentSink {
         let stream = connect_to_engine(&self.name).await?;
         let (mut reader, mut writer) = stream.into_split();
 
-        // Subscribe
-        let subscribed = subscribe_impl(&mut reader, &mut writer, types).await?;
+        // Add system.shutdown to subscriptions (SDK handles it internally)
+        let mut all_types: Vec<&str> = types.to_vec();
+        if !all_types.contains(&"system.shutdown") {
+            all_types.push("system.shutdown");
+        }
 
-        // Update tracked subscriptions
+        // Subscribe
+        let subscribed = subscribe_impl(&mut reader, &mut writer, &all_types).await?;
+
+        // Update tracked subscriptions (excluding internal system.shutdown)
         {
             let mut subs = self.subscribed_types.lock().await;
-            *subs = subscribed;
+            *subs = subscribed.into_iter().filter(|s| s != "system.shutdown").collect();
         }
 
         // Create channel for message stream
@@ -624,6 +653,17 @@ impl EmergentSink {
                         if msg_type == MSG_TYPE_PUSH {
                             match serde_json::from_slice::<IpcPushNotification>(&payload) {
                                 Ok(notification) => {
+                                    // Check for shutdown signal
+                                    if notification.message_type == "system.shutdown" {
+                                        if let Some(kind) = notification.payload.get("kind").and_then(|v| v.as_str()) {
+                                            if kind == "sink" {
+                                                // Graceful shutdown - close the stream
+                                                break;
+                                            }
+                                        }
+                                        continue; // Don't forward system.shutdown to user
+                                    }
+
                                     // Try to extract EmergentMessage from payload
                                     // The broker sends EmergentMessage directly as the payload
                                     if let Ok(msg) = serde_json::from_value::<EmergentMessage>(

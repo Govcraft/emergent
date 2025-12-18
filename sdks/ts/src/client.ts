@@ -12,6 +12,7 @@ import {
   type IpcPushNotification,
   type IpcResponse,
   type IpcSubscribeRequest,
+  type PrimitiveKind,
   type WireMessage,
 } from "./types.ts";
 import {
@@ -102,6 +103,7 @@ const DEFAULT_TIMEOUT_MS = 30000;
 export class BaseClient {
   protected conn: Deno.UnixConn | null = null;
   protected readonly name: string;
+  protected readonly primitiveKind: PrimitiveKind;
   protected disposed = false;
 
   #readLoopRunning = false;
@@ -111,8 +113,9 @@ export class BaseClient {
   #subscribedTypes: Set<string> = new Set();
   #timeoutMs: number;
 
-  constructor(name: string, options?: ConnectOptions) {
+  constructor(name: string, kind: PrimitiveKind, options?: ConnectOptions) {
     this.name = name;
+    this.primitiveKind = kind;
     this.#timeoutMs = options?.timeout ?? DEFAULT_TIMEOUT_MS;
   }
 
@@ -170,6 +173,11 @@ export class BaseClient {
 
   /**
    * Subscribe to message types.
+   *
+   * The SDK automatically subscribes to `system.shutdown` and handles graceful
+   * shutdown internally - when the engine signals shutdown for this primitive
+   * kind, the stream will close gracefully.
+   *
    * @internal
    */
   protected async subscribeInternal(
@@ -189,11 +197,16 @@ export class BaseClient {
 
     this.#messageStream = stream;
 
+    // Add system.shutdown to subscriptions (SDK handles it internally)
+    const allTypes = messageTypes.includes("system.shutdown")
+      ? messageTypes
+      : [...messageTypes, "system.shutdown"];
+
     const response = await this.#sendRequest<IpcSubscribeRequest>(
       MSG_TYPE_SUBSCRIBE,
       {
         correlation_id: correlationId,
-        message_types: messageTypes,
+        message_types: allTypes,
       },
       correlationId,
     );
@@ -203,9 +216,11 @@ export class BaseClient {
       throw new ConnectionError(response.error ?? "Subscription failed");
     }
 
-    // Track subscribed types
+    // Track subscribed types (exclude internal system.shutdown)
     for (const type of messageTypes) {
-      this.#subscribedTypes.add(type);
+      if (type !== "system.shutdown") {
+        this.#subscribedTypes.add(type);
+      }
     }
 
     return stream;
@@ -482,6 +497,23 @@ export class BaseClient {
         // CRITICAL FIX: The payload field contains the complete EmergentMessage
         // Do NOT generate new IDs - extract the original message from payload
         const notification = payload as IpcPushNotification;
+
+        // Check for shutdown signal - SDK handles this internally
+        if (notification.message_type === "system.shutdown") {
+          const shutdownPayload = notification.payload as { kind?: string };
+          const shutdownKind = shutdownPayload?.kind?.toLowerCase();
+
+          // Close stream if shutdown is for this primitive's kind
+          if (shutdownKind === this.primitiveKind.toLowerCase()) {
+            // Graceful shutdown - close the stream
+            if (this.#messageStream) {
+              this.#messageStream.close();
+              this.#messageStream = null;
+            }
+          }
+          // Don't forward system.shutdown to user - it's internal
+          break;
+        }
 
         if (this.#messageStream) {
           // The notification.payload IS the serialized EmergentMessage (wire format)

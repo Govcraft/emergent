@@ -39,7 +39,7 @@ import { createMessage } from "./message.ts";
 export class EmergentHandler extends BaseClient
   implements Disposable, AsyncDisposable {
   private constructor(name: string, options?: ConnectOptions) {
-    super(name, options);
+    super(name, "Handler", options);
   }
 
   /**

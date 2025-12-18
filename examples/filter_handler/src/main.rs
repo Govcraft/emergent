@@ -75,7 +75,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get the handler name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "filter_handler".to_string());
 
-    // Connect to the Emergent engine (silently - lifecycle events come from engine)
+    // Connect to the Emergent engine
+    // The SDK automatically handles system.shutdown for graceful shutdown
     let handler = match EmergentHandler::connect(&name).await {
         Ok(h) => h,
         Err(e) => {
@@ -85,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Subscribe to timer.tick events
+    // The SDK automatically handles system.shutdown for graceful shutdown
     let mut stream = match handler.subscribe(&["timer.tick"]).await {
         Ok(s) => s,
         Err(e) => {
@@ -97,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sigterm = signal(SignalKind::terminate())?;
 
     // Process incoming messages
+    // The SDK automatically handles system.shutdown and closes the stream gracefully
     loop {
         tokio::select! {
             // Handle SIGTERM for graceful shutdown
@@ -158,7 +161,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = handler.publish(status).await;
                         }
                     }
-                    None => break,
+                    None => {
+                        // Stream ended (graceful shutdown)
+                        break;
+                    }
                 }
             }
         }

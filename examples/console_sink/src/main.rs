@@ -28,6 +28,8 @@ use tokio::signal::unix::{signal, SignalKind};
 struct Args {
     /// Message types to subscribe to (comma-separated).
     /// Supports wildcards like "system.started.*"
+    ///
+    /// Note: The SDK automatically handles `system.shutdown` for graceful shutdown.
     #[arg(
         short,
         long,
@@ -65,15 +67,15 @@ struct TimerFilteredPayload {
 }
 
 /// Format a message for console output.
-fn format_message(message_type: &str, payload: &serde_json::Value) -> String {
+fn format_message(message_type: &str, message_id: &str, payload: &serde_json::Value) -> String {
     // Try to format based on message type
     if message_type.starts_with("system.started.") {
         if let Ok(p) = serde_json::from_value::<SystemEventPayload>(payload.clone()) {
-            return format!("[STARTED] {} ({})", p.name, p.kind);
+            return format!("[STARTED] {} ({}) [{}]", p.name, p.kind, &message_id[..8]);
         }
     } else if message_type.starts_with("system.stopped.") {
         if let Ok(p) = serde_json::from_value::<SystemEventPayload>(payload.clone()) {
-            return format!("[STOPPED] {} ({})", p.name, p.kind);
+            return format!("[STOPPED] {} ({}) [{}]", p.name, p.kind, &message_id[..8]);
         }
     } else if message_type.starts_with("system.error.") {
         if let Ok(p) = serde_json::from_value::<SystemEventPayload>(payload.clone()) {
@@ -118,7 +120,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get the sink name from environment (set by engine) or use default
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "console_sink".to_string());
 
-    // Connect to the Emergent engine (silently - no startup messages)
+    // Connect to the Emergent engine
+    // The SDK automatically handles system.shutdown for graceful shutdown
     let sink = match EmergentSink::connect(&name).await {
         Ok(s) => s,
         Err(e) => {
@@ -141,14 +144,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sigterm = signal(SignalKind::terminate())?;
 
     // Process incoming messages
+    // The SDK automatically handles system.shutdown and closes the stream gracefully
     loop {
         tokio::select! {
             // Handle SIGTERM for graceful shutdown
             _ = sigterm.recv() => {
                 // Silent shutdown
-                if let Err(e) = sink.disconnect().await {
-                    eprintln!("Error during disconnect: {e}");
-                }
+                let _ = sink.disconnect().await;
                 break;
             }
 
@@ -157,11 +159,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match msg {
                     Some(msg) => {
                         let timestamp = Utc::now().format("%H:%M:%S%.3f");
-                        let formatted = format_message(msg.message_type(), msg.payload());
+                        let formatted = format_message(msg.message_type(), msg.id(), msg.payload());
                         println!("[{}] {}", timestamp, formatted);
                     }
                     None => {
-                        // Stream ended, exit silently
+                        // Stream ended (graceful shutdown), exit silently
                         break;
                     }
                 }

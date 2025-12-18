@@ -358,9 +358,10 @@ async fn main() -> Result<()> {
 
     info!("Shutdown signal received...");
 
-    // Stop all processes (Sources → Handlers → Sinks)
-    info!("Stopping processes...");
-    process_manager.stop_all().await;
+    // Graceful shutdown with coordinated drain protocol
+    // Sources → Handlers → Sinks (each tier drains before the next)
+    let broker = runtime.broker();
+    process_manager.graceful_shutdown(&broker).await;
 
     // Flush event stores
     info!("Flushing event stores...");

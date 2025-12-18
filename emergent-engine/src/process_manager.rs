@@ -11,12 +11,17 @@
 //! - Graceful termination in `before_stop`
 
 use crate::config::{HandlerConfig, SinkConfig, SourceConfig};
-use crate::primitive_actor::{build_primitive_actor, PrimitiveActorConfig, StopPrimitive};
+use crate::messages::EmergentMessage;
+use crate::primitive_actor::{
+    build_primitive_actor, IpcSystemEvent, PrimitiveActorConfig, StopPrimitive,
+};
 use crate::primitives::{PrimitiveInfo, PrimitiveKind};
 use acton_reactive::prelude::*;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -317,6 +322,99 @@ impl ProcessManager {
             .map(|e| e.info.clone())
             .collect()
     }
+
+    /// Graceful shutdown with coordinated drain protocol.
+    ///
+    /// This implements a cascading shutdown where each tier drains completely
+    /// before the next tier is signaled:
+    ///
+    /// 1. Sources are stopped via SIGTERM (they can't subscribe to broadcasts)
+    /// 2. Handlers receive `system.shutdown` and finish processing
+    /// 3. Sinks receive `system.shutdown` and finish output
+    ///
+    /// This ensures all `system.stopped.*` messages are visible to sinks.
+    pub async fn graceful_shutdown(&self, broker: &ActorHandle) {
+        // Phase 1: Stop sources
+        // Sources are publish-only and can't subscribe, so we signal them directly
+        info!("Stopping sources...");
+        self.broadcast_shutdown(broker, "source").await;
+        self.signal_and_wait(PrimitiveKind::Source).await;
+
+        // Phase 2: Drain handlers
+        // Handlers can subscribe and will receive the shutdown message
+        info!("Draining handlers...");
+        self.broadcast_shutdown(broker, "handler").await;
+        self.wait_for_kind_exit(PrimitiveKind::Handler).await;
+
+        // Phase 3: Drain sinks
+        // Sinks can subscribe and will receive the shutdown message
+        info!("Draining sinks...");
+        self.broadcast_shutdown(broker, "sink").await;
+        self.wait_for_kind_exit(PrimitiveKind::Sink).await;
+
+        info!("All primitives stopped.");
+    }
+
+    /// Stop primitives by stopping their actors.
+    ///
+    /// Used for sources that can't subscribe to broadcast messages.
+    /// Stopping the actor triggers before_stop which sends SIGTERM and broadcasts system.stopped.
+    async fn signal_and_wait(&self, kind: PrimitiveKind) {
+        // Get handles for primitives of this kind
+        let entries: Vec<(String, ActorHandle)> = {
+            let actors = self.actors.read().await;
+            actors
+                .iter()
+                .filter(|(_, e)| e.info.kind == kind)
+                .map(|(name, e)| (name.clone(), e.handle.clone()))
+                .collect()
+        };
+
+        // Stop each actor (triggers before_stop which sends SIGTERM)
+        for (name, handle) in entries {
+            info!("Stopping {}", name);
+            let _ = handle.stop().await;
+            // Brief delay to allow child to receive SIGTERM and exit
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Broadcast a shutdown message for a specific primitive kind.
+    async fn broadcast_shutdown(&self, broker: &ActorHandle, kind: &str) {
+        let message = EmergentMessage::new("system.shutdown")
+            .with_source("emergent-engine")
+            .with_payload(json!({ "kind": kind }));
+
+        let event = IpcSystemEvent { inner: message };
+        broker.broadcast(event).await;
+    }
+
+    /// Wait for primitives to handle shutdown message, then stop their actors.
+    ///
+    /// Gives primitives time to process remaining messages before stopping.
+    async fn wait_for_kind_exit(&self, kind: PrimitiveKind) {
+        // Brief wait to allow primitives to receive and process shutdown message
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Get handles for primitives of this kind
+        let entries: Vec<(String, ActorHandle)> = {
+            let actors = self.actors.read().await;
+            actors
+                .iter()
+                .filter(|(_, e)| e.info.kind == kind)
+                .map(|(name, e)| (name.clone(), e.handle.clone()))
+                .collect()
+        };
+
+        // Stop each actor (triggers before_stop which sends SIGTERM and broadcasts system.stopped)
+        for (name, handle) in entries {
+            info!("Stopping {}", name);
+            let _ = handle.stop().await;
+            // Brief delay to allow child to exit and system.stopped to be broadcast
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
 }
 
 #[cfg(test)]
