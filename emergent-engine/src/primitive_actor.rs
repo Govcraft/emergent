@@ -193,13 +193,8 @@ pub fn build_primitive_actor(
                             self_handle.send(ChildSpawned { pid, info }).await;
 
                             // Broadcast system.started event
-                            let event = create_system_event(
-                                "system.started",
-                                &name,
-                                kind,
-                                Some(pid),
-                                None,
-                            );
+                            let event =
+                                create_system_event("system.started", &name, kind, Some(pid), None);
                             broker.broadcast(event).await;
 
                             // Monitor child in BACKGROUND TASK
@@ -282,7 +277,7 @@ pub fn build_primitive_actor(
                 if let Some(pid) = pid {
                     #[cfg(unix)]
                     {
-                        use nix::sys::signal::{kill, Signal};
+                        use nix::sys::signal::{Signal, kill};
                         use nix::unistd::Pid;
 
                         if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
@@ -320,7 +315,7 @@ pub fn build_primitive_actor(
             }
             Reply::ready()
         })
-        .mutate_on::<HealthCheck>(|actor, _envelope| {
+        .act_on::<HealthCheck>(|actor, _envelope| {
             // Health check is now passive - we're notified via ChildExited
             // This handler can be used for explicit status queries
             info!(
@@ -338,7 +333,7 @@ pub fn build_primitive_actor(
                 // Send SIGTERM on Unix
                 #[cfg(unix)]
                 {
-                    use nix::sys::signal::{kill, Signal};
+                    use nix::sys::signal::{Signal, kill};
                     use nix::unistd::Pid;
 
                     let nix_pid = Pid::from_raw(pid as i32);
