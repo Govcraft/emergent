@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "emergent-engine",
-    "emergent-client",
+    "sdks/rust",
     "examples/sources/timer",
     "examples/handlers/filter",
     "examples/sinks/log",

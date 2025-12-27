@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 acton-reactive.workspace = true
+futures = "0.3.31"
 mti.workspace = true
 rmp-serde.workspace = true
 serde = { workspace = true, features = ["derive"] }

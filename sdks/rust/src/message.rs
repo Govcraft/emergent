@@ -4,6 +4,25 @@ use mti::prelude::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Create a new message with the given type.
+///
+/// This is a convenience factory function that matches the Python and TypeScript SDKs.
+///
+/// # Example
+///
+/// ```rust
+/// use emergent_client::create_message;
+/// use serde_json::json;
+///
+/// let msg = create_message("timer.tick")
+///     .with_payload(json!({"count": 1}))
+///     .with_metadata(json!({"trace_id": "abc123"}));
+/// ```
+#[must_use]
+pub fn create_message(message_type: impl Into<String>) -> EmergentMessage {
+    EmergentMessage::new(&message_type.into())
+}
+
 /// Standard message envelope for all Emergent communications.
 ///
 /// All messages in Emergent use this standard envelope format. Developers specify

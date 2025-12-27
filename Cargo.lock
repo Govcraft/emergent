@@ -434,6 +434,7 @@ name = "emergent-client"
 version = "0.1.0"
 dependencies = [
  "acton-reactive",
+ "futures",
  "mti",
  "rmp-serde",
  "serde",

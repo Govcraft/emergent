@@ -8,6 +8,7 @@
 use crate::error::ClientError;
 use crate::message::EmergentMessage;
 use crate::stream::MessageStream;
+use crate::subscribe::IntoSubscription;
 use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
 use acton_reactive::ipc::protocol::{
@@ -454,16 +455,32 @@ impl EmergentHandler {
     /// The SDK automatically handles `system.shutdown` messages - when the engine
     /// signals shutdown for handlers, the stream will close gracefully.
     ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Single topic
+    /// let stream = handler.subscribe("timer.tick").await?;
+    ///
+    /// // Multiple topics with array
+    /// let stream = handler.subscribe(["timer.tick", "timer.filtered"]).await?;
+    ///
+    /// // From a Vec
+    /// let topics = vec!["timer.tick".to_string()];
+    /// let stream = handler.subscribe(topics).await?;
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns an error if the subscription fails.
-    pub async fn subscribe(&self, types: &[&str]) -> Result<MessageStream> {
+    pub async fn subscribe(&self, types: impl IntoSubscription) -> Result<MessageStream> {
+        let topics = types.into_topics();
+
         // Create a new connection for receiving (subscriptions need dedicated reader)
         let stream = connect_to_engine(&self.name).await?;
         let (mut reader, mut writer) = stream.into_split();
 
         // Add system.shutdown to subscriptions (SDK handles it internally)
-        let mut all_types: Vec<&str> = types.to_vec();
+        let mut all_types: Vec<&str> = topics.iter().map(String::as_str).collect();
         if !all_types.contains(&"system.shutdown") {
             all_types.push("system.shutdown");
         }
@@ -496,11 +513,11 @@ impl EmergentHandler {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
-                                        if let Some(kind) = notification.payload.get("kind").and_then(|v| v.as_str()) {
-                                            if kind == "handler" {
-                                                // Graceful shutdown - close the stream
-                                                break;
-                                            }
+                                        if let Some(kind) = notification.payload.get("kind").and_then(|v| v.as_str())
+                                            && kind == "handler"
+                                        {
+                                            // Graceful shutdown - close the stream
+                                            break;
                                         }
                                         continue; // Don't forward system.shutdown to user
                                     }
@@ -665,20 +682,71 @@ impl EmergentSink {
         })
     }
 
+    /// Convenience method that connects, gets configured subscriptions, and returns a stream.
+    ///
+    /// This is a one-liner for the common pattern of:
+    /// 1. Connect to the engine
+    /// 2. Query configured subscriptions from the engine's config
+    /// 3. Subscribe to those topics
+    /// 4. Return the message stream
+    ///
+    /// The `types` parameter is for API consistency but is ignored - the engine's
+    /// configuration is the source of truth for what this sink should subscribe to.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use futures::StreamExt;
+    ///
+    /// let mut stream = EmergentSink::messages("console", ["timer.tick"]).await?;
+    /// while let Some(msg) = stream.next().await {
+    ///     println!("{}", msg.payload);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connection or subscription fails.
+    pub async fn messages(
+        name: impl Into<String>,
+        _types: impl IntoSubscription,
+    ) -> Result<MessageStream> {
+        let name = name.into();
+        let sink = Self::connect(&name).await?;
+        let topics = sink.get_my_subscriptions().await?;
+        sink.subscribe(topics).await
+    }
+
     /// Subscribe to message types and return a stream of incoming messages.
     ///
     /// The SDK automatically handles `system.shutdown` messages - when the engine
     /// signals shutdown for sinks, the stream will close gracefully.
     ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Single topic
+    /// let stream = sink.subscribe("timer.tick").await?;
+    ///
+    /// // Multiple topics with array
+    /// let stream = sink.subscribe(["timer.tick", "timer.filtered"]).await?;
+    ///
+    /// // From a Vec
+    /// let topics = vec!["timer.tick".to_string()];
+    /// let stream = sink.subscribe(topics).await?;
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns an error if the subscription fails.
-    pub async fn subscribe(&self, types: &[&str]) -> Result<MessageStream> {
+    pub async fn subscribe(&self, types: impl IntoSubscription) -> Result<MessageStream> {
+        let topics = types.into_topics();
+
         let stream = connect_to_engine(&self.name).await?;
         let (mut reader, mut writer) = stream.into_split();
 
         // Add system.shutdown to subscriptions (SDK handles it internally)
-        let mut all_types: Vec<&str> = types.to_vec();
+        let mut all_types: Vec<&str> = topics.iter().map(String::as_str).collect();
         if !all_types.contains(&"system.shutdown") {
             all_types.push("system.shutdown");
         }
@@ -711,11 +779,11 @@ impl EmergentSink {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
-                                        if let Some(kind) = notification.payload.get("kind").and_then(|v| v.as_str()) {
-                                            if kind == "sink" {
-                                                // Graceful shutdown - close the stream
-                                                break;
-                                            }
+                                        if let Some(kind) = notification.payload.get("kind").and_then(|v| v.as_str())
+                                            && kind == "sink"
+                                        {
+                                            // Graceful shutdown - close the stream
+                                            break;
                                         }
                                         continue; // Don't forward system.shutdown to user
                                     }

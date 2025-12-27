@@ -26,7 +26,7 @@ anyhow.workspace = true
 acton-reactive.workspace = true
 
 # Local dependencies
-emergent-client = { path = "../emergent-client" }
+emergent-client = { path = "../sdks/rust" }
 
 # Additional dependencies
 directories = "5"

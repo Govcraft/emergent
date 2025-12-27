@@ -71,12 +71,15 @@
 mod connection;
 mod error;
 mod message;
+pub mod prelude;
 mod stream;
+mod subscribe;
 
 pub use connection::{EmergentHandler, EmergentSink, EmergentSource};
 pub use error::ClientError;
-pub use message::EmergentMessage;
+pub use message::{create_message, EmergentMessage};
 pub use stream::MessageStream;
+pub use subscribe::IntoSubscription;
 
 /// Result type for client operations.
 pub type Result<T> = std::result::Result<T, ClientError>;

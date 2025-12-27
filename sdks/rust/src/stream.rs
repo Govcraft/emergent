@@ -1,21 +1,33 @@
 //! Message stream for receiving pushed messages.
 
 use crate::message::EmergentMessage;
+use futures::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
 /// An async stream of messages received from subscriptions.
 ///
 /// This is returned by `subscribe()` on `EmergentHandler` and `EmergentSink`.
-/// Use `next()` to receive the next message.
+/// Implements [`futures::Stream`] for use with [`futures::StreamExt`] combinators.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// let mut stream = handler.subscribe(&["timer.tick"]).await?;
+/// use futures::StreamExt;
 ///
+/// let mut stream = handler.subscribe(["timer.tick"]).await?;
+///
+/// // Basic iteration
 /// while let Some(msg) = stream.next().await {
 ///     println!("Received: {}", msg.message_type);
 /// }
+///
+/// // Or use StreamExt combinators
+/// stream
+///     .filter(|msg| futures::future::ready(msg.message_type.starts_with("timer.")))
+///     .for_each(|msg| async move { println!("{:?}", msg) })
+///     .await;
 /// ```
 pub struct MessageStream {
     /// The receiver channel for incoming messages.
@@ -45,6 +57,14 @@ impl MessageStream {
     /// Close the stream.
     pub fn close(&mut self) {
         self.receiver.close();
+    }
+}
+
+impl Stream for MessageStream {
+    type Item = EmergentMessage;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.receiver).poll_recv(cx)
     }
 }
 
