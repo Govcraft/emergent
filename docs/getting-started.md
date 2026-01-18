@@ -398,7 +398,87 @@ hello world
 
 ---
 
-## 8. Message Structure and Tracing
+## 8. Quick Start with Scaffold
+
+The examples above teach the concepts, but for real projects you don't need to write boilerplate manually. The `emergent scaffold` command generates primitives from templates.
+
+### Interactive Wizard
+
+Run without arguments to start the interactive wizard:
+
+```bash
+emergent scaffold
+```
+
+The wizard prompts for:
+1. **Language** - Rust (TypeScript and Python coming soon)
+2. **Primitive type** - Source, Handler, or Sink
+3. **Name** - Your primitive's name (snake_case)
+4. **Message types** - What to subscribe to and/or publish
+5. **Output directory** - Where to create the project
+
+### Flag Mode for Scripting
+
+For CI/CD or automation, pass all options as flags:
+
+```bash
+# Generate a handler
+emergent scaffold \
+  --type handler \
+  --name my_filter \
+  --subscribes "timer.tick" \
+  --publishes "timer.filtered" \
+  --description "Filters timer events"
+
+# Preview without writing files
+emergent scaffold --type source --name my_timer --dry-run
+```
+
+### Generated Code
+
+Scaffold creates a complete project:
+
+```
+my_filter/
+├── Cargo.toml
+└── src/
+    └── main.rs
+```
+
+The generated code uses the same helper functions you learned:
+
+```rust
+// Generated handler uses run_handler
+run_handler(
+    Some("my_filter"),
+    &["timer.tick"],
+    |msg, handler| async move {
+        let output = EmergentMessage::new("timer.filtered")
+            .with_causation_from_message(msg.id())
+            .with_payload(json!({"processed": true}));
+        handler.publish(output).await.map_err(|e| e.to_string())
+    }
+).await?;
+```
+
+### Available Options
+
+| Flag | Description |
+|------|-------------|
+| `-t, --type` | Primitive type: `source`, `handler`, or `sink` |
+| `-n, --name` | Name in snake_case |
+| `-S, --subscribes` | Message types to subscribe (comma-separated) |
+| `-p, --publishes` | Message types to publish (comma-separated) |
+| `-o, --output` | Output directory (default: `./<name>`) |
+| `-d, --description` | Description for documentation |
+| `--dry-run` | Preview files without writing |
+| `--json` | JSON output for scripting |
+
+**Use the hello world examples to learn the concepts. Use scaffold to bootstrap real projects.**
+
+---
+
+## 9. Message Structure and Tracing
 
 Now that you've written all three primitives, let's examine the message structure that makes their communication possible.
 
@@ -471,7 +551,7 @@ let response = EmergentMessage::new("http.response")
 
 ---
 
-## 9. Polyglot Workflows
+## 10. Polyglot Workflows
 
 You can mix languages in a single workflow. The SDKs for Rust, TypeScript, and Python expose identical helper APIs.
 
@@ -592,7 +672,7 @@ Now your pipeline mixes Rust (timer), Python (enricher, webhook), and TypeScript
 
 ---
 
-## 10. Graceful Shutdown Explained
+## 11. Graceful Shutdown Explained
 
 When you stop the engine (Ctrl+C or SIGTERM), it executes a three-phase shutdown:
 
@@ -669,7 +749,7 @@ await run_source("my_timer", timer_logic)
 
 ---
 
-## 11. Next Steps
+## 12. Next Steps
 
 You now understand Emergent's core concepts: three primitives, message structure, configuration, and shutdown. Here are patterns to explore next.
 
@@ -789,7 +869,7 @@ Replay events by reading JSON logs and re-publishing them through a Source.
 
 ---
 
-## 12. Conclusion
+## 13. Conclusion
 
 You learned Emergent's three primitives (Source, Handler, Sink), ran an example pipeline, wrote your first components, and explored message tracing and shutdown behavior. The SDK helpers reduce each primitive to a single function call with your business logic—connection, signal handling, and graceful shutdown happen automatically.
 
