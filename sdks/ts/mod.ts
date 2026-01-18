@@ -117,3 +117,19 @@ export {
 // ============================================================================
 
 export { getSocketPath, socketExists } from "./src/client.ts";
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+export {
+  HelperError,
+  runHandler,
+  runSink,
+  runSource,
+} from "./src/helpers.ts";
+export type {
+  HandlerProcessFn,
+  SinkConsumeFn,
+  SourceRunFn,
+} from "./src/helpers.ts";

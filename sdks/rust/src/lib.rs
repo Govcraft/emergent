@@ -70,6 +70,7 @@
 
 mod connection;
 mod error;
+pub mod helpers;
 mod message;
 pub mod prelude;
 mod stream;

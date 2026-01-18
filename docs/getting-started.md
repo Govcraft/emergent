@@ -222,56 +222,48 @@ Create a new Rust project for a simple timer Source:
 ```bash
 cargo new --bin my_timer
 cd my_timer
-cargo add emergent-client tokio serde_json clap --features tokio/full,clap/derive
+cargo add emergent-client tokio serde_json --features tokio/full
 ```
 
 Edit `src/main.rs`:
 
 ```rust
-use emergent_client::{EmergentSource, EmergentMessage};
+use emergent_client::helpers::run_source;
+use emergent_client::EmergentMessage;
 use serde_json::json;
 use std::time::Duration;
-use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // The engine sets EMERGENT_NAME when spawning this process
-    let name = std::env::var("EMERGENT_NAME")
-        .unwrap_or_else(|_| "my_timer".to_string());
+    run_source(Some("my_timer"), |source, mut shutdown| async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3));
+        let mut count = 0u64;
 
-    let source = EmergentSource::connect(&name).await?;
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut interval = tokio::time::interval(Duration::from_secs(3));
-    let mut count = 0;
-
-    loop {
-        tokio::select! {
-            // Handle shutdown signal from engine
-            _ = sigterm.recv() => {
-                source.disconnect().await?;
-                break;
-            }
-            // Publish on each interval tick
-            _ = interval.tick() => {
-                count += 1;
-                let message = EmergentMessage::new("my_timer.tick")
-                    .with_payload(json!({"count": count}));
-                source.publish(message).await?;
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = interval.tick() => {
+                    count += 1;
+                    let msg = EmergentMessage::new("my_timer.tick")
+                        .with_payload(json!({"count": count}));
+                    source.publish(msg).await.map_err(|e| e.to_string())?;
+                }
             }
         }
-    }
+        Ok(())
+    }).await?;
     Ok(())
 }
 ```
 
-This Source does four things:
+The `run_source` helper handles all the boilerplate:
 
-1. **Gets its name** from the `EMERGENT_NAME` environment variable (the engine sets this)
-2. **Connects** to the engine using `EmergentSource::connect()`
-3. **Runs an async loop** that publishes messages every 3 seconds
-4. **Handles SIGTERM** for graceful shutdown
+1. **Name resolution** - Uses the provided name, falls back to `EMERGENT_NAME` env var
+2. **Connection** - Connects to the engine automatically
+3. **Signal handling** - Sets up SIGTERM handler and provides a `shutdown` receiver
+4. **Graceful disconnect** - Cleans up when your function completes
 
-The `tokio::select!` macro races two async operations: receiving SIGTERM or waiting for the interval. When SIGTERM arrives (sent by the engine during shutdown), the Source disconnects and exits.
+Your code focuses entirely on the business logic: timing and publishing. The helper manages everything else.
 
 Build the Source:
 
@@ -289,7 +281,7 @@ enabled = true
 publishes = ["my_timer.tick"]
 ```
 
-**You wrote about 25 lines of Rust. The engine handles process management, socket creation, and shutdown coordination.**
+**The helper reduces boilerplate to near-zero. You write your publishing logic, the SDK handles connection, signals, and cleanup.**
 
 ---
 
@@ -306,10 +298,10 @@ cargo add emergent-client tokio serde serde_json --features tokio/full
 Edit `src/main.rs`:
 
 ```rust
-use emergent_client::{EmergentHandler, EmergentMessage};
+use emergent_client::helpers::run_handler;
+use emergent_client::EmergentMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::signal::unix::{signal, SignalKind};
 
 #[derive(Deserialize)]
 struct TickPayload {
@@ -324,51 +316,37 @@ struct DoubledPayload {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let name = std::env::var("EMERGENT_NAME")
-        .unwrap_or_else(|_| "my_doubler".to_string());
+    run_handler(
+        Some("my_doubler"),
+        &["my_timer.tick"],
+        |msg, handler| async move {
+            let tick: TickPayload = msg.payload_as().map_err(|e| e.to_string())?;
+            let doubled = DoubledPayload {
+                original: tick.count,
+                doubled: tick.count * 2,
+            };
 
-    let handler = EmergentHandler::connect(&name).await?;
-    let mut stream = handler.subscribe(&["my_timer.tick"]).await?;
-    let mut sigterm = signal(SignalKind::terminate())?;
+            // Link output to input for tracing
+            let output = EmergentMessage::new("my_timer.doubled")
+                .with_causation_from_message(msg.id())
+                .with_payload(json!(doubled));
 
-    loop {
-        tokio::select! {
-            _ = sigterm.recv() => {
-                handler.disconnect().await?;
-                break;
-            }
-            msg = stream.next() => {
-                match msg {
-                    Some(msg) => {
-                        let tick: TickPayload = msg.payload_as()?;
-                        let doubled = DoubledPayload {
-                            original: tick.count,
-                            doubled: tick.count * 2,
-                        };
-
-                        // Link output to input for tracing
-                        let output = EmergentMessage::new("my_timer.doubled")
-                            .with_causation_id(msg.id())
-                            .with_payload(json!(doubled));
-
-                        handler.publish(output).await?;
-                    }
-                    None => break, // Stream closed (graceful shutdown)
-                }
-            }
+            handler.publish(output).await.map_err(|e| e.to_string())
         }
-    }
+    ).await?;
     Ok(())
 }
 ```
 
-This Handler introduces three new concepts:
+The `run_handler` helper manages the message loop:
 
-1. **Subscription**: `handler.subscribe(&["my_timer.tick"])` creates a stream that yields messages
-2. **Typed payloads**: `msg.payload_as::<TickPayload>()` deserializes the JSON payload into a Rust struct
-3. **Causation tracking**: `.with_causation_id(msg.id())` links the output message to the input message
+1. **Connects** to the engine and subscribes to the specified message types
+2. **Iterates** over incoming messages, calling your function for each
+3. **Handles shutdown** automatically when SIGTERM arrives or the stream closes
 
-The causation ID creates an event chain: `my_timer.tick` (ID: `msg_01a2`) causes `my_timer.doubled` (causation ID: `msg_01a2`). This enables tracing events through your system—we'll explore this fully in Section 8.
+Your code focuses on the transformation logic: deserialize input, compute result, publish output with causation tracking.
+
+**Causation tracking** is the key pattern for Handlers. The `.with_causation_from_message(msg.id())` call links the output to the input, creating an event chain: `my_timer.tick` (ID: `msg_01a2`) causes `my_timer.doubled` (causation ID: `msg_01a2`). This enables tracing events through your system—we'll explore this fully in Section 8.
 
 Build and configure:
 
@@ -402,9 +380,8 @@ cargo add emergent-client tokio serde --features tokio/full
 Edit `src/main.rs`:
 
 ```rust
-use emergent_client::EmergentSink;
+use emergent_client::helpers::run_sink;
 use serde::Deserialize;
-use tokio::signal::unix::{signal, SignalKind};
 
 #[derive(Deserialize)]
 struct DoubledPayload {
@@ -414,35 +391,22 @@ struct DoubledPayload {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let name = std::env::var("EMERGENT_NAME")
-        .unwrap_or_else(|_| "my_printer".to_string());
-
-    let sink = EmergentSink::connect(&name).await?;
-    let mut stream = sink.subscribe(&["my_timer.doubled"]).await?;
-    let mut sigterm = signal(SignalKind::terminate())?;
-
-    loop {
-        tokio::select! {
-            _ = sigterm.recv() => {
-                sink.disconnect().await?;
-                break;
-            }
-            msg = stream.next() => {
-                match msg {
-                    Some(msg) => {
-                        let data: DoubledPayload = msg.payload_as()?;
-                        println!("{} doubled is {}", data.original, data.doubled);
-                    }
-                    None => break,
-                }
-            }
+    run_sink(
+        Some("my_printer"),
+        &["my_timer.doubled"],
+        |msg| async move {
+            let data: DoubledPayload = msg.payload_as().map_err(|e| e.to_string())?;
+            println!("{} doubled is {}", data.original, data.doubled);
+            Ok(())
         }
-    }
+    ).await?;
     Ok(())
 }
 ```
 
-This Sink looks almost identical to the Handler, except it uses `EmergentSink` and never calls `publish()`. Sinks are write-only to the external world.
+The `run_sink` helper is the simplest of the three—your function just receives messages and performs side effects. No publishing, no complex state management.
+
+Unlike Handlers, Sinks never call `publish()`. They are write-only to the external world: print to console, write to files, send HTTP requests, update databases.
 
 Build and configure:
 
@@ -553,7 +517,7 @@ let response = EmergentMessage::new("http.response")
 
 ## 9. Polyglot Workflows
 
-You can mix languages in a single workflow. The SDKs for Rust, TypeScript, and Python expose identical APIs.
+You can mix languages in a single workflow. The SDKs for Rust, TypeScript, and Python expose identical helper APIs.
 
 ### TypeScript Sink Example
 
@@ -562,14 +526,12 @@ Create a TypeScript Sink using Deno:
 ```typescript
 #!/usr/bin/env -S deno run --allow-env --allow-net=unix
 
-import { EmergentSink } from "./sdks/ts/mod.ts";
+import { runSink } from "./sdks/ts/mod.ts";
 
-const name = Deno.env.get("EMERGENT_NAME") || "ts_printer";
-
-for await (const msg of EmergentSink.messages(name, ["my_timer.doubled"])) {
+await runSink("ts_printer", ["my_timer.doubled"], async (msg) => {
   const { original, doubled } = msg.payloadAs<{ original: number; doubled: number }>();
   console.log(`[TypeScript] ${original} → ${doubled}`);
-}
+});
 ```
 
 Make the file executable and add it to your configuration:
@@ -587,29 +549,59 @@ enabled = true
 subscribes = ["my_timer.doubled"]
 ```
 
-### Python Source Example
+### Python Handler Example
 
-Create a Python Source that emits HTTP webhook events:
+Create a Python Handler that enriches events:
+
+```python
+#!/usr/bin/env python3
+from emergent import run_handler, create_message
+
+async def process_tick(msg, handler):
+    data = msg.payload_as(dict)
+    enriched = {
+        **data,
+        "processed_by": "python",
+        "squared": data["count"] ** 2
+    }
+    await handler.publish(
+        create_message("timer.enriched")
+        .caused_by(msg.id)
+        .payload(enriched)
+    )
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(run_handler("py_enricher", ["my_timer.tick"], process_tick))
+```
+
+Add to configuration:
+
+```toml
+[[handlers]]
+name = "py_enricher"
+path = "/usr/bin/python3"
+args = ["/path/to/enricher.py"]
+enabled = true
+subscribes = ["my_timer.tick"]
+publishes = ["timer.enriched"]
+```
+
+### Python Source Example (HTTP Webhook)
+
+For Sources that need custom event loops (like HTTP servers), the helper provides a shutdown event:
 
 ```python
 #!/usr/bin/env python3
 import asyncio
-import os
 from aiohttp import web
-from emergent import EmergentSource
+from emergent import run_source, create_message
 
-source = None
-
-async def handle_webhook(request):
-    body = await request.json()
-    if source:
-        await source.publish("webhook.received", body)
-    return web.json_response({"status": "ok"})
-
-async def main():
-    global source
-    name = os.environ.get("EMERGENT_NAME", "webhook")
-    source = await EmergentSource.connect(name)
+async def webhook_logic(source, shutdown_event):
+    async def handle_webhook(request):
+        body = await request.json()
+        await source.publish(create_message("webhook.received").payload(body))
+        return web.json_response({"status": "ok"})
 
     app = web.Application()
     app.router.add_post("/webhook", handle_webhook)
@@ -619,24 +611,16 @@ async def main():
     site = web.TCPSite(runner, "127.0.0.1", 8080)
     await site.start()
 
-    await asyncio.Event().wait()  # Run forever
+    # Wait for shutdown signal
+    await shutdown_event.wait()
+    await runner.cleanup()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    asyncio.run(run_source("webhook", webhook_logic))
 ```
 
-Add to configuration:
-
-```toml
-[[sources]]
-name = "webhook"
-path = "/usr/bin/python3"
-args = ["/path/to/webhook.py"]
-enabled = true
-publishes = ["webhook.received"]
-```
-
-Now your pipeline mixes Rust (timer), Python (webhook), and TypeScript (console output). The engine handles communication for all three.
+Now your pipeline mixes Rust (timer), Python (enricher, webhook), and TypeScript (console output). The engine handles communication for all three.
 
 ### When to Use Each Language
 
@@ -674,28 +658,56 @@ This three-phase approach ensures:
 - Handlers finish processing pending work
 - Sinks flush output buffers
 
-You only need to handle SIGTERM and check for `None` on the message stream:
+### The Helpers Handle Everything
+
+When you use `run_handler` or `run_sink`, signal handling and graceful shutdown happen automatically. The helpers:
+
+1. Register SIGTERM/SIGINT handlers
+2. Close the message stream when signaled
+3. Clean up and disconnect after your function completes
+
+For Sources, the helper provides a shutdown signal you can check in your loop:
 
 ```rust
-loop {
-    tokio::select! {
-        _ = sigterm.recv() => {
-            handler.disconnect().await?;
-            break;
-        }
-        msg = stream.next() => {
-            match msg {
-                Some(msg) => { /* process */ }
-                None => break,  // Stream closed by SDK
-            }
+// Rust: shutdown is a watch::Receiver<bool>
+run_source(Some("my_timer"), |source, mut shutdown| async move {
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => break,  // Shutdown requested
+            _ = interval.tick() => { /* publish */ }
         }
     }
-}
+    Ok(())
+}).await?;
 ```
 
-The SDK handles `system.shutdown` internally. When the stream returns `None`, graceful shutdown is complete.
+```typescript
+// TypeScript: shutdown is an AbortSignal
+await runSource("my_timer", async (source, shutdown) => {
+  const intervalId = setInterval(() => { /* publish */ }, 3000);
+  await new Promise<void>((resolve) => {
+    shutdown.addEventListener("abort", () => {
+      clearInterval(intervalId);
+      resolve();
+    });
+  });
+});
+```
 
-**Graceful shutdown requires no code beyond handling SIGTERM and checking for stream closure. The engine orchestrates the drain sequence.**
+```python
+# Python: shutdown_event is an asyncio.Event
+async def timer_logic(source, shutdown_event):
+    while not shutdown_event.is_set():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=3.0)
+            break  # Shutdown requested
+        except asyncio.TimeoutError:
+            await source.publish(...)  # Publish on timeout
+
+await run_source("my_timer", timer_logic)
+```
+
+**Graceful shutdown requires no manual signal handling when using helpers. The engine orchestrates the drain sequence; the SDK helpers manage your process lifecycle.**
 
 ---
 
@@ -705,24 +717,23 @@ You now understand Emergent's core concepts: three primitives, message structure
 
 ### Multiple Subscriptions
 
-Handlers can subscribe to multiple message types:
+Handlers can subscribe to multiple message types. With the helper, pass all types in the subscription array and pattern match inside your callback:
 
 ```rust
-let mut stream = handler.subscribe(&[
-    "timer.tick",
-    "webhook.received",
-]).await?;
+run_handler(
+    Some("router"),
+    &["timer.tick", "webhook.received"],
+    |msg, handler| async move {
+        match msg.message_type().as_str() {
+            "timer.tick" => handle_tick(&msg, &handler).await,
+            "webhook.received" => handle_webhook(&msg, &handler).await,
+            _ => Ok(())
+        }
+    }
+).await?;
 ```
 
-Use pattern matching on `msg.message_type` to route messages:
-
-```rust
-match msg.message_type.as_str() {
-    "timer.tick" => handle_tick(msg).await?,
-    "webhook.received" => handle_webhook(msg).await?,
-    _ => {}
-}
-```
+Each message carries its type, so your function can route to the appropriate logic.
 
 ### Fan-out and Fan-in
 
@@ -761,22 +772,28 @@ A single Sink subscribes to `data.enriched` and receives messages from both Hand
 Publish error events when processing fails:
 
 ```rust
-match process_message(&msg).await {
-    Ok(result) => {
-        handler.publish(
-            EmergentMessage::new("processing.success")
-                .with_causation_id(msg.id())
-                .with_payload(json!(result))
-        ).await?;
+run_handler(
+    Some("processor"),
+    &["data.incoming"],
+    |msg, handler| async move {
+        match process_message(&msg).await {
+            Ok(result) => {
+                handler.publish(
+                    EmergentMessage::new("processing.success")
+                        .with_causation_from_message(msg.id())
+                        .with_payload(json!(result))
+                ).await.map_err(|e| e.to_string())
+            }
+            Err(e) => {
+                handler.publish(
+                    EmergentMessage::new("processing.error")
+                        .with_causation_from_message(msg.id())
+                        .with_payload(json!({"error": e.to_string()}))
+                ).await.map_err(|e| e.to_string())
+            }
+        }
     }
-    Err(e) => {
-        handler.publish(
-            EmergentMessage::new("processing.error")
-                .with_causation_id(msg.id())
-                .with_payload(json!({"error": e.to_string()}))
-        ).await?;
-    }
-}
+).await?;
 ```
 
 Create a Sink that subscribes to `*.error` to centralize error handling.
@@ -816,15 +833,15 @@ Replay events by reading JSON logs and re-publishing them through a Source.
 
 ## 12. Conclusion
 
-You learned Emergent's three primitives (Source, Handler, Sink), ran an example pipeline, wrote your first components, and explored message tracing and shutdown behavior. The pattern is simple: connect, loop over messages, publish or consume, disconnect on shutdown.
+You learned Emergent's three primitives (Source, Handler, Sink), ran an example pipeline, wrote your first components, and explored message tracing and shutdown behavior. The SDK helpers reduce each primitive to a single function call with your business logic—connection, signal handling, and graceful shutdown happen automatically.
 
 This simplicity scales. Production workflows use the same three primitives you practiced here. A 50-component pipeline follows the same principles as a 3-component example.
 
 Three key takeaways:
 
 1. **Constraints enable reasoning**: Sources publish, Handlers transform, Sinks consume. Every component fits one pattern.
-2. **The engine handles complexity**: Process management, message routing, graceful shutdown all work without your code.
-3. **Polyglot is practical**: Mix languages based on component requirements, not workflow requirements.
+2. **Helpers eliminate boilerplate**: `run_source`, `run_handler`, and `run_sink` handle connection, signals, and cleanup—you write only the business logic.
+3. **Polyglot is practical**: Mix languages based on component requirements. The helper APIs are consistent across Rust, TypeScript, and Python.
 
 Start building workflows by identifying Sources (where does data come from?), Handlers (what transformations are needed?), and Sinks (where does data go?). Write one component at a time, test it in isolation, then compose components in the configuration file.
 

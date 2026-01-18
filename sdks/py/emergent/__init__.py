@@ -65,6 +65,14 @@ from emergent.types import (
     PrimitiveInfo,
 )
 
+# Helpers
+from emergent.helpers import (
+    HelperError,
+    run_handler,
+    run_sink,
+    run_source,
+)
+
 __all__ = [
     "ConnectionError",
     "DiscoveryError",
@@ -79,6 +87,7 @@ __all__ = [
     # Primitives
     "EmergentSource",
     "Format",
+    "HelperError",
     "MessageBuilder",
     # Stream
     "MessageStream",
@@ -96,5 +105,9 @@ __all__ = [
     "generate_message_id",
     # Utilities
     "get_socket_path",
+    # Helpers
+    "run_handler",
+    "run_sink",
+    "run_source",
     "socket_exists",
 ]
