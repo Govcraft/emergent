@@ -147,7 +147,7 @@ pub fn run_wizard(args: &ScaffoldArgs) -> Result<ScaffoldRequest, ScaffoldError>
     let language = if let Some(ref lang_str) = args.language {
         lang_str.parse::<Language>().map_err(ScaffoldError::InvalidInput)?
     } else {
-        let languages = ["Rust (recommended)", "TypeScript (coming soon)", "Python (coming soon)"];
+        let languages = ["Rust", "TypeScript (Deno)", "Python"];
         let selection = Select::with_theme(&theme)
             .with_prompt("Select language")
             .items(&languages)
@@ -156,14 +156,8 @@ pub fn run_wizard(args: &ScaffoldArgs) -> Result<ScaffoldRequest, ScaffoldError>
 
         match selection {
             0 => Language::Rust,
-            1 => {
-                eprintln!("TypeScript templates are not yet available. Using Rust.");
-                Language::Rust
-            }
-            2 => {
-                eprintln!("Python templates are not yet available. Using Rust.");
-                Language::Rust
-            }
+            1 => Language::TypeScript,
+            2 => Language::Python,
             _ => Language::Rust,
         }
     };

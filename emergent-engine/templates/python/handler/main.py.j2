@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""{{ name_pascal }} Handler
+
+{{ description }}
+
+Subscribes:
+{% for sub in subscribes %}
+- {{ sub }}
+{% endfor %}
+
+Publishes:
+{% for pub in publishes %}
+- {{ pub }}
+{% endfor %}
+"""
+
+import asyncio
+import os
+
+from emergent import EmergentHandler
+from emergent._protocol import Format
+
+
+async def main() -> None:
+    """Run the {{ name }} handler."""
+    name = os.environ.get("EMERGENT_NAME", "{{ name }}")
+    subscribes = [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+
+    async for msg, handler in EmergentHandler.process(name, subscribes, format_=Format.MSGPACK):
+        # TODO: Process the incoming message
+        await handler.publish("{{ publishes[0] if publishes else "handler.output" }}", {
+            "processed": True,
+            "original_type": msg.message_type,
+            "causation_id": msg.id,
+        })
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
