@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.primitive }} for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        primitive:
+          - http-source
+          - http-sink
+          - exec-source
+          - slack-source
+          - slack-sink
+          - github-source
+          - github-sink
+        include:
+          # Linux x86_64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ''
+            archive: tar.gz
+          # Linux aarch64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ''
+            archive: tar.gz
+            cross: true
+          # macOS x86_64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            ext: ''
+            archive: tar.gz
+          # macOS aarch64 (Apple Silicon)
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            ext: ''
+            archive: tar.gz
+          # Windows x86_64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            ext: '.exe'
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: |
+          cross build --release --target ${{ matrix.target }} -p ${{ matrix.primitive }}
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p ${{ matrix.primitive }}
+
+      - name: Package (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          ARCHIVE_NAME="${{ matrix.primitive }}-${VERSION}-${{ matrix.target }}.tar.gz"
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.primitive }}${{ matrix.ext }} dist/
+          cd dist
+          tar -czvf ../${ARCHIVE_NAME} ${{ matrix.primitive }}${{ matrix.ext }}
+          cd ..
+          sha256sum ${ARCHIVE_NAME} > ${ARCHIVE_NAME}.sha256
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $VERSION = $env:GITHUB_REF -replace 'refs/tags/v', ''
+          $ARCHIVE_NAME = "${{ matrix.primitive }}-${VERSION}-${{ matrix.target }}.zip"
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.primitive }}${{ matrix.ext }}" -Destination dist/
+          Compress-Archive -Path "dist/${{ matrix.primitive }}${{ matrix.ext }}" -DestinationPath $ARCHIVE_NAME
+          $hash = (Get-FileHash -Algorithm SHA256 $ARCHIVE_NAME).Hash.ToLower()
+          "$hash  $ARCHIVE_NAME" | Out-File -FilePath "${ARCHIVE_NAME}.sha256" -Encoding ascii
+          "ARCHIVE_NAME=$ARCHIVE_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.primitive }}-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.zip
+            *.sha256
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f | head -50
+
+      - name: Create checksums file
+        run: |
+          cd artifacts
+          cat *.sha256 > checksums.txt
+          mv checksums.txt ..
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/*.sha256
+            checksums.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
