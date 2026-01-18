@@ -1,0 +1,120 @@
+//! {{ name_pascal }} Sink
+//!
+//! {{ description }}
+//!
+//! Sinks are SILENT on startup/shutdown - they only output received messages.
+//!
+//! # Subscribes
+//!
+{% for sub in subscribes %}
+//! - `{{ sub }}`
+{% endfor %}
+
+{% if needs_chrono %}
+use chrono::Utc;
+{% endif %}
+use clap::Parser;
+use emergent_client::EmergentSink;
+use serde::Deserialize;
+use tokio::signal::unix::{signal, SignalKind};
+
+/// {{ name_pascal }} Sink - {{ description }}
+#[derive(Parser, Debug)]
+#[command(name = "{{ name }}")]
+#[command(about = "{{ description }}")]
+struct Args {
+    /// Override subscription types (comma-separated).
+    /// By default, queries the engine for configured subscriptions.
+    #[arg(short, long)]
+    subscribe: Option<String>,
+}
+
+/// Payload for incoming events.
+#[derive(Debug, Deserialize)]
+struct IncomingPayload {
+    // TODO: Define fields matching your subscribed message payload
+}
+
+/// Format a message for output.
+fn format_message(message_type: &str, _payload: &serde_json::Value) -> String {
+    // TODO: Implement your message formatting logic
+    format!("[{}]", message_type)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
+    // Get the sink name from environment (set by engine) or use default
+    let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "{{ name }}".to_string());
+
+    // Connect to the Emergent engine
+    let sink = match EmergentSink::connect(&name).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to connect to Emergent engine: {e}");
+            eprintln!("Make sure the engine is running and EMERGENT_SOCKET is set.");
+            std::process::exit(1);
+        }
+    };
+
+    // Get subscription topics: from command line or query engine
+    let topics: Vec<String> = if let Some(ref subscribe) = args.subscribe {
+        subscribe.split(',').map(|s| s.trim().to_string()).collect()
+    } else {
+        match sink.get_my_subscriptions().await {
+            Ok(subs) => subs,
+            Err(e) => {
+                eprintln!("Failed to get subscriptions from engine: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    // Subscribe to configured message types
+    let topics_refs: Vec<&str> = topics.iter().map(|s| s.as_str()).collect();
+    let mut stream = match sink.subscribe(&topics_refs).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to subscribe: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Set up SIGTERM handler for graceful shutdown
+    let mut sigterm = signal(SignalKind::terminate())?;
+
+    // Process incoming messages
+    loop {
+        tokio::select! {
+            // Handle SIGTERM for graceful shutdown
+            _ = sigterm.recv() => {
+                let _ = sink.disconnect().await;
+                break;
+            }
+
+            // Handle incoming messages
+            msg = stream.next() => {
+                match msg {
+                    Some(msg) => {
+{% if needs_chrono %}
+                        let timestamp = Utc::now().format("%H:%M:%S%.3f");
+{% endif %}
+                        let formatted = format_message(msg.message_type().as_str(), msg.payload());
+{% if needs_chrono %}
+                        println!("[{}] {}", timestamp, formatted);
+{% else %}
+                        println!("{}", formatted);
+{% endif %}
+                    }
+                    None => {
+                        // Stream ended (graceful shutdown)
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}

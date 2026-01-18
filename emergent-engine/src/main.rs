@@ -10,11 +10,13 @@
 use acton_reactive::ipc::{IpcConfig, IpcPushNotification};
 use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+
+use emergent_engine::scaffold;
 
 /// Emergent Engine - Event-based workflow platform
 #[derive(Parser, Debug)]
@@ -22,16 +24,27 @@ use tracing_subscriber::EnvFilter;
 #[command(version, about, long_about = None)]
 struct Args {
     /// Path to configuration file
-    #[arg(short, long, value_name = "FILE")]
+    #[arg(short, long, value_name = "FILE", global = true)]
     config: Option<PathBuf>,
 
     /// Override the socket path from config
-    #[arg(short, long, value_name = "PATH")]
+    #[arg(short, long, value_name = "PATH", global = true)]
     socket: Option<PathBuf>,
 
     /// Run in verbose mode (debug logging)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Subcommand to run
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Available subcommands
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Generate a new primitive (source, handler, or sink)
+    Scaffold(scaffold::cli::ScaffoldArgs),
 }
 
 use emergent_engine::config::EmergentConfig;
@@ -209,6 +222,16 @@ async fn main() -> Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
         )
         .init();
+
+    // Handle subcommands
+    if let Some(command) = args.command {
+        match command {
+            Command::Scaffold(scaffold_args) => {
+                scaffold::run_scaffold(scaffold_args).await?;
+                return Ok(());
+            }
+        }
+    }
 
     // Load configuration
     let mut config = load_config(args.config).context("Failed to load configuration")?;

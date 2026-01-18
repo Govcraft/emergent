@@ -26,6 +26,7 @@ pub mod messages;
 pub mod primitive_actor;
 pub mod primitives;
 pub mod process_manager;
+pub mod scaffold;
 
 pub use config::EmergentConfig;
 pub use messages::EmergentMessage;
