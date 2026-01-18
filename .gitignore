@@ -28,4 +28,7 @@ Thumbs.db
 **/*.md
 # Allow README.md at root
 !README.md
+# Allow docs folder and its markdown files
+!docs/
+!docs/**/*.md
 node_modules/
