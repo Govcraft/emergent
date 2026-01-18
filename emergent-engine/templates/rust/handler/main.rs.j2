@@ -2,9 +2,6 @@
 //!
 //! {{ description }}
 //!
-//! Handlers are SILENT - they only produce domain messages.
-//! All lifecycle events are published by the engine.
-//!
 //! # Subscribes
 //!
 {% for sub in subscribes %}
@@ -17,99 +14,23 @@
 //! - `{{ pub }}`
 {% endfor %}
 
-use clap::Parser;
-use emergent_client::{EmergentHandler, EmergentMessage};
-use serde::{Deserialize, Serialize};
+use emergent_client::helpers::run_handler;
+use emergent_client::EmergentMessage;
 use serde_json::json;
-use tokio::signal::unix::{signal, SignalKind};
-
-/// {{ name_pascal }} Handler - {{ description }}
-#[derive(Parser, Debug)]
-#[command(name = "{{ name }}")]
-#[command(about = "{{ description }}")]
-struct Args {
-    // TODO: Add your command-line arguments here
-}
-
-/// Payload for incoming events.
-#[derive(Debug, Deserialize)]
-struct IncomingPayload {
-    // TODO: Define fields matching your subscribed message payload
-}
-
-/// Payload for outgoing events.
-#[derive(Debug, Serialize)]
-struct OutgoingPayload {
-    // TODO: Define fields for your published message payload
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _args = Args::parse();
-
-    // Get the handler name from environment (set by engine) or use default
-    let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "{{ name }}".to_string());
-
-    // Connect to the Emergent engine
-    let handler = match EmergentHandler::connect(&name).await {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("Failed to connect to Emergent engine: {e}");
-            std::process::exit(1);
+    run_handler(
+        Some("{{ name }}"),
+        &[{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+        |msg, handler| async move {
+            // TODO: Process the incoming message
+            let output = EmergentMessage::new("{{ publishes[0] if publishes else "handler.output" }}")
+                .with_causation_from_message(msg.id())
+                .with_payload(json!({"processed": true, "original_type": msg.message_type().as_str()}));
+            handler.publish(output).await.map_err(|e| e.to_string())
         }
-    };
-
-    // Subscribe to configured message types
-    let subscribe_types = [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}];
-    let mut stream = match handler.subscribe(&subscribe_types).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to subscribe: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    // Set up SIGTERM handler for graceful shutdown
-    let mut sigterm = signal(SignalKind::terminate())?;
-
-    // Process incoming messages
-    loop {
-        tokio::select! {
-            // Handle SIGTERM for graceful shutdown
-            _ = sigterm.recv() => {
-                let _ = handler.disconnect().await;
-                break;
-            }
-
-            // Handle incoming messages
-            msg = stream.next() => {
-                match msg {
-                    Some(msg) => {
-                        // Parse the incoming payload
-                        let _payload: IncomingPayload = match msg.payload_as() {
-                            Ok(p) => p,
-                            Err(_) => continue,
-                        };
-
-                        // TODO: Process the message and create output
-                        let output_payload = OutgoingPayload {
-                            // TODO: Fill in your output fields
-                        };
-
-                        let output = EmergentMessage::new("{{ publishes[0] if publishes else "your.output" }}")
-                            .with_causation_id(msg.id())
-                            .with_payload(json!(output_payload));
-
-                        let _ = handler.publish(output).await;
-                    }
-                    None => {
-                        // Stream ended (graceful shutdown)
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    ).await?;
 
     Ok(())
 }

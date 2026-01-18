@@ -165,6 +165,4 @@ pub struct TemplateContext {
     pub publishes: Vec<String>,
     /// Description for doc comments.
     pub description: String,
-    /// Whether this sink needs chrono (has timestamp formatting).
-    pub needs_chrono: bool,
 }

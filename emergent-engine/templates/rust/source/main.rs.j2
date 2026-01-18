@@ -2,77 +2,36 @@
 //!
 //! {{ description }}
 //!
-//! Sources are SILENT - they only produce domain messages.
-//! All lifecycle events are published by the engine.
+//! # Publishes
+//!
+{% for pub in publishes %}
+//! - `{{ pub }}`
+{% endfor %}
 
-use clap::Parser;
-use emergent_client::{EmergentMessage, EmergentSource};
+use emergent_client::helpers::run_source;
+use emergent_client::EmergentMessage;
 use serde_json::json;
-use tokio::signal::unix::{signal, SignalKind};
-
-/// {{ name_pascal }} Source - {{ description }}
-#[derive(Parser, Debug)]
-#[command(name = "{{ name }}")]
-#[command(about = "{{ description }}")]
-struct Args {
-    // TODO: Add your command-line arguments here
-}
-
-/// Payload for {{ publishes[0] if publishes else "your.event" }} events.
-#[derive(Debug, serde::Serialize)]
-struct {{ name_pascal }}Payload {
-    /// Sequence number of this event.
-    sequence: u64,
-    // TODO: Add your payload fields here
-}
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _args = Args::parse();
+    run_source(Some("{{ name }}"), |source, mut shutdown| async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut sequence = 0u64;
 
-    // Get the source name from environment (set by engine) or use default
-    let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "{{ name }}".to_string());
-
-    // Connect to the Emergent engine
-    let source = match EmergentSource::connect(&name).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to connect to Emergent engine: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    // Set up SIGTERM handler for graceful shutdown
-    let mut sigterm = signal(SignalKind::terminate())?;
-
-    // TODO: Implement your source logic here
-    // Example: periodic event emission
-    let mut sequence: u64 = 0;
-
-    loop {
-        tokio::select! {
-            // Handle SIGTERM for graceful shutdown
-            _ = sigterm.recv() => {
-                let _ = source.disconnect().await;
-                break;
-            }
-
-            // TODO: Replace this with your event trigger
-            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                sequence += 1;
-
-                let payload = {{ name_pascal }}Payload {
-                    sequence,
-                    // TODO: Fill in your payload fields
-                };
-
-                let message = EmergentMessage::new("{{ publishes[0] if publishes else "your.event" }}")
-                    .with_payload(json!(payload));
-
-                let _ = source.publish(message).await;
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = interval.tick() => {
+                    sequence += 1;
+                    let msg = EmergentMessage::new("{{ publishes[0] if publishes else "source.event" }}")
+                        .with_payload(json!({"sequence": sequence}));
+                    source.publish(msg).await.map_err(|e| e.to_string())?;
+                }
             }
         }
-    }
+        Ok(())
+    }).await?;
 
     Ok(())
 }

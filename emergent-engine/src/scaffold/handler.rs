@@ -64,7 +64,6 @@ fn render_template(
             subscribes => context.subscribes,
             publishes => context.publishes,
             description => context.description,
-            needs_chrono => context.needs_chrono,
         ))
         .map_err(|e| format!("Failed to render template: {e}"))
 }

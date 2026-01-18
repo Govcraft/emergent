@@ -337,9 +337,6 @@ pub fn build_template_context(request: &ScaffoldRequest) -> TemplateContext {
     let name_snake = request.name.to_snake_case();
     let name_pascal = request.name.to_upper_camel_case();
 
-    // Sinks with timestamp formatting need chrono
-    let needs_chrono = matches!(request.primitive_type, PrimitiveType::Sink);
-
     TemplateContext {
         name: request.name.clone(),
         name_snake,
@@ -348,7 +345,6 @@ pub fn build_template_context(request: &ScaffoldRequest) -> TemplateContext {
         subscribes: request.subscribes.clone(),
         publishes: request.publishes.clone(),
         description: request.description.clone(),
-        needs_chrono,
     }
 }
 
