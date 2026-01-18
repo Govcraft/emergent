@@ -18,6 +18,21 @@ pub enum PrimitiveKind {
     Sink,
 }
 
+impl PrimitiveKind {
+    /// Returns the lowercase string representation of the primitive kind.
+    ///
+    /// This is useful for JSON payloads and other contexts where a lowercase
+    /// string identifier is needed.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Handler => "handler",
+            Self::Sink => "sink",
+        }
+    }
+}
+
 impl std::fmt::Display for PrimitiveKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -156,6 +171,18 @@ mod tests {
         assert_eq!(PrimitiveKind::Source.to_string(), "Source");
         assert_eq!(PrimitiveKind::Handler.to_string(), "Handler");
         assert_eq!(PrimitiveKind::Sink.to_string(), "Sink");
+    }
+
+    #[test]
+    fn test_primitive_kind_as_str() {
+        // as_str() returns lowercase strings for JSON payloads
+        assert_eq!(PrimitiveKind::Source.as_str(), "source");
+        assert_eq!(PrimitiveKind::Handler.as_str(), "handler");
+        assert_eq!(PrimitiveKind::Sink.as_str(), "sink");
+
+        // Verify it's const-compatible (compile-time check)
+        const SOURCE_STR: &str = PrimitiveKind::Source.as_str();
+        assert_eq!(SOURCE_STR, "source");
     }
 
     #[test]

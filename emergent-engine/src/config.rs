@@ -194,6 +194,91 @@ const fn default_enabled() -> bool {
     true
 }
 
+/// Common interface for all primitive configurations.
+///
+/// This trait abstracts over `SourceConfig`, `HandlerConfig`, and `SinkConfig`
+/// to enable generic validation and processing.
+pub trait PrimitiveConfig {
+    /// Returns the unique name of this primitive.
+    fn name(&self) -> &str;
+
+    /// Returns the path to the executable.
+    fn path(&self) -> &Path;
+
+    /// Returns whether this primitive is enabled.
+    fn is_enabled(&self) -> bool;
+}
+
+impl PrimitiveConfig for SourceConfig {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+impl PrimitiveConfig for HandlerConfig {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+impl PrimitiveConfig for SinkConfig {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+/// Check for duplicate names across a collection of primitives (pure function).
+fn check_duplicate_names<'a, T: PrimitiveConfig + 'a>(
+    primitives: impl IntoIterator<Item = &'a T>,
+    names: &mut std::collections::HashSet<&'a str>,
+) -> Result<(), ConfigError> {
+    for primitive in primitives {
+        if !names.insert(primitive.name()) {
+            return Err(ConfigError::ValidationError(format!(
+                "Duplicate name: {}",
+                primitive.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Check that paths exist for enabled primitives (impure function).
+fn check_paths_exist<'a, T: PrimitiveConfig + 'a>(
+    primitives: impl IntoIterator<Item = &'a T>,
+) -> Result<(), ConfigError> {
+    for primitive in primitives {
+        if primitive.is_enabled() && !primitive.path().exists() {
+            return Err(ConfigError::PathNotFound(primitive.path().to_path_buf()));
+        }
+    }
+    Ok(())
+}
+
 /// Complete Emergent configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EmergentConfig {
@@ -234,73 +319,65 @@ impl EmergentConfig {
         Ok(config)
     }
 
-    /// Validate the configuration.
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        // Validate source paths exist
-        for source in &self.sources {
-            if source.enabled && !source.path.exists() {
-                return Err(ConfigError::PathNotFound(source.path.clone()));
-            }
-        }
-
-        // Validate handler paths exist
-        for handler in &self.handlers {
-            if handler.enabled && !handler.path.exists() {
-                return Err(ConfigError::PathNotFound(handler.path.clone()));
-            }
-        }
-
-        // Validate sink paths exist
-        for sink in &self.sinks {
-            if sink.enabled && !sink.path.exists() {
-                return Err(ConfigError::PathNotFound(sink.path.clone()));
-            }
-        }
-
-        // Check for duplicate names
+    /// Validate the configuration structure (pure function).
+    ///
+    /// Checks for duplicate names across all primitives without performing I/O.
+    /// This is suitable for testing configuration validity without filesystem access.
+    pub fn validate_unique_names(&self) -> Result<(), ConfigError> {
         let mut names = std::collections::HashSet::new();
-        for source in &self.sources {
-            if !names.insert(&source.name) {
-                return Err(ConfigError::ValidationError(format!(
-                    "Duplicate name: {}",
-                    source.name
-                )));
-            }
-        }
-        for handler in &self.handlers {
-            if !names.insert(&handler.name) {
-                return Err(ConfigError::ValidationError(format!(
-                    "Duplicate name: {}",
-                    handler.name
-                )));
-            }
-        }
-        for sink in &self.sinks {
-            if !names.insert(&sink.name) {
-                return Err(ConfigError::ValidationError(format!(
-                    "Duplicate name: {}",
-                    sink.name
-                )));
-            }
-        }
-
+        check_duplicate_names(&self.sources, &mut names)?;
+        check_duplicate_names(&self.handlers, &mut names)?;
+        check_duplicate_names(&self.sinks, &mut names)?;
         Ok(())
     }
 
-    /// Get the resolved socket path.
-    pub fn socket_path(&self) -> PathBuf {
+    /// Validate that all enabled primitive paths exist (impure function).
+    ///
+    /// Performs filesystem checks to verify executable paths exist.
+    pub fn validate_paths(&self) -> Result<(), ConfigError> {
+        check_paths_exist(&self.sources)?;
+        check_paths_exist(&self.handlers)?;
+        check_paths_exist(&self.sinks)?;
+        Ok(())
+    }
+
+    /// Validate the configuration (combines structure and path validation).
+    ///
+    /// This is a convenience method that runs both pure validation (duplicate names)
+    /// and impure validation (path existence checks).
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_unique_names()?;
+        self.validate_paths()?;
+        Ok(())
+    }
+
+    /// Resolve the socket path given an optional runtime directory (pure function).
+    ///
+    /// If `socket_path` is "auto", uses the provided runtime directory or falls back to `/tmp`.
+    /// Otherwise, returns the configured socket path directly.
+    ///
+    /// This is useful for testing and deterministic path resolution.
+    #[must_use]
+    pub fn resolve_socket_path(&self, runtime_dir: Option<&Path>) -> PathBuf {
         if self.engine.socket_path == "auto" {
-            // Use XDG runtime directory or fallback to /tmp
-            if let Some(runtime_dir) = directories::BaseDirs::new()
-                .and_then(|dirs| dirs.runtime_dir().map(|p| p.to_path_buf()))
-            {
-                runtime_dir.join(format!("{}.sock", self.engine.name))
+            if let Some(dir) = runtime_dir {
+                dir.join(format!("{}.sock", self.engine.name))
             } else {
                 PathBuf::from(format!("/tmp/{}.sock", self.engine.name))
             }
         } else {
             PathBuf::from(&self.engine.socket_path)
         }
+    }
+
+    /// Get the resolved socket path using system directories.
+    ///
+    /// Uses XDG runtime directory if available, otherwise falls back to `/tmp`.
+    #[must_use]
+    pub fn socket_path(&self) -> PathBuf {
+        let runtime_dir = directories::BaseDirs::new()
+            .and_then(|dirs| dirs.runtime_dir().map(|p| p.to_path_buf()));
+        self.resolve_socket_path(runtime_dir.as_deref())
     }
 
     /// Get enabled sources.
@@ -395,5 +472,166 @@ wire_format = "messagepack"
         let config = EmergentConfig::parse(msgpack_config)?;
         assert_eq!(config.engine.wire_format, WireFormat::Messagepack);
         Ok(())
+    }
+
+    #[test]
+    fn test_validate_unique_names_success() {
+        let config = EmergentConfig {
+            sources: vec![SourceConfig {
+                name: "source1".to_string(),
+                path: PathBuf::from("/bin/true"),
+                args: vec![],
+                enabled: true,
+                publishes: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            handlers: vec![HandlerConfig {
+                name: "handler1".to_string(),
+                path: PathBuf::from("/bin/true"),
+                args: vec![],
+                enabled: true,
+                subscribes: vec![],
+                publishes: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            sinks: vec![SinkConfig {
+                name: "sink1".to_string(),
+                path: PathBuf::from("/bin/true"),
+                args: vec![],
+                enabled: true,
+                subscribes: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        // Pure validation should pass with unique names
+        assert!(config.validate_unique_names().is_ok());
+    }
+
+    #[test]
+    fn test_validate_unique_names_duplicate_source() {
+        let config = EmergentConfig {
+            sources: vec![
+                SourceConfig {
+                    name: "duplicate".to_string(),
+                    path: PathBuf::from("/bin/true"),
+                    args: vec![],
+                    enabled: true,
+                    publishes: vec![],
+                    env: std::collections::HashMap::new(),
+                },
+                SourceConfig {
+                    name: "duplicate".to_string(),
+                    path: PathBuf::from("/bin/true"),
+                    args: vec![],
+                    enabled: true,
+                    publishes: vec![],
+                    env: std::collections::HashMap::new(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let Err(err) = config.validate_unique_names() else {
+            panic!("expected duplicate name validation to fail");
+        };
+        assert!(err.to_string().contains("Duplicate name: duplicate"));
+    }
+
+    #[test]
+    fn test_validate_unique_names_cross_kind_duplicate() {
+        let config = EmergentConfig {
+            sources: vec![SourceConfig {
+                name: "shared_name".to_string(),
+                path: PathBuf::from("/bin/true"),
+                args: vec![],
+                enabled: true,
+                publishes: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            sinks: vec![SinkConfig {
+                name: "shared_name".to_string(),
+                path: PathBuf::from("/bin/true"),
+                args: vec![],
+                enabled: true,
+                subscribes: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        // Cross-kind duplicates should also fail
+        let result = config.validate_unique_names();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_socket_path_explicit() {
+        let config = EmergentConfig {
+            engine: EngineConfig {
+                name: "test-engine".to_string(),
+                socket_path: "/custom/path.sock".to_string(),
+                wire_format: WireFormat::default(),
+            },
+            ..Default::default()
+        };
+
+        // Explicit path ignores runtime_dir
+        let path = config.resolve_socket_path(Some(Path::new("/run/user/1000")));
+        assert_eq!(path, PathBuf::from("/custom/path.sock"));
+
+        // Explicit path also works with None
+        let path = config.resolve_socket_path(None);
+        assert_eq!(path, PathBuf::from("/custom/path.sock"));
+    }
+
+    #[test]
+    fn test_resolve_socket_path_auto_with_runtime_dir() {
+        let config = EmergentConfig {
+            engine: EngineConfig {
+                name: "my-engine".to_string(),
+                socket_path: "auto".to_string(),
+                wire_format: WireFormat::default(),
+            },
+            ..Default::default()
+        };
+
+        // With runtime directory provided
+        let path = config.resolve_socket_path(Some(Path::new("/run/user/1000")));
+        assert_eq!(path, PathBuf::from("/run/user/1000/my-engine.sock"));
+    }
+
+    #[test]
+    fn test_resolve_socket_path_auto_fallback() {
+        let config = EmergentConfig {
+            engine: EngineConfig {
+                name: "fallback-engine".to_string(),
+                socket_path: "auto".to_string(),
+                wire_format: WireFormat::default(),
+            },
+            ..Default::default()
+        };
+
+        // Without runtime directory, falls back to /tmp
+        let path = config.resolve_socket_path(None);
+        assert_eq!(path, PathBuf::from("/tmp/fallback-engine.sock"));
+    }
+
+    #[test]
+    fn test_primitive_config_trait() {
+        let source = SourceConfig {
+            name: "my-source".to_string(),
+            path: PathBuf::from("/usr/bin/source"),
+            args: vec![],
+            enabled: true,
+            publishes: vec![],
+            env: std::collections::HashMap::new(),
+        };
+
+        // Test trait implementation
+        assert_eq!(source.name(), "my-source");
+        assert_eq!(source.path(), Path::new("/usr/bin/source"));
+        assert!(source.is_enabled());
     }
 }

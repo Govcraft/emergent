@@ -43,6 +43,47 @@ pub struct SystemEventPayload {
     pub error: Option<String>,
 }
 
+impl SystemEventPayload {
+    /// Create a payload for a started event (pure function).
+    #[must_use]
+    pub fn started(name: &str, kind: PrimitiveKind, pid: u32) -> Self {
+        Self {
+            name: name.to_string(),
+            kind: kind.as_str().to_string(),
+            pid: Some(pid),
+            error: None,
+        }
+    }
+
+    /// Create a payload for a stopped event (pure function).
+    #[must_use]
+    pub fn stopped(name: &str, kind: PrimitiveKind, pid: Option<u32>) -> Self {
+        Self {
+            name: name.to_string(),
+            kind: kind.as_str().to_string(),
+            pid,
+            error: None,
+        }
+    }
+
+    /// Create a payload for an error event (pure function).
+    #[must_use]
+    pub fn error(name: &str, kind: PrimitiveKind, pid: Option<u32>, error_msg: String) -> Self {
+        Self {
+            name: name.to_string(),
+            kind: kind.as_str().to_string(),
+            pid,
+            error: Some(error_msg),
+        }
+    }
+
+    /// Create a payload for a shutdown event (pure function).
+    #[must_use]
+    pub fn shutdown(kind: &str) -> serde_json::Value {
+        json!({ "kind": kind })
+    }
+}
+
 /// Message sent when a child process has been spawned.
 ///
 /// This message carries the PID and primitive info for state initialization.
@@ -103,14 +144,6 @@ pub struct PrimitiveActorConfig {
     pub env: HashMap<String, String>,
     /// Socket path for IPC connections.
     pub socket_path: PathBuf,
-}
-
-fn kind_to_string(kind: PrimitiveKind) -> String {
-    match kind {
-        PrimitiveKind::Source => "source".to_string(),
-        PrimitiveKind::Handler => "handler".to_string(),
-        PrimitiveKind::Sink => "sink".to_string(),
-    }
 }
 
 /// Build and configure a primitive actor.
@@ -363,16 +396,27 @@ fn create_system_event(
     pid: Option<u32>,
     error: Option<String>,
 ) -> IpcSystemEvent {
-    let payload = SystemEventPayload {
-        name: name.to_string(),
-        kind: kind_to_string(kind),
-        pid,
-        error,
+    let payload = match (event_type, error) {
+        ("system.started", None) => {
+            SystemEventPayload::started(name, kind, pid.unwrap_or(0))
+        }
+        ("system.stopped", None) => SystemEventPayload::stopped(name, kind, pid),
+        (_, Some(err)) => SystemEventPayload::error(name, kind, pid, err),
+        _ => SystemEventPayload::stopped(name, kind, pid),
     };
 
     let message = EmergentMessage::new(&format!("{}.{}", event_type, name))
         .with_source("emergent-engine")
         .with_payload(json!(payload));
+
+    IpcSystemEvent { inner: message }
+}
+
+/// Create a shutdown system event wrapped for IPC.
+pub fn create_shutdown_event(kind: &str) -> IpcSystemEvent {
+    let message = EmergentMessage::new("system.shutdown")
+        .with_source("emergent-engine")
+        .with_payload(SystemEventPayload::shutdown(kind));
 
     IpcSystemEvent { inner: message }
 }
@@ -390,5 +434,75 @@ pub struct IpcSystemEvent {
 impl From<EmergentMessage> for IpcSystemEvent {
     fn from(msg: EmergentMessage) -> Self {
         Self { inner: msg }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_system_event_payload_started() {
+        let payload = SystemEventPayload::started("my-source", PrimitiveKind::Source, 1234);
+
+        assert_eq!(payload.name, "my-source");
+        assert_eq!(payload.kind, "source");
+        assert_eq!(payload.pid, Some(1234));
+        assert!(payload.error.is_none());
+    }
+
+    #[test]
+    fn test_system_event_payload_stopped() {
+        let payload = SystemEventPayload::stopped("my-handler", PrimitiveKind::Handler, Some(5678));
+
+        assert_eq!(payload.name, "my-handler");
+        assert_eq!(payload.kind, "handler");
+        assert_eq!(payload.pid, Some(5678));
+        assert!(payload.error.is_none());
+    }
+
+    #[test]
+    fn test_system_event_payload_stopped_without_pid() {
+        let payload = SystemEventPayload::stopped("my-sink", PrimitiveKind::Sink, None);
+
+        assert_eq!(payload.name, "my-sink");
+        assert_eq!(payload.kind, "sink");
+        assert!(payload.pid.is_none());
+        assert!(payload.error.is_none());
+    }
+
+    #[test]
+    fn test_system_event_payload_error() {
+        let payload = SystemEventPayload::error(
+            "failing-source",
+            PrimitiveKind::Source,
+            Some(9999),
+            "Connection refused".to_string(),
+        );
+
+        assert_eq!(payload.name, "failing-source");
+        assert_eq!(payload.kind, "source");
+        assert_eq!(payload.pid, Some(9999));
+        assert_eq!(payload.error, Some("Connection refused".to_string()));
+    }
+
+    #[test]
+    fn test_system_event_payload_shutdown() {
+        let payload = SystemEventPayload::shutdown("handler");
+
+        assert_eq!(payload["kind"], "handler");
+    }
+
+    #[test]
+    fn test_system_event_payload_is_serializable() -> Result<(), serde_json::Error> {
+        let payload = SystemEventPayload::started("test", PrimitiveKind::Source, 100);
+        let json = serde_json::to_string(&payload)?;
+
+        assert!(json.contains("\"name\":\"test\""));
+        assert!(json.contains("\"kind\":\"source\""));
+        assert!(json.contains("\"pid\":100"));
+        // error should not be present when None
+        assert!(!json.contains("\"error\""));
+        Ok(())
     }
 }

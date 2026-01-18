@@ -11,13 +11,11 @@
 //! - Graceful termination in `before_stop`
 
 use crate::config::{HandlerConfig, SinkConfig, SourceConfig};
-use crate::messages::EmergentMessage;
 use crate::primitive_actor::{
-    build_primitive_actor, IpcSystemEvent, PrimitiveActorConfig, StopPrimitive,
+    build_primitive_actor, create_shutdown_event, PrimitiveActorConfig, StopPrimitive,
 };
 use crate::primitives::{PrimitiveInfo, PrimitiveKind};
 use acton_reactive::prelude::*;
-use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -381,12 +379,7 @@ impl ProcessManager {
 
     /// Broadcast a shutdown message for a specific primitive kind.
     async fn broadcast_shutdown(&self, broker: &ActorHandle, kind: &str) {
-        let message = EmergentMessage::new("system.shutdown")
-            .with_source("emergent-engine")
-            .with_payload(json!({ "kind": kind }));
-
-        let event = IpcSystemEvent { inner: message };
-        broker.broadcast(event).await;
+        broker.broadcast(create_shutdown_event(kind)).await;
     }
 
     /// Wait for primitives to handle shutdown message, then stop their actors.
