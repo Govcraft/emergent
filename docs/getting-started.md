@@ -217,11 +217,11 @@ A Sink runs an async loop that receives messages and produces side effects (writ
 
 ## 5. Write Your First Source
 
-Create a new Rust project for a simple timer Source:
+Create a new Rust project for a simple Source that says "hello":
 
 ```bash
-cargo new --bin my_timer
-cd my_timer
+cargo new --bin greeter
+cd greeter
 cargo add emergent-client tokio serde_json --features tokio/full
 ```
 
@@ -231,67 +231,46 @@ Edit `src/main.rs`:
 use emergent_client::helpers::run_source;
 use emergent_client::EmergentMessage;
 use serde_json::json;
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_source(Some("my_timer"), |source, mut shutdown| async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(3));
-        let mut count = 0u64;
-
-        loop {
-            tokio::select! {
-                _ = shutdown.changed() => break,
-                _ = interval.tick() => {
-                    count += 1;
-                    let msg = EmergentMessage::new("my_timer.tick")
-                        .with_payload(json!({"count": count}));
-                    source.publish(msg).await.map_err(|e| e.to_string())?;
-                }
-            }
-        }
+    run_source(Some("greeter"), |source, _shutdown| async move {
+        let msg = EmergentMessage::new("say.hello")
+            .with_payload(json!({"greeting": "hello"}));
+        source.publish(msg).await.map_err(|e| e.to_string())?;
         Ok(())
     }).await?;
     Ok(())
 }
 ```
 
-The `run_source` helper handles all the boilerplate:
+This Source publishes one message and exits. The `run_source` helper handles connection, signal handling, and cleanup—your code just publishes.
 
-1. **Name resolution** - Uses the provided name, falls back to `EMERGENT_NAME` env var
-2. **Connection** - Connects to the engine automatically
-3. **Signal handling** - Sets up SIGTERM handler and provides a `shutdown` receiver
-4. **Graceful disconnect** - Cleans up when your function completes
-
-Your code focuses entirely on the business logic: timing and publishing. The helper manages everything else.
-
-Build the Source:
+Build and configure:
 
 ```bash
 cargo build --release
 ```
 
-Add it to your configuration (`config/emergent.toml`):
-
 ```toml
 [[sources]]
-name = "my_timer"
-path = "/path/to/my_timer/target/release/my_timer"
+name = "greeter"
+path = "/path/to/greeter/target/release/greeter"
 enabled = true
-publishes = ["my_timer.tick"]
+publishes = ["say.hello"]
 ```
 
-**The helper reduces boilerplate to near-zero. You write your publishing logic, the SDK handles connection, signals, and cleanup.**
+**That's it. Seven lines of business logic to publish a message.**
 
 ---
 
 ## 6. Write Your First Handler
 
-Create a Handler that receives your timer ticks and doubles the count:
+Create a Handler that receives "hello" and adds "world":
 
 ```bash
-cargo new --bin my_doubler
-cd my_doubler
+cargo new --bin combiner
+cd combiner
 cargo add emergent-client tokio serde serde_json --features tokio/full
 ```
 
@@ -300,36 +279,26 @@ Edit `src/main.rs`:
 ```rust
 use emergent_client::helpers::run_handler;
 use emergent_client::EmergentMessage;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 
 #[derive(Deserialize)]
-struct TickPayload {
-    count: u64,
-}
-
-#[derive(Serialize)]
-struct DoubledPayload {
-    original: u64,
-    doubled: u64,
+struct HelloPayload {
+    greeting: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_handler(
-        Some("my_doubler"),
-        &["my_timer.tick"],
+        Some("combiner"),
+        &["say.hello"],
         |msg, handler| async move {
-            let tick: TickPayload = msg.payload_as().map_err(|e| e.to_string())?;
-            let doubled = DoubledPayload {
-                original: tick.count,
-                doubled: tick.count * 2,
-            };
+            let input: HelloPayload = msg.payload_as().map_err(|e| e.to_string())?;
+            let message = format!("{} world", input.greeting);
 
-            // Link output to input for tracing
-            let output = EmergentMessage::new("my_timer.doubled")
+            let output = EmergentMessage::new("say.complete")
                 .with_causation_from_message(msg.id())
-                .with_payload(json!(doubled));
+                .with_payload(json!({"message": message}));
 
             handler.publish(output).await.map_err(|e| e.to_string())
         }
@@ -338,15 +307,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The `run_handler` helper manages the message loop:
+The Handler receives "hello", appends "world", and publishes the result. The `run_handler` helper manages the message loop—your function is called once for each incoming message.
 
-1. **Connects** to the engine and subscribes to the specified message types
-2. **Iterates** over incoming messages, calling your function for each
-3. **Handles shutdown** automatically when SIGTERM arrives or the stream closes
-
-Your code focuses on the transformation logic: deserialize input, compute result, publish output with causation tracking.
-
-**Causation tracking** is the key pattern for Handlers. The `.with_causation_from_message(msg.id())` call links the output to the input, creating an event chain: `my_timer.tick` (ID: `msg_01a2`) causes `my_timer.doubled` (causation ID: `msg_01a2`). This enables tracing events through your system—we'll explore this fully in Section 8.
+The `.with_causation_from_message(msg.id())` call links output to input, creating a traceable event chain. We'll explore this in Section 8.
 
 Build and configure:
 
@@ -356,24 +319,24 @@ cargo build --release
 
 ```toml
 [[handlers]]
-name = "my_doubler"
-path = "/path/to/my_doubler/target/release/my_doubler"
+name = "combiner"
+path = "/path/to/combiner/target/release/combiner"
 enabled = true
-subscribes = ["my_timer.tick"]
-publishes = ["my_timer.doubled"]
+subscribes = ["say.hello"]
+publishes = ["say.complete"]
 ```
 
-**Handlers transform events while preserving traceability. Every output message knows which input caused it.**
+**Handlers transform events. Input goes in, transformed output comes out.**
 
 ---
 
 ## 7. Write Your First Sink
 
-Create a Sink that prints doubled values:
+Create a Sink that prints the final message:
 
 ```bash
-cargo new --bin my_printer
-cd my_printer
+cargo new --bin printer
+cd printer
 cargo add emergent-client tokio serde --features tokio/full
 ```
 
@@ -384,19 +347,18 @@ use emergent_client::helpers::run_sink;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-struct DoubledPayload {
-    original: u64,
-    doubled: u64,
+struct CompletePayload {
+    message: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_sink(
-        Some("my_printer"),
-        &["my_timer.doubled"],
+        Some("printer"),
+        &["say.complete"],
         |msg| async move {
-            let data: DoubledPayload = msg.payload_as().map_err(|e| e.to_string())?;
-            println!("{} doubled is {}", data.original, data.doubled);
+            let data: CompletePayload = msg.payload_as().map_err(|e| e.to_string())?;
+            println!("{}", data.message);
             Ok(())
         }
     ).await?;
@@ -404,9 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The `run_sink` helper is the simplest of the three—your function just receives messages and performs side effects. No publishing, no complex state management.
-
-Unlike Handlers, Sinks never call `publish()`. They are write-only to the external world: print to console, write to files, send HTTP requests, update databases.
+The Sink receives messages and produces side effects—in this case, printing to the console. Unlike Handlers, Sinks never publish.
 
 Build and configure:
 
@@ -416,10 +376,10 @@ cargo build --release
 
 ```toml
 [[sinks]]
-name = "my_printer"
-path = "/path/to/my_printer/target/release/my_printer"
+name = "printer"
+path = "/path/to/printer/target/release/printer"
 enabled = true
-subscribes = ["my_timer.doubled"]
+subscribes = ["say.complete"]
 ```
 
 Run the engine with your three-component pipeline:
@@ -431,13 +391,10 @@ Run the engine with your three-component pipeline:
 You should see:
 
 ```
-1 doubled is 2
-2 doubled is 4
-3 doubled is 6
-...
+hello world
 ```
 
-**You built a complete event-driven pipeline with three independent programs that communicate through the engine.** Each program is simple, testable, and replaceable—want to switch from console to database logging? Just swap the Sink in your config.
+**You built a complete event-driven pipeline.** Three independent programs communicate through the engine: Source publishes "hello", Handler transforms it to "hello world", Sink prints the result. Each component is simple, testable, and replaceable.
 
 ---
 
@@ -450,8 +407,8 @@ Every message in Emergent shares the same structure:
 ```rust
 EmergentMessage {
     id: MessageId,              // Time-sortable unique ID (UUIDv7 format)
-    message_type: String,       // "timer.tick", "timer.doubled"
-    source: String,             // "my_timer", "my_doubler"
+    message_type: String,       // "say.hello", "say.complete"
+    source: String,             // "greeter", "combiner"
     timestamp_ms: u64,          // Unix epoch milliseconds
     payload: Value,             // Your data
     metadata: Option<Value>,    // Optional key-value pairs
@@ -468,9 +425,9 @@ Message IDs are time-sortable UUIDs (UUIDv7 format)—you can sort by ID to get 
 
 Message types use dotted notation: `domain.event`. Conventions:
 
-- `timer.tick` - domain event from the timer
-- `timer.filtered` - derived event after filtering
-- `system.started.timer` - system event for timer startup
+- `say.hello` - domain event from the greeter
+- `say.complete` - derived event after transformation
+- `system.started.greeter` - system event for greeter startup
 - `system.shutdown` - broadcast signal for graceful shutdown
 
 Wildcards work in subscriptions: `subscribe(&["system.*"])` matches all system events.
@@ -480,10 +437,9 @@ Wildcards work in subscriptions: `subscribe(&["system.*"])` matches all system e
 **Causation ID** answers "what caused this message?" Use it to trace event chains:
 
 ```
-timer.tick (msg_01a2)
-  ├─> timer.filtered (msg_01a3, caused by msg_01a2)
-  │     └─> email.sent (msg_01a4, caused by msg_01a3)
-  └─> filter.processed (msg_01a5, caused by msg_01a2)
+say.hello (msg_01a2)
+  └─> say.complete (msg_01a3, caused by msg_01a2)
+        └─> notification.sent (msg_01a4, caused by msg_01a3)
 ```
 
 **Correlation ID** answers "what request does this belong to?" Use it for request-response patterns:
@@ -666,7 +622,9 @@ When you use `run_handler` or `run_sink`, signal handling and graceful shutdown 
 2. Close the message stream when signaled
 3. Clean up and disconnect after your function completes
 
-For Sources, the helper provides a shutdown signal you can check in your loop:
+For **one-shot Sources** (like our "hello world" greeter), shutdown handling is automatic—just complete your function and return.
+
+For **long-running Sources** (timers, HTTP servers, file watchers), the helper provides a shutdown signal you can check:
 
 ```rust
 // Rust: shutdown is a watch::Receiver<bool>
