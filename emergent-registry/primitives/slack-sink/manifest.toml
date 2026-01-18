@@ -1,0 +1,46 @@
+# Slack Sink Primitive Manifest
+
+[primitive]
+name = "slack-sink"
+version = "0.1.0"
+kind = "sink"
+description = "Post messages to Slack channels"
+homepage = "https://github.com/govcraft/emergent-primitives"
+license = "MIT"
+
+[messages]
+subscribes = ["*"]
+
+# CLI Arguments
+[[args]]
+name = "token"
+long = "token"
+short = "t"
+env = "SLACK_TOKEN"
+required = true
+description = "Slack Bot OAuth token (xoxb-...)"
+
+[[args]]
+name = "default-channel"
+long = "default-channel"
+short = "c"
+required = false
+description = "Default channel ID for messages without explicit channel"
+
+# Binary Downloads
+[binaries]
+release_url = "https://github.com/govcraft/emergent-primitives/releases"
+
+[binaries.checksums]
+x86_64-unknown-linux-gnu = ""
+aarch64-unknown-linux-gnu = ""
+x86_64-apple-darwin = ""
+aarch64-apple-darwin = ""
+x86_64-pc-windows-msvc = ""
+
+[binaries.targets]
+x86_64-unknown-linux-gnu = "slack-sink-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+aarch64-unknown-linux-gnu = "slack-sink-0.1.0-aarch64-unknown-linux-gnu.tar.gz"
+x86_64-apple-darwin = "slack-sink-0.1.0-x86_64-apple-darwin.tar.gz"
+aarch64-apple-darwin = "slack-sink-0.1.0-aarch64-apple-darwin.tar.gz"
+x86_64-pc-windows-msvc = "slack-sink-0.1.0-x86_64-pc-windows-msvc.zip"

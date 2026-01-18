@@ -1,0 +1,60 @@
+# HTTP Sink Primitive Manifest
+
+[primitive]
+name = "http-sink"
+version = "0.1.0"
+kind = "sink"
+description = "Make outbound HTTP requests"
+homepage = "https://github.com/govcraft/emergent-primitives"
+license = "MIT"
+
+[messages]
+subscribes = ["*"]
+
+# CLI Arguments
+[[args]]
+name = "base-url"
+long = "base-url"
+short = "u"
+env = "HTTP_BASE_URL"
+required = false
+description = "Base URL for all requests (can be overridden per-message)"
+
+[[args]]
+name = "timeout"
+long = "timeout"
+short = "t"
+required = false
+description = "Request timeout in seconds (default: 30)"
+
+[[args]]
+name = "retries"
+long = "retries"
+short = "r"
+required = false
+description = "Number of retry attempts for failed requests (default: 3)"
+
+[[args]]
+name = "auth-header"
+long = "auth-header"
+env = "HTTP_AUTH_HEADER"
+required = false
+description = "Authorization header value"
+
+# Binary Downloads
+[binaries]
+release_url = "https://github.com/govcraft/emergent-primitives/releases"
+
+[binaries.checksums]
+x86_64-unknown-linux-gnu = ""
+aarch64-unknown-linux-gnu = ""
+x86_64-apple-darwin = ""
+aarch64-apple-darwin = ""
+x86_64-pc-windows-msvc = ""
+
+[binaries.targets]
+x86_64-unknown-linux-gnu = "http-sink-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+aarch64-unknown-linux-gnu = "http-sink-0.1.0-aarch64-unknown-linux-gnu.tar.gz"
+x86_64-apple-darwin = "http-sink-0.1.0-x86_64-apple-darwin.tar.gz"
+aarch64-apple-darwin = "http-sink-0.1.0-aarch64-apple-darwin.tar.gz"
+x86_64-pc-windows-msvc = "http-sink-0.1.0-x86_64-pc-windows-msvc.zip"

@@ -1,0 +1,59 @@
+# HTTP Source Primitive Manifest
+
+[primitive]
+name = "http-source"
+version = "0.1.0"
+kind = "source"
+description = "Generic HTTP webhook receiver"
+homepage = "https://github.com/govcraft/emergent-primitives"
+license = "MIT"
+
+[messages]
+publishes = ["http.request"]
+
+# CLI Arguments
+[[args]]
+name = "port"
+long = "port"
+short = "p"
+required = false
+description = "Port to listen on (default: 8080)"
+
+[[args]]
+name = "host"
+long = "host"
+short = "H"
+required = false
+description = "Host to bind to (default: 0.0.0.0)"
+
+[[args]]
+name = "path"
+long = "path"
+required = false
+description = "URL path to listen on (default: /)"
+
+[[args]]
+name = "secret"
+long = "secret"
+short = "s"
+env = "HTTP_WEBHOOK_SECRET"
+required = false
+description = "Optional HMAC secret for signature verification"
+
+# Binary Downloads
+[binaries]
+release_url = "https://github.com/govcraft/emergent-primitives/releases"
+
+[binaries.checksums]
+x86_64-unknown-linux-gnu = ""
+aarch64-unknown-linux-gnu = ""
+x86_64-apple-darwin = ""
+aarch64-apple-darwin = ""
+x86_64-pc-windows-msvc = ""
+
+[binaries.targets]
+x86_64-unknown-linux-gnu = "http-source-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+aarch64-unknown-linux-gnu = "http-source-0.1.0-aarch64-unknown-linux-gnu.tar.gz"
+x86_64-apple-darwin = "http-source-0.1.0-x86_64-apple-darwin.tar.gz"
+aarch64-apple-darwin = "http-source-0.1.0-aarch64-apple-darwin.tar.gz"
+x86_64-pc-windows-msvc = "http-source-0.1.0-x86_64-pc-windows-msvc.zip"

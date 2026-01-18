@@ -1,0 +1,52 @@
+# GitHub Source Primitive Manifest
+
+[primitive]
+name = "github-source"
+version = "0.1.0"
+kind = "source"
+description = "Receive GitHub webhooks for PRs, issues, and pushes"
+homepage = "https://github.com/govcraft/emergent-primitives"
+license = "MIT"
+
+[messages]
+publishes = ["github.pull_request", "github.issue", "github.push", "github.release"]
+
+# CLI Arguments
+[[args]]
+name = "webhook-secret"
+long = "webhook-secret"
+short = "s"
+env = "GITHUB_WEBHOOK_SECRET"
+required = true
+description = "GitHub webhook secret for signature verification"
+
+[[args]]
+name = "port"
+long = "port"
+short = "p"
+required = false
+description = "Port to listen on (default: 8080)"
+
+[[args]]
+name = "path"
+long = "path"
+required = false
+description = "URL path for webhook endpoint (default: /webhook)"
+
+# Binary Downloads
+[binaries]
+release_url = "https://github.com/govcraft/emergent-primitives/releases"
+
+[binaries.checksums]
+x86_64-unknown-linux-gnu = ""
+aarch64-unknown-linux-gnu = ""
+x86_64-apple-darwin = ""
+aarch64-apple-darwin = ""
+x86_64-pc-windows-msvc = ""
+
+[binaries.targets]
+x86_64-unknown-linux-gnu = "github-source-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+aarch64-unknown-linux-gnu = "github-source-0.1.0-aarch64-unknown-linux-gnu.tar.gz"
+x86_64-apple-darwin = "github-source-0.1.0-x86_64-apple-darwin.tar.gz"
+aarch64-apple-darwin = "github-source-0.1.0-aarch64-apple-darwin.tar.gz"
+x86_64-pc-windows-msvc = "github-source-0.1.0-x86_64-pc-windows-msvc.zip"

@@ -1,0 +1,53 @@
+# Slack Source Primitive Manifest
+
+[primitive]
+name = "slack-source"
+version = "0.1.0"
+kind = "source"
+description = "Monitor Slack channels for messages, reactions, and threads"
+homepage = "https://github.com/govcraft/emergent-primitives"
+license = "MIT"
+
+[messages]
+publishes = ["slack.message", "slack.reaction", "slack.thread"]
+
+# CLI Arguments
+[[args]]
+name = "token"
+long = "token"
+short = "t"
+env = "SLACK_TOKEN"
+required = true
+description = "Slack Bot OAuth token (xoxb-...)"
+
+[[args]]
+name = "channels"
+long = "channels"
+short = "c"
+required = false
+description = "Comma-separated list of channel IDs to monitor (default: all)"
+
+[[args]]
+name = "app-token"
+long = "app-token"
+env = "SLACK_APP_TOKEN"
+required = false
+description = "Slack App-level token for Socket Mode (xapp-...)"
+
+# Binary Downloads
+[binaries]
+release_url = "https://github.com/govcraft/emergent-primitives/releases"
+
+[binaries.checksums]
+x86_64-unknown-linux-gnu = ""
+aarch64-unknown-linux-gnu = ""
+x86_64-apple-darwin = ""
+aarch64-apple-darwin = ""
+x86_64-pc-windows-msvc = ""
+
+[binaries.targets]
+x86_64-unknown-linux-gnu = "slack-source-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+aarch64-unknown-linux-gnu = "slack-source-0.1.0-aarch64-unknown-linux-gnu.tar.gz"
+x86_64-apple-darwin = "slack-source-0.1.0-x86_64-apple-darwin.tar.gz"
+aarch64-apple-darwin = "slack-source-0.1.0-aarch64-apple-darwin.tar.gz"
+x86_64-pc-windows-msvc = "slack-source-0.1.0-x86_64-pc-windows-msvc.zip"

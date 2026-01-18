@@ -1,0 +1,53 @@
+# GitHub Sink Primitive Manifest
+
+[primitive]
+name = "github-sink"
+version = "0.1.0"
+kind = "sink"
+description = "Interact with GitHub - create comments, labels, and status checks"
+homepage = "https://github.com/govcraft/emergent-primitives"
+license = "MIT"
+
+[messages]
+subscribes = ["*"]
+
+# CLI Arguments
+[[args]]
+name = "token"
+long = "token"
+short = "t"
+env = "GITHUB_TOKEN"
+required = true
+description = "GitHub personal access token or app installation token"
+
+[[args]]
+name = "owner"
+long = "owner"
+short = "o"
+required = false
+description = "Default repository owner"
+
+[[args]]
+name = "repo"
+long = "repo"
+short = "r"
+required = false
+description = "Default repository name"
+
+# Binary Downloads
+[binaries]
+release_url = "https://github.com/govcraft/emergent-primitives/releases"
+
+[binaries.checksums]
+x86_64-unknown-linux-gnu = ""
+aarch64-unknown-linux-gnu = ""
+x86_64-apple-darwin = ""
+aarch64-apple-darwin = ""
+x86_64-pc-windows-msvc = ""
+
+[binaries.targets]
+x86_64-unknown-linux-gnu = "github-sink-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+aarch64-unknown-linux-gnu = "github-sink-0.1.0-aarch64-unknown-linux-gnu.tar.gz"
+x86_64-apple-darwin = "github-sink-0.1.0-x86_64-apple-darwin.tar.gz"
+aarch64-apple-darwin = "github-sink-0.1.0-aarch64-apple-darwin.tar.gz"
+x86_64-pc-windows-msvc = "github-sink-0.1.0-x86_64-pc-windows-msvc.zip"
