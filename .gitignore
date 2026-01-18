@@ -21,9 +21,6 @@ Thumbs.db
 
 # Hidden directories - ignore all except explicitly allowed
 .**/
-# Allow .claude directory for plans
-!.claude/
-!.claude/**
 # Worktrees directory for isolated development
 .worktrees/
 
