@@ -1,0 +1,43 @@
+# Build artifacts
+target/
+*.rs.bk
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Local configuration
+docker/config/
+docker/data/
+docker/run/
+
+# Logs and databases
+*.log
+*.db
+logs/
+
+# Test artifacts
+*.profraw
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude/AI artifacts
+.claude/
+
+# Worktrees
+.worktrees/
