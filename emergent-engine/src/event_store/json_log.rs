@@ -126,21 +126,20 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_json_log_write() {
-        let temp_dir = TempDir::new().unwrap();
-        let log = JsonEventLog::new(temp_dir.path()).unwrap();
+    fn test_json_log_write() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDir::new()?;
+        let log = JsonEventLog::new(temp_dir.path())?;
 
         let message = EmergentMessage::new("test.event")
             .with_source("test")
             .with_payload(json!({"key": "value"}));
 
-        log.store(&message).unwrap();
-        log.flush().unwrap();
+        log.store(&message)?;
+        log.flush()?;
 
         // Verify file was created
-        let entries: Vec<_> = std::fs::read_dir(temp_dir.path())
-            .unwrap()
-            .collect();
+        let entries: Vec<_> = std::fs::read_dir(temp_dir.path())?.collect();
         assert_eq!(entries.len(), 1);
+        Ok(())
     }
 }

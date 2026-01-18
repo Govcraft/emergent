@@ -324,18 +324,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_minimal_config() {
+    fn test_parse_minimal_config() -> Result<(), Box<dyn std::error::Error>> {
         let toml = r#"
 [engine]
 name = "test"
 "#;
-        let config = EmergentConfig::parse(toml).unwrap();
+        let config = EmergentConfig::parse(toml)?;
         assert_eq!(config.engine.name, "test");
         assert_eq!(config.engine.wire_format, WireFormat::Messagepack);
+        Ok(())
     }
 
     #[test]
-    fn test_parse_full_config() {
+    fn test_parse_full_config() -> Result<(), Box<dyn std::error::Error>> {
         let toml = r#"
 [engine]
 name = "emergent"
@@ -368,29 +369,31 @@ enabled = true
 subscribes = ["timer.filtered"]
 "#;
 
-        let config = EmergentConfig::parse(toml).unwrap();
+        let config = EmergentConfig::parse(toml)?;
         assert_eq!(config.sources.len(), 1);
         assert_eq!(config.handlers.len(), 1);
         assert_eq!(config.sinks.len(), 1);
         assert_eq!(config.sources[0].name, "timer");
         assert_eq!(config.handlers[0].subscribes, vec!["timer.tick"]);
         assert_eq!(config.sinks[0].subscribes, vec!["timer.filtered"]);
+        Ok(())
     }
 
     #[test]
-    fn test_wire_format_parsing() {
+    fn test_wire_format_parsing() -> Result<(), Box<dyn std::error::Error>> {
         let json_config = r#"
 [engine]
 wire_format = "json"
 "#;
-        let config = EmergentConfig::parse(json_config).unwrap();
+        let config = EmergentConfig::parse(json_config)?;
         assert_eq!(config.engine.wire_format, WireFormat::Json);
 
         let msgpack_config = r#"
 [engine]
 wire_format = "messagepack"
 "#;
-        let config = EmergentConfig::parse(msgpack_config).unwrap();
+        let config = EmergentConfig::parse(msgpack_config)?;
         assert_eq!(config.engine.wire_format, WireFormat::Messagepack);
+        Ok(())
     }
 }

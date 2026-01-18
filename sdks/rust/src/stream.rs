@@ -74,20 +74,21 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn test_message_stream() {
+    async fn test_message_stream() -> Result<(), Box<dyn std::error::Error>> {
         let (tx, rx) = mpsc::channel(16);
         let mut stream = MessageStream::new(rx);
 
         // Send a message
         let msg = EmergentMessage::new("test.event").with_payload(json!({"key": "value"}));
-        tx.send(msg).await.unwrap();
+        tx.send(msg).await?;
 
         // Receive the message
-        let received = stream.next().await.unwrap();
+        let received = stream.next().await.ok_or("stream ended unexpectedly")?;
         assert_eq!(received.message_type, "test.event");
 
         // Close and verify stream ends
         drop(tx);
         assert!(stream.next().await.is_none());
+        Ok(())
     }
 }

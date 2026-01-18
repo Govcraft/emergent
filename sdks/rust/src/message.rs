@@ -220,24 +220,25 @@ mod tests {
     }
 
     #[test]
-    fn test_message_serialization() {
+    fn test_message_serialization() -> Result<(), Box<dyn std::error::Error>> {
         let msg = EmergentMessage::new("test.event")
             .with_source("test")
             .with_payload(json!({"num": 42}));
 
         // Test JSON serialization
-        let json_bytes = msg.to_json().unwrap();
-        let from_json = EmergentMessage::from_json(&json_bytes).unwrap();
+        let json_bytes = msg.to_json()?;
+        let from_json = EmergentMessage::from_json(&json_bytes)?;
         assert_eq!(from_json.message_type, "test.event");
 
         // Test MessagePack serialization
-        let msgpack_bytes = msg.to_msgpack().unwrap();
-        let from_msgpack = EmergentMessage::from_msgpack(&msgpack_bytes).unwrap();
+        let msgpack_bytes = msg.to_msgpack()?;
+        let from_msgpack = EmergentMessage::from_msgpack(&msgpack_bytes)?;
         assert_eq!(from_msgpack.message_type, "test.event");
+        Ok(())
     }
 
     #[test]
-    fn test_payload_extraction() {
+    fn test_payload_extraction() -> Result<(), Box<dyn std::error::Error>> {
         #[derive(Debug, Deserialize, PartialEq)]
         struct TestPayload {
             count: u32,
@@ -249,9 +250,10 @@ mod tests {
             "name": "test"
         }));
 
-        let payload: TestPayload = msg.payload_as().unwrap();
+        let payload: TestPayload = msg.payload_as()?;
         assert_eq!(payload.count, 42);
         assert_eq!(payload.name, "test");
+        Ok(())
     }
 
     #[test]

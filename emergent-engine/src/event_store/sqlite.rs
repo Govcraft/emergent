@@ -261,8 +261,8 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_sqlite_store_and_query() {
-        let store = SqliteEventStore::in_memory().unwrap();
+    fn test_sqlite_store_and_query() -> Result<(), Box<dyn std::error::Error>> {
+        let store = SqliteEventStore::in_memory()?;
 
         let msg1 = EmergentMessage::new("timer.tick")
             .with_source("timer")
@@ -276,19 +276,20 @@ mod tests {
             .with_source("other")
             .with_payload(json!({}));
 
-        store.store(&msg1).unwrap();
-        store.store(&msg2).unwrap();
-        store.store(&msg3).unwrap();
+        store.store(&msg1)?;
+        store.store(&msg2)?;
+        store.store(&msg3)?;
 
-        assert_eq!(store.count().unwrap(), 3);
+        assert_eq!(store.count()?, 3);
 
-        let timer_events = store.query_by_type("timer.tick").unwrap();
+        let timer_events = store.query_by_type("timer.tick")?;
         assert_eq!(timer_events.len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn test_correlation_query() {
-        let store = SqliteEventStore::in_memory().unwrap();
+    fn test_correlation_query() -> Result<(), Box<dyn std::error::Error>> {
+        let store = SqliteEventStore::in_memory()?;
 
         let msg1 = EmergentMessage::new("request")
             .with_source("client")
@@ -298,10 +299,11 @@ mod tests {
             .with_source("server")
             .with_correlation_id("corr_123");
 
-        store.store(&msg1).unwrap();
-        store.store(&msg2).unwrap();
+        store.store(&msg1)?;
+        store.store(&msg2)?;
 
-        let correlated = store.query_by_correlation("corr_123").unwrap();
+        let correlated = store.query_by_correlation("corr_123")?;
         assert_eq!(correlated.len(), 2);
+        Ok(())
     }
 }

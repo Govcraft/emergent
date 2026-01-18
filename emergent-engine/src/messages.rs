@@ -204,30 +204,32 @@ mod tests {
     }
 
     #[test]
-    fn test_msgpack_roundtrip() {
+    fn test_msgpack_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         let original = EmergentMessage::new("test.message")
             .with_source("test")
             .with_payload(json!({"key": "value"}));
 
-        let bytes = original.to_msgpack().unwrap();
-        let restored = EmergentMessage::from_msgpack(&bytes).unwrap();
+        let bytes = original.to_msgpack()?;
+        let restored = EmergentMessage::from_msgpack(&bytes)?;
 
         assert_eq!(original.id, restored.id);
         assert_eq!(original.message_type, restored.message_type);
         assert_eq!(original.payload, restored.payload);
+        Ok(())
     }
 
     #[test]
-    fn test_json_roundtrip() {
+    fn test_json_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         let original = EmergentMessage::new("test.message")
             .with_source("test")
             .with_payload(json!({"key": "value"}));
 
-        let bytes = original.to_json().unwrap();
-        let restored = EmergentMessage::from_json(&bytes).unwrap();
+        let bytes = original.to_json()?;
+        let restored = EmergentMessage::from_json(&bytes)?;
 
         assert_eq!(original.id, restored.id);
         assert_eq!(original.message_type, restored.message_type);
         assert_eq!(original.payload, restored.payload);
+        Ok(())
     }
 }
