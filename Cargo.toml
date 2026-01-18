@@ -48,3 +48,13 @@ anyhow = "1"
 
 # acton-reactive
 acton-reactive = { version = "7.1.0", features = ["ipc", "ipc-messagepack"] }
+
+# =============================================================================
+# Release Profile - Optimized for minimal binary size
+# =============================================================================
+[profile.release]
+opt-level = "z"      # Optimize for size
+lto = true           # Link-time optimization
+codegen-units = 1    # Single codegen unit for better optimization
+panic = "abort"      # Smaller panic handling
+strip = true         # Strip symbols

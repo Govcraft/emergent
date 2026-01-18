@@ -1,0 +1,87 @@
+# Emergent Engine Configuration - Container Edition
+#
+# This configuration is designed for running inside a Docker container.
+# Copy this file to config/emergent.toml and customize as needed.
+#
+# Volume mounts expected by docker-compose.yml:
+#   /etc/emergent     - Configuration files (this file)
+#   /var/lib/emergent - Persistent data (events DB, logs)
+#   /run/emergent     - IPC socket directory
+#
+# Usage:
+#   cp emergent.toml.example config/emergent.toml
+#   docker-compose up
+
+# =============================================================================
+# Engine Settings
+# =============================================================================
+
+[engine]
+# Name of this engine instance
+name = "emergent"
+
+# Socket path for IPC connections
+# Use explicit path for container environment
+socket_path = "/run/emergent/emergent.sock"
+
+# Wire format for IPC communication
+wire_format = "messagepack"
+
+# =============================================================================
+# Event Store Settings
+# =============================================================================
+
+[event_store]
+# Directory for JSON log files (append-only, one file per day)
+json_log_dir = "/var/lib/emergent/logs"
+
+# Path to SQLite database for structured event storage and replay
+sqlite_path = "/var/lib/emergent/events.db"
+
+# How many days to retain events before cleanup
+retention_days = 30
+
+# =============================================================================
+# Primitives (Sources, Handlers, Sinks)
+# =============================================================================
+#
+# In a containerized deployment, primitives can be:
+#
+# 1. Built into the same image (extend Dockerfile)
+# 2. Run as separate containers connecting via shared socket volume
+# 3. Run on the host connecting to the exposed socket
+#
+# Example: Source running on host connecting to containerized engine
+#   EMERGENT_SOCKET=/path/to/mounted/run/emergent.sock ./my-source
+#
+# Example: Primitive in separate container
+#   volumes:
+#     - ./run:/run/emergent  # Share socket directory
+#
+# Add your primitive configurations below:
+# =============================================================================
+
+# Example source (uncomment and customize)
+# [[sources]]
+# name = "timer"
+# path = "/usr/local/bin/timer"
+# args = ["--interval", "5000"]
+# enabled = true
+# publishes = ["timer.tick"]
+
+# Example handler (uncomment and customize)
+# [[handlers]]
+# name = "filter"
+# path = "/usr/local/bin/filter"
+# args = ["--filter-every", "5"]
+# enabled = true
+# subscribes = ["timer.tick"]
+# publishes = ["timer.filtered"]
+
+# Example sink (uncomment and customize)
+# [[sinks]]
+# name = "console"
+# path = "/usr/local/bin/console"
+# args = []
+# enabled = true
+# subscribes = ["timer.filtered", "system.started.*", "system.stopped.*"]

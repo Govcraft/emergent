@@ -1,0 +1,44 @@
+# ==============================================================================
+# Emergent Engine Docker Compose Configuration
+# ==============================================================================
+#
+# Usage:
+#   # Build and run locally
+#   docker-compose up --build
+#
+#   # Run with pre-built image from GHCR
+#   docker-compose up
+#
+# Before running, ensure you have:
+#   1. Created config/emergent.toml (copy from emergent.toml.example)
+#   2. Created data/ directory for persistence
+#
+# ==============================================================================
+
+services:
+  emergent:
+    image: ghcr.io/govcraft/emergent:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: emergent-engine
+    restart: unless-stopped
+
+    volumes:
+      # Configuration (read-only)
+      - ./config:/etc/emergent:ro
+      # Persistent data (events DB + logs)
+      - ./data:/var/lib/emergent
+      # IPC socket directory (for external primitive connections)
+      - ./run:/run/emergent
+
+    environment:
+      - RUST_LOG=info
+
+    # Healthcheck using process presence (engine doesn't have HTTP endpoint)
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "emergent"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
