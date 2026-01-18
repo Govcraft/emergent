@@ -213,9 +213,9 @@ async fn main() -> Result<()> {
 
     // Initialize tracing
     let log_level = if args.verbose {
-        "debug,acton=debug"
+        "debug,acton_reactive=off"
     } else {
-        "info,acton=info"
+        "info,acton_reactive=off"
     };
     tracing_subscriber::fmt()
         .with_env_filter(
