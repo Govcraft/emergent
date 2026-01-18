@@ -86,7 +86,7 @@ docker images emergent:local
 ```bash
 # Pull from GHCR (after pushing)
 docker pull ghcr.io/govcraft/emergent:latest
-docker pull ghcr.io/govcraft/emergent:0.4.1
+docker pull ghcr.io/govcraft/emergent:0.5.0
 ```
 
 ## Healthcheck
