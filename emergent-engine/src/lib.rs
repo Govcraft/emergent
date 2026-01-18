@@ -22,6 +22,7 @@
 
 pub mod config;
 pub mod event_store;
+pub mod marketplace;
 pub mod messages;
 pub mod primitive_actor;
 pub mod primitives;

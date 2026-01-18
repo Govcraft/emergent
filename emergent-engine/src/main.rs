@@ -45,6 +45,8 @@ struct Args {
 enum Command {
     /// Generate a new primitive (source, handler, or sink)
     Scaffold(scaffold::cli::ScaffoldArgs),
+    /// Manage marketplace primitives
+    Marketplace(emergent_engine::marketplace::MarketplaceArgs),
 }
 
 use emergent_engine::config::EmergentConfig;
@@ -228,6 +230,10 @@ async fn main() -> Result<()> {
         match command {
             Command::Scaffold(scaffold_args) => {
                 scaffold::run_scaffold(scaffold_args).await?;
+                return Ok(());
+            }
+            Command::Marketplace(marketplace_args) => {
+                emergent_engine::marketplace::execute(marketplace_args).await?;
                 return Ok(());
             }
         }
