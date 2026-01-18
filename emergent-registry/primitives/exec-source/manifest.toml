@@ -1,0 +1,66 @@
+# Exec Source Primitive Manifest
+
+[primitive]
+name = "exec-source"
+version = "0.1.0"
+kind = "source"
+description = "Execute shell commands and emit output as events"
+homepage = "https://github.com/govcraft/emergent-primitives"
+license = "MIT"
+
+[messages]
+publishes = ["exec.output", "exec.error", "exec.exit"]
+
+# CLI Arguments
+[[args]]
+name = "command"
+long = "command"
+short = "c"
+required = true
+description = "Command to execute"
+
+[[args]]
+name = "args"
+long = "args"
+short = "a"
+required = false
+description = "Arguments to pass to the command (can be repeated)"
+
+[[args]]
+name = "interval"
+long = "interval"
+short = "i"
+required = false
+description = "Interval in milliseconds between executions (default: run once)"
+
+[[args]]
+name = "working-dir"
+long = "working-dir"
+short = "w"
+required = false
+description = "Working directory for command execution"
+
+[[args]]
+name = "shell"
+long = "shell"
+short = "s"
+required = false
+description = "Shell to use for command execution (default: sh on Unix, cmd on Windows)"
+
+# Binary Downloads
+[binaries]
+release_url = "https://github.com/govcraft/emergent-primitives/releases"
+
+[binaries.checksums]
+x86_64-unknown-linux-gnu = ""
+aarch64-unknown-linux-gnu = ""
+x86_64-apple-darwin = ""
+aarch64-apple-darwin = ""
+x86_64-pc-windows-msvc = ""
+
+[binaries.targets]
+x86_64-unknown-linux-gnu = "exec-source-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+aarch64-unknown-linux-gnu = "exec-source-0.1.0-aarch64-unknown-linux-gnu.tar.gz"
+x86_64-apple-darwin = "exec-source-0.1.0-x86_64-apple-darwin.tar.gz"
+aarch64-apple-darwin = "exec-source-0.1.0-aarch64-apple-darwin.tar.gz"
+x86_64-pc-windows-msvc = "exec-source-0.1.0-x86_64-pc-windows-msvc.zip"

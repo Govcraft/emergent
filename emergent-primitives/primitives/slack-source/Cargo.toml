@@ -1,0 +1,19 @@
+[package]
+name = "slack-source"
+description = "Slack event monitor for Emergent (stub)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "slack-source"
+path = "src/main.rs"
+
+[dependencies]
+emergent-client.workspace = true
+clap.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,67 @@
+# Emergent Official Registry
+# This file indexes all available primitives in the marketplace
+
+[registry]
+name = "emergent-official"
+version = "1.0.0"
+description = "Official Emergent primitives registry"
+
+# Slack Integration
+[[primitives]]
+name = "slack-source"
+version = "0.1.0"
+kind = "source"
+description = "Monitor Slack channels for messages, reactions, and threads"
+publishes = ["slack.message", "slack.reaction", "slack.thread"]
+tags = ["slack", "chat", "messaging"]
+
+[[primitives]]
+name = "slack-sink"
+version = "0.1.0"
+kind = "sink"
+description = "Post messages to Slack channels"
+subscribes = ["*"]
+tags = ["slack", "chat", "messaging"]
+
+# GitHub Integration
+[[primitives]]
+name = "github-source"
+version = "0.1.0"
+kind = "source"
+description = "Receive GitHub webhooks for PRs, issues, and pushes"
+publishes = ["github.pull_request", "github.issue", "github.push", "github.release"]
+tags = ["github", "git", "vcs", "webhooks"]
+
+[[primitives]]
+name = "github-sink"
+version = "0.1.0"
+kind = "sink"
+description = "Interact with GitHub - create comments, labels, and status checks"
+subscribes = ["*"]
+tags = ["github", "git", "vcs"]
+
+# HTTP Integration
+[[primitives]]
+name = "http-source"
+version = "0.1.0"
+kind = "source"
+description = "Generic HTTP webhook receiver"
+publishes = ["http.request"]
+tags = ["http", "webhooks", "api"]
+
+[[primitives]]
+name = "http-sink"
+version = "0.1.0"
+kind = "sink"
+description = "Make outbound HTTP requests"
+subscribes = ["*"]
+tags = ["http", "api", "requests"]
+
+# Exec Integration
+[[primitives]]
+name = "exec-source"
+version = "0.1.0"
+kind = "source"
+description = "Execute shell commands and emit output as events"
+publishes = ["exec.output", "exec.error", "exec.exit"]
+tags = ["exec", "shell", "command"]
