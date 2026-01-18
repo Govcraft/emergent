@@ -289,7 +289,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "console"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -435,7 +435,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "emergent-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "acton-reactive",
  "futures",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "emergent-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "acton-reactive",
  "anyhow",
@@ -508,7 +508,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "filter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -835,9 +835,9 @@ dependencies = [
 
 [[package]]
 name = "mti"
-version = "1.0.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f17cdddc5c90c3bb08b21b0779feb825e54fa3bb4078105e26fe4155c3a69f1"
+checksum = "f9563a7d5556636e74bbd8773241fbcbc5c89b9f6bfdc97b29b56e740c2c74b9"
 dependencies = [
  "typeid_prefix",
  "typeid_suffix",
@@ -1353,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "timer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -1520,15 +1520,15 @@ dependencies = [
 
 [[package]]
 name = "typeid_prefix"
-version = "1.0.5"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a137e34a86f93d1e33436563a193a7433698b46cd0ace2dcd8bd57488555261"
+checksum = "a9da1387307fdee46aa441e4f08a1b491e659fcac1aca9cd71f2c624a0de5d1b"
 
 [[package]]
 name = "typeid_suffix"
-version = "1.2.0"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d46b723d74f5ede0160048deba99670a898b7905682a7a77be7cf8e8b75df50"
+checksum = "77b55e96f110c6db5d1a2f24072552537f0091dc90cebeaa679540bac93e7405"
 dependencies = [
  "uuid",
 ]

@@ -169,7 +169,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match msg {
                     Some(msg) => {
                         let timestamp = Utc::now().format("%H:%M:%S%.3f");
-                        let formatted = format_message(msg.message_type(), msg.id(), msg.payload());
+                        let id_str = msg.id().to_string();
+                        let formatted = format_message(msg.message_type().as_str(), &id_str, msg.payload());
                         println!("[{}] {}", timestamp, formatted);
                     }
                     None => {

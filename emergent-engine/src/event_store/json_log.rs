@@ -90,7 +90,7 @@ impl JsonEventLog {
 impl EventStore for JsonEventLog {
     fn store(&self, message: &EmergentMessage) -> Result<(), EventStoreError> {
         let timestamp: DateTime<Utc> = DateTime::from_timestamp_millis(
-            i64::try_from(message.timestamp_ms).unwrap_or(i64::MAX),
+            i64::try_from(message.timestamp_ms.as_millis()).unwrap_or(i64::MAX),
         )
         .unwrap_or_else(Utc::now);
 

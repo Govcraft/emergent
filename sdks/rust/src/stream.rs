@@ -84,7 +84,7 @@ mod tests {
 
         // Receive the message
         let received = stream.next().await.ok_or("stream ended unexpectedly")?;
-        assert_eq!(received.message_type, "test.event");
+        assert_eq!(received.message_type.as_str(), "test.event");
 
         // Close and verify stream ends
         drop(tx);

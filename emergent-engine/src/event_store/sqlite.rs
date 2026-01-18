@@ -4,7 +4,9 @@
 //! replaying events by time range, message type, or source.
 
 use super::{EventStore, EventStoreError};
-use crate::messages::EmergentMessage;
+use crate::messages::{
+    CausationId, CorrelationId, EmergentMessage, MessageId, MessageType, PrimitiveName, Timestamp,
+};
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
@@ -196,16 +198,54 @@ impl SqliteEventStore {
 }
 
 fn row_to_message(row: &rusqlite::Row<'_>) -> Result<EmergentMessage, rusqlite::Error> {
+    let id_str: String = row.get(0)?;
+    let message_type_str: String = row.get(1)?;
+    let source_str: String = row.get(2)?;
+    let correlation_id_str: Option<String> = row.get(3)?;
+    let causation_id_str: Option<String> = row.get(4)?;
+    let timestamp_ms: i64 = row.get(5)?;
     let payload_json: String = row.get(6)?;
     let metadata_json: Option<String> = row.get(7)?;
 
+    // Parse newtypes from strings
+    let id = MessageId::parse(&id_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+
+    let message_type = MessageType::new(&message_type_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+
+    let source = PrimitiveName::new(&source_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+
+    let correlation_id = correlation_id_str
+        .map(|s| {
+            CorrelationId::parse(&s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+            })
+        })
+        .transpose()?;
+
+    let causation_id = causation_id_str
+        .map(|s| {
+            CausationId::parse(&s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+            })
+        })
+        .transpose()?;
+
+    #[allow(clippy::cast_sign_loss)]
+    let timestamp = Timestamp::from_millis(timestamp_ms as u64);
+
     Ok(EmergentMessage {
-        id: row.get(0)?,
-        message_type: row.get(1)?,
-        source: row.get(2)?,
-        correlation_id: row.get(3)?,
-        causation_id: row.get(4)?,
-        timestamp_ms: row.get::<_, i64>(5)? as u64,
+        id,
+        message_type,
+        source,
+        correlation_id,
+        causation_id,
+        timestamp_ms: timestamp,
         payload: serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null),
         metadata: metadata_json.and_then(|s| serde_json::from_str(&s).ok()),
     })
@@ -224,6 +264,16 @@ impl EventStore for SqliteEventStore {
             .map(serde_json::to_string)
             .transpose()?;
 
+        // Convert newtypes to strings for storage
+        let id_str = message.id.to_string();
+        let message_type_str = message.message_type.as_str();
+        let source_str = message.source.as_str();
+        let correlation_id_str = message.correlation_id.as_ref().map(ToString::to_string);
+        let causation_id_str = message.causation_id.as_ref().map(ToString::to_string);
+
+        #[allow(clippy::cast_possible_wrap)]
+        let timestamp_ms = message.timestamp_ms.as_millis() as i64;
+
         conn.execute(
             r"
             INSERT OR REPLACE INTO events
@@ -231,12 +281,12 @@ impl EventStore for SqliteEventStore {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ",
             params![
-                message.id,
-                message.message_type,
-                message.source,
-                message.correlation_id,
-                message.causation_id,
-                message.timestamp_ms as i64,
+                id_str,
+                message_type_str,
+                source_str,
+                correlation_id_str,
+                causation_id_str,
+                timestamp_ms,
                 payload_json,
                 metadata_json,
             ],
@@ -291,18 +341,22 @@ mod tests {
     fn test_correlation_query() -> Result<(), Box<dyn std::error::Error>> {
         let store = SqliteEventStore::in_memory()?;
 
+        // Create a shared correlation ID for both messages
+        let correlation_id = CorrelationId::new();
+        let correlation_id_str = correlation_id.to_string();
+
         let msg1 = EmergentMessage::new("request")
             .with_source("client")
-            .with_correlation_id("corr_123");
+            .with_correlation_id(correlation_id.clone());
 
         let msg2 = EmergentMessage::new("response")
             .with_source("server")
-            .with_correlation_id("corr_123");
+            .with_correlation_id(correlation_id);
 
         store.store(&msg1)?;
         store.store(&msg2)?;
 
-        let correlated = store.query_by_correlation("corr_123")?;
+        let correlated = store.query_by_correlation(&correlation_id_str)?;
         assert_eq!(correlated.len(), 2);
         Ok(())
     }

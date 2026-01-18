@@ -74,6 +74,7 @@ mod message;
 pub mod prelude;
 mod stream;
 mod subscribe;
+pub mod types;
 
 pub use connection::{EmergentHandler, EmergentSink, EmergentSource};
 pub use error::ClientError;

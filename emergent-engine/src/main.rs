@@ -279,8 +279,8 @@ async fn main() -> Result<()> {
 
         // Forward to IPC subscribers based on the inner message_type
         let notification = IpcPushNotification::new(
-            msg.inner.message_type.clone(),
-            Some(msg.inner.source.clone()),
+            msg.inner.message_type.to_string(),
+            Some(msg.inner.source.to_string()),
             serde_json::to_value(&msg.inner).unwrap_or_default(),
         );
         sub_mgr_for_emergent.forward_to_subscribers(&notification);
@@ -307,8 +307,8 @@ async fn main() -> Result<()> {
 
         // Forward to IPC subscribers based on the inner message_type
         let notification = IpcPushNotification::new(
-            msg.inner.message_type.clone(),
-            Some(msg.inner.source.clone()),
+            msg.inner.message_type.to_string(),
+            Some(msg.inner.source.to_string()),
             serde_json::to_value(&msg.inner).unwrap_or_default(),
         );
         sub_mgr_for_system.forward_to_subscribers(&notification);

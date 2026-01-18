@@ -9,6 +9,7 @@ use crate::error::ClientError;
 use crate::message::EmergentMessage;
 use crate::stream::MessageStream;
 use crate::subscribe::IntoSubscription;
+use crate::types::PrimitiveName;
 use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
 use acton_reactive::ipc::protocol::{
@@ -330,8 +331,10 @@ impl EmergentSource {
     /// Returns an error if the message cannot be sent.
     pub async fn publish(&self, mut message: EmergentMessage) -> Result<()> {
         // Set the source if not already set
-        if message.source.is_empty() {
-            message.source = self.name.clone();
+        if message.source.is_default() {
+            message.source = PrimitiveName::new(&self.name).map_err(|e| {
+                ClientError::ConnectionFailed(format!("invalid primitive name '{}': {}", self.name, e))
+            })?;
         }
 
         let mut writer = self.writer.lock().await;
@@ -592,8 +595,10 @@ impl EmergentHandler {
     ///
     /// Returns an error if the message cannot be sent.
     pub async fn publish(&self, mut message: EmergentMessage) -> Result<()> {
-        if message.source.is_empty() {
-            message.source = self.name.clone();
+        if message.source.is_default() {
+            message.source = PrimitiveName::new(&self.name).map_err(|e| {
+                ClientError::ConnectionFailed(format!("invalid primitive name '{}': {}", self.name, e))
+            })?;
         }
 
         let mut writer = self.writer.lock().await;

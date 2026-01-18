@@ -1,12 +1,15 @@
 //! Message types for the Emergent client library.
 
-use mti::prelude::*;
+use crate::types::{CausationId, CorrelationId, MessageId, MessageType, PrimitiveName, Timestamp};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Create a new message with the given type.
 ///
 /// This is a convenience factory function that matches the Python and TypeScript SDKs.
+///
+/// # Panics
+///
+/// Panics if the message type is invalid.
 ///
 /// # Example
 ///
@@ -19,8 +22,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///     .with_metadata(json!({"trace_id": "abc123"}));
 /// ```
 #[must_use]
-pub fn create_message(message_type: impl Into<String>) -> EmergentMessage {
-    EmergentMessage::new(&message_type.into())
+pub fn create_message(message_type: impl AsRef<str>) -> EmergentMessage {
+    EmergentMessage::new(message_type.as_ref())
 }
 
 /// Standard message envelope for all Emergent communications.
@@ -43,25 +46,25 @@ pub fn create_message(message_type: impl Into<String>) -> EmergentMessage {
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EmergentMessage {
-    /// Unique message ID (MTI format: msg_<uuid_v7>).
-    pub id: String,
+    /// Unique message ID (TypeID format: msg_<uuid_v7>).
+    pub id: MessageId,
 
     /// Message type for routing (e.g., "email.received", "timer.tick").
-    pub message_type: String,
+    pub message_type: MessageType,
 
     /// Source client that published this message.
-    pub source: String,
+    pub source: PrimitiveName,
 
     /// Optional correlation ID for request-response or tracing.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub correlation_id: Option<String>,
+    pub correlation_id: Option<CorrelationId>,
 
     /// Optional causation ID (ID of message that triggered this one).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub causation_id: Option<String>,
+    pub causation_id: Option<CausationId>,
 
     /// Timestamp when message was created (Unix ms).
-    pub timestamp_ms: u64,
+    pub timestamp_ms: Timestamp,
 
     /// User-defined payload (any serializable data).
     pub payload: serde_json::Value,
@@ -75,24 +78,60 @@ impl EmergentMessage {
     /// Create a new message with the given type.
     ///
     /// Generates a unique ID and sets the current timestamp.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the message type is invalid.
     #[must_use]
     pub fn new(message_type: &str) -> Self {
+        Self::new_with_id_and_timestamp(
+            message_type,
+            MessageId::new(),
+            Timestamp::now(),
+        )
+    }
+
+    /// Create a new message with explicit ID and timestamp.
+    ///
+    /// This is a pure function suitable for testing and deterministic message creation.
+    /// For production use, prefer `new()` which generates a unique ID and current timestamp.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the message type is invalid.
+    #[must_use]
+    pub fn new_with_id_and_timestamp(message_type: &str, id: MessageId, timestamp_ms: Timestamp) -> Self {
+        // For backwards compatibility, we'll panic on invalid message types
+        // In a future version, we might want to return Result instead
+        let msg_type = MessageType::new(message_type)
+            .unwrap_or_else(|e| panic!("invalid message type '{message_type}': {e}"));
+
+        // Use a default source that can be overwritten with with_source()
+        // We use "unknown" as a valid placeholder
+        let source = PrimitiveName::new("unknown")
+            .unwrap_or_else(|e| panic!("failed to create default source: {e}"));
+
         Self {
-            id: "msg".create_type_id::<V7>().to_string(),
-            message_type: message_type.to_string(),
-            source: String::new(),
+            id,
+            message_type: msg_type,
+            source,
             correlation_id: None,
             causation_id: None,
-            timestamp_ms: current_timestamp_ms(),
+            timestamp_ms,
             payload: serde_json::Value::Null,
             metadata: None,
         }
     }
 
     /// Set the source of this message.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the source name is invalid.
     #[must_use]
     pub fn with_source(mut self, source: &str) -> Self {
-        self.source = source.to_string();
+        self.source = PrimitiveName::new(source)
+            .unwrap_or_else(|e| panic!("invalid source name '{source}': {e}"));
         self
     }
 
@@ -105,15 +144,24 @@ impl EmergentMessage {
 
     /// Set the correlation ID (for request-response patterns).
     #[must_use]
-    pub fn with_correlation_id(mut self, id: &str) -> Self {
-        self.correlation_id = Some(id.to_string());
+    pub fn with_correlation_id(mut self, id: impl Into<CorrelationId>) -> Self {
+        self.correlation_id = Some(id.into());
         self
     }
 
     /// Set the causation ID (ID of the message that triggered this one).
     #[must_use]
-    pub fn with_causation_id(mut self, id: &str) -> Self {
-        self.causation_id = Some(id.to_string());
+    pub fn with_causation_id(mut self, id: impl Into<CausationId>) -> Self {
+        self.causation_id = Some(id.into());
+        self
+    }
+
+    /// Set the causation ID from a MessageId.
+    ///
+    /// This is a convenience method that converts the MessageId to a CausationId.
+    #[must_use]
+    pub fn with_causation_from_message(mut self, msg_id: &MessageId) -> Self {
+        self.causation_id = Some(CausationId::from(msg_id));
         self
     }
 
@@ -126,19 +174,19 @@ impl EmergentMessage {
 
     /// Get the message ID.
     #[must_use]
-    pub fn id(&self) -> &str {
+    pub fn id(&self) -> &MessageId {
         &self.id
     }
 
     /// Get the message type.
     #[must_use]
-    pub fn message_type(&self) -> &str {
+    pub fn message_type(&self) -> &MessageType {
         &self.message_type
     }
 
     /// Get the source.
     #[must_use]
-    pub fn source(&self) -> &str {
+    pub fn source(&self) -> &PrimitiveName {
         &self.source
     }
 
@@ -194,14 +242,6 @@ impl EmergentMessage {
     }
 }
 
-/// Get the current timestamp in milliseconds.
-fn current_timestamp_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,10 +253,10 @@ mod tests {
             .with_source("test_source")
             .with_payload(json!({"key": "value"}));
 
-        assert!(msg.id.starts_with("msg_"));
-        assert_eq!(msg.message_type, "test.event");
-        assert_eq!(msg.source, "test_source");
-        assert!(msg.timestamp_ms > 0);
+        assert!(msg.id.to_string().starts_with("msg_"));
+        assert_eq!(msg.message_type.as_str(), "test.event");
+        assert_eq!(msg.source.as_str(), "test_source");
+        assert!(msg.timestamp_ms.as_millis() > 0);
     }
 
     #[test]
@@ -228,12 +268,12 @@ mod tests {
         // Test JSON serialization
         let json_bytes = msg.to_json()?;
         let from_json = EmergentMessage::from_json(&json_bytes)?;
-        assert_eq!(from_json.message_type, "test.event");
+        assert_eq!(from_json.message_type.as_str(), "test.event");
 
         // Test MessagePack serialization
         let msgpack_bytes = msg.to_msgpack()?;
         let from_msgpack = EmergentMessage::from_msgpack(&msgpack_bytes)?;
-        assert_eq!(from_msgpack.message_type, "test.event");
+        assert_eq!(from_msgpack.message_type.as_str(), "test.event");
         Ok(())
     }
 
@@ -260,10 +300,27 @@ mod tests {
     fn test_message_tracing() {
         let original = EmergentMessage::new("request");
         let response = EmergentMessage::new("response")
-            .with_causation_id(original.id())
-            .with_correlation_id("corr_123");
+            .with_causation_from_message(original.id())
+            .with_correlation_id(CorrelationId::new());
 
-        assert_eq!(response.causation_id.as_deref(), Some(original.id()));
-        assert_eq!(response.correlation_id.as_deref(), Some("corr_123"));
+        assert_eq!(
+            response.causation_id.as_ref().map(|c| c.to_string()),
+            Some(original.id().to_string())
+        );
+        assert!(response.correlation_id.is_some());
+    }
+
+    #[test]
+    fn test_new_with_id_and_timestamp_is_pure() {
+        let id = MessageId::new();
+        let timestamp = Timestamp::from_millis(1704067200000); // 2024-01-01 00:00:00 UTC
+
+        let msg1 = EmergentMessage::new_with_id_and_timestamp("test.event", id.clone(), timestamp);
+        let msg2 = EmergentMessage::new_with_id_and_timestamp("test.event", id.clone(), timestamp);
+
+        // Pure function should produce identical results for identical inputs
+        assert_eq!(msg1.id, msg2.id);
+        assert_eq!(msg1.message_type, msg2.message_type);
+        assert_eq!(msg1.timestamp_ms, msg2.timestamp_ms);
     }
 }
