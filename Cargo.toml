@@ -46,5 +46,5 @@ mti = "1"
 thiserror = "2"
 anyhow = "1"
 
-# acton-reactive (local path for development)
-acton-reactive = { path = "../acton-reactive/acton-reactive", features = ["ipc", "ipc-messagepack"] }
+# acton-reactive
+acton-reactive = { version = "7.1.0", features = ["ipc", "ipc-messagepack"] }
