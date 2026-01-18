@@ -21,6 +21,30 @@ const RUST_HANDLER_MAIN_RS: &str = include_str!("../../templates/rust/handler/ma
 const RUST_SINK_CARGO_TOML: &str = include_str!("../../templates/rust/sink/Cargo.toml.j2");
 const RUST_SINK_MAIN_RS: &str = include_str!("../../templates/rust/sink/main.rs.j2");
 
+/// Embedded TypeScript source templates.
+const TS_SOURCE_DENO_JSON: &str = include_str!("../../templates/typescript/source/deno.json.j2");
+const TS_SOURCE_MAIN_TS: &str = include_str!("../../templates/typescript/source/main.ts.j2");
+
+/// Embedded TypeScript handler templates.
+const TS_HANDLER_DENO_JSON: &str = include_str!("../../templates/typescript/handler/deno.json.j2");
+const TS_HANDLER_MAIN_TS: &str = include_str!("../../templates/typescript/handler/main.ts.j2");
+
+/// Embedded TypeScript sink templates.
+const TS_SINK_DENO_JSON: &str = include_str!("../../templates/typescript/sink/deno.json.j2");
+const TS_SINK_MAIN_TS: &str = include_str!("../../templates/typescript/sink/main.ts.j2");
+
+/// Embedded Python source templates.
+const PY_SOURCE_PYPROJECT_TOML: &str = include_str!("../../templates/python/source/pyproject.toml.j2");
+const PY_SOURCE_MAIN_PY: &str = include_str!("../../templates/python/source/main.py.j2");
+
+/// Embedded Python handler templates.
+const PY_HANDLER_PYPROJECT_TOML: &str = include_str!("../../templates/python/handler/pyproject.toml.j2");
+const PY_HANDLER_MAIN_PY: &str = include_str!("../../templates/python/handler/main.py.j2");
+
+/// Embedded Python sink templates.
+const PY_SINK_PYPROJECT_TOML: &str = include_str!("../../templates/python/sink/pyproject.toml.j2");
+const PY_SINK_MAIN_PY: &str = include_str!("../../templates/python/sink/main.py.j2");
+
 /// Template key combining language, primitive type, and filename.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct TemplateKey {
@@ -102,6 +126,90 @@ impl TemplateRegistry {
             vec!["Cargo.toml", "src/main.rs"],
         );
 
+        // TypeScript source templates
+        templates.insert(
+            TemplateKey::new(Language::TypeScript, PrimitiveType::Source, "deno.json"),
+            TS_SOURCE_DENO_JSON,
+        );
+        templates.insert(
+            TemplateKey::new(Language::TypeScript, PrimitiveType::Source, "main.ts"),
+            TS_SOURCE_MAIN_TS,
+        );
+        files_by_type.insert(
+            (Language::TypeScript, PrimitiveType::Source),
+            vec!["deno.json", "main.ts"],
+        );
+
+        // TypeScript handler templates
+        templates.insert(
+            TemplateKey::new(Language::TypeScript, PrimitiveType::Handler, "deno.json"),
+            TS_HANDLER_DENO_JSON,
+        );
+        templates.insert(
+            TemplateKey::new(Language::TypeScript, PrimitiveType::Handler, "main.ts"),
+            TS_HANDLER_MAIN_TS,
+        );
+        files_by_type.insert(
+            (Language::TypeScript, PrimitiveType::Handler),
+            vec!["deno.json", "main.ts"],
+        );
+
+        // TypeScript sink templates
+        templates.insert(
+            TemplateKey::new(Language::TypeScript, PrimitiveType::Sink, "deno.json"),
+            TS_SINK_DENO_JSON,
+        );
+        templates.insert(
+            TemplateKey::new(Language::TypeScript, PrimitiveType::Sink, "main.ts"),
+            TS_SINK_MAIN_TS,
+        );
+        files_by_type.insert(
+            (Language::TypeScript, PrimitiveType::Sink),
+            vec!["deno.json", "main.ts"],
+        );
+
+        // Python source templates
+        templates.insert(
+            TemplateKey::new(Language::Python, PrimitiveType::Source, "pyproject.toml"),
+            PY_SOURCE_PYPROJECT_TOML,
+        );
+        templates.insert(
+            TemplateKey::new(Language::Python, PrimitiveType::Source, "main.py"),
+            PY_SOURCE_MAIN_PY,
+        );
+        files_by_type.insert(
+            (Language::Python, PrimitiveType::Source),
+            vec!["pyproject.toml", "main.py"],
+        );
+
+        // Python handler templates
+        templates.insert(
+            TemplateKey::new(Language::Python, PrimitiveType::Handler, "pyproject.toml"),
+            PY_HANDLER_PYPROJECT_TOML,
+        );
+        templates.insert(
+            TemplateKey::new(Language::Python, PrimitiveType::Handler, "main.py"),
+            PY_HANDLER_MAIN_PY,
+        );
+        files_by_type.insert(
+            (Language::Python, PrimitiveType::Handler),
+            vec!["pyproject.toml", "main.py"],
+        );
+
+        // Python sink templates
+        templates.insert(
+            TemplateKey::new(Language::Python, PrimitiveType::Sink, "pyproject.toml"),
+            PY_SINK_PYPROJECT_TOML,
+        );
+        templates.insert(
+            TemplateKey::new(Language::Python, PrimitiveType::Sink, "main.py"),
+            PY_SINK_MAIN_PY,
+        );
+        files_by_type.insert(
+            (Language::Python, PrimitiveType::Sink),
+            vec!["pyproject.toml", "main.py"],
+        );
+
         Self { templates, files_by_type }
     }
 
@@ -132,18 +240,18 @@ impl TemplateRegistry {
         self.files_by_type.keys().any(|(lang, _)| *lang == language)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     #[test]
     fn test_registry_has_rust_templates() {
         let registry = TemplateRegistry::new();
 
         assert!(registry.has_language(Language::Rust));
-        assert!(!registry.has_language(Language::TypeScript));
-        assert!(!registry.has_language(Language::Python));
+        assert!(registry.has_language(Language::TypeScript));
+        assert!(registry.has_language(Language::Python));
     }
 
     #[test]
@@ -167,5 +275,61 @@ mod tests {
         let cargo = registry.get(Language::Rust, PrimitiveType::Source, "Cargo.toml");
         assert!(cargo.is_some());
         assert!(cargo.is_some_and(|t| t.contains("[package]")));
+    }
+
+    #[test]
+    fn test_typescript_file_lists() {
+        let registry = TemplateRegistry::new();
+
+        let source = registry.files_for(Language::TypeScript, PrimitiveType::Source);
+        assert_eq!(source, vec!["deno.json", "main.ts"]);
+
+        let handler = registry.files_for(Language::TypeScript, PrimitiveType::Handler);
+        assert_eq!(handler, vec!["deno.json", "main.ts"]);
+
+        let sink = registry.files_for(Language::TypeScript, PrimitiveType::Sink);
+        assert_eq!(sink, vec!["deno.json", "main.ts"]);
+    }
+
+    #[test]
+    fn test_python_file_lists() {
+        let registry = TemplateRegistry::new();
+
+        let source = registry.files_for(Language::Python, PrimitiveType::Source);
+        assert_eq!(source, vec!["pyproject.toml", "main.py"]);
+
+        let handler = registry.files_for(Language::Python, PrimitiveType::Handler);
+        assert_eq!(handler, vec!["pyproject.toml", "main.py"]);
+
+        let sink = registry.files_for(Language::Python, PrimitiveType::Sink);
+        assert_eq!(sink, vec!["pyproject.toml", "main.py"]);
+    }
+
+    #[test]
+    fn test_typescript_templates_contain_expected_content() {
+        let registry = TemplateRegistry::new();
+
+        let source_main = registry.get(Language::TypeScript, PrimitiveType::Source, "main.ts");
+        assert!(source_main.is_some_and(|t| t.contains("EmergentSource")));
+
+        let handler_main = registry.get(Language::TypeScript, PrimitiveType::Handler, "main.ts");
+        assert!(handler_main.is_some_and(|t| t.contains("EmergentHandler")));
+
+        let sink_main = registry.get(Language::TypeScript, PrimitiveType::Sink, "main.ts");
+        assert!(sink_main.is_some_and(|t| t.contains("EmergentSink")));
+    }
+
+    #[test]
+    fn test_python_templates_contain_expected_content() {
+        let registry = TemplateRegistry::new();
+
+        let source_main = registry.get(Language::Python, PrimitiveType::Source, "main.py");
+        assert!(source_main.is_some_and(|t| t.contains("EmergentSource")));
+
+        let handler_main = registry.get(Language::Python, PrimitiveType::Handler, "main.py");
+        assert!(handler_main.is_some_and(|t| t.contains("EmergentHandler")));
+
+        let sink_main = registry.get(Language::Python, PrimitiveType::Sink, "main.py");
+        assert!(sink_main.is_some_and(|t| t.contains("EmergentSink")));
     }
 }

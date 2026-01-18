@@ -1,0 +1,35 @@
+#!/usr/bin/env -S deno run --allow-env --allow-read --allow-net=unix
+/**
+ * {{ name_pascal }} Handler
+ *
+ * {{ description }}
+ *
+ * Subscribes:
+{% for sub in subscribes %}
+ * - {{ sub }}
+{% endfor %}
+ *
+ * Publishes:
+{% for pub in publishes %}
+ * - {{ pub }}
+{% endfor %}
+ */
+
+import { EmergentHandler } from "../../sdks/ts/mod.ts";
+
+const name = Deno.env.get("EMERGENT_NAME") || "{{ name }}";
+const subscribes = [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}];
+
+try {
+  for await (const { msg, handler } of EmergentHandler.process(name, subscribes)) {
+    // TODO: Process the incoming message
+    await handler.publish("{{ publishes[0] if publishes else "handler.output" }}", {
+      processed: true,
+      originalType: msg.messageType,
+      causationId: msg.id,
+    });
+  }
+} catch (err) {
+  console.error("[{{ name }}] Error:", err);
+  Deno.exit(1);
+}

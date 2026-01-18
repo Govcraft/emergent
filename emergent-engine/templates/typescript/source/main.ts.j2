@@ -1,0 +1,49 @@
+#!/usr/bin/env -S deno run --allow-env --allow-read --allow-net=unix
+/**
+ * {{ name_pascal }} Source
+ *
+ * {{ description }}
+ *
+ * Publishes:
+{% for pub in publishes %}
+ * - {{ pub }}
+{% endfor %}
+ */
+
+import { EmergentSource } from "../../sdks/ts/mod.ts";
+
+const name = Deno.env.get("EMERGENT_NAME") || "{{ name }}";
+
+async function main() {
+  const source = await EmergentSource.connect(name);
+
+  try {
+    let sequence = 0;
+    const interval = setInterval(async () => {
+      sequence++;
+      await source.publish("{{ publishes[0] if publishes else "source.event" }}", {
+        sequence,
+        timestamp: Date.now(),
+      });
+    }, 1000);
+
+    // Wait for shutdown signal
+    await new Promise((resolve) => {
+      Deno.addSignalListener("SIGTERM", () => {
+        clearInterval(interval);
+        resolve(null);
+      });
+      Deno.addSignalListener("SIGINT", () => {
+        clearInterval(interval);
+        resolve(null);
+      });
+    });
+  } finally {
+    await source.disconnect();
+  }
+}
+
+main().catch((err) => {
+  console.error("[{{ name }}] Error:", err);
+  Deno.exit(1);
+});

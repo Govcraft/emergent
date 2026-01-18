@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""{{ name_pascal }} Source
+
+{{ description }}
+
+Publishes:
+{% for pub in publishes %}
+- {{ pub }}
+{% endfor %}
+"""
+
+import asyncio
+import os
+import signal
+
+from emergent import EmergentSource
+from emergent._protocol import Format
+
+
+async def main() -> None:
+    """Run the {{ name }} source."""
+    name = os.environ.get("EMERGENT_NAME", "{{ name }}")
+    source = await EmergentSource.connect(name, format_=Format.MSGPACK)
+
+    sequence = 0
+    stop_event = asyncio.Event()
+
+    # Setup signal handlers
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
+
+    try:
+        while not stop_event.is_set():
+            try:
+                sequence += 1
+                await source.publish("{{ publishes[0] if publishes else "source.event" }}", {
+                    "sequence": sequence,
+                })
+                await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+    finally:
+        await source.disconnect()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
