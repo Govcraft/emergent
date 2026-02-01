@@ -19,6 +19,7 @@ pub use crate::error::ClientError;
 pub use crate::message::{create_message, EmergentMessage};
 pub use crate::stream::MessageStream;
 pub use crate::subscribe::IntoSubscription;
+pub use crate::types::{SystemEventPayload, SystemShutdownPayload};
 pub use crate::Result;
 
 // Re-export StreamExt for convenient stream operations

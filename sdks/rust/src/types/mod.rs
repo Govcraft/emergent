@@ -20,6 +20,13 @@
 //! - [`PrimitiveName`] - Validated primitive name (e.g., "timer_source")
 //! - [`Timestamp`] - Milliseconds since Unix epoch
 //!
+//! # System Event Payloads
+//!
+//! Typed payloads for system lifecycle events:
+//!
+//! - [`SystemEventPayload`] - Payload for `system.started.*`, `system.stopped.*`, `system.error.*`
+//! - [`SystemShutdownPayload`] - Payload for `system.shutdown`
+//!
 //! # Example
 //!
 //! ```rust
@@ -41,6 +48,7 @@ mod correlation_id;
 mod message_id;
 mod message_type;
 mod primitive_name;
+mod system_events;
 mod timestamp;
 
 pub use causation_id::{CausationId, InvalidCausationId};
@@ -48,4 +56,5 @@ pub use correlation_id::{CorrelationId, InvalidCorrelationId};
 pub use message_id::{InvalidMessageId, MessageId};
 pub use message_type::{InvalidMessageType, MessageType};
 pub use primitive_name::{InvalidPrimitiveName, PrimitiveName};
+pub use system_events::{SystemEventPayload, SystemShutdownPayload};
 pub use timestamp::Timestamp;
