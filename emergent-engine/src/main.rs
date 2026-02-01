@@ -405,7 +405,12 @@ async fn main() -> Result<()> {
     // Each primitive is started by its actor in after_start, which broadcasts system.started.*
     if total_primitives > 0
         && let Err(e) = process_manager
-            .start_all(&mut runtime, &enabled_sinks, &enabled_handlers, &enabled_sources)
+            .start_all(
+                &mut runtime,
+                &enabled_sinks,
+                &enabled_handlers,
+                &enabled_sources,
+            )
             .await
     {
         error!("Failed to start some processes: {}", e);
@@ -420,7 +425,7 @@ async fn main() -> Result<()> {
     // Wait for Ctrl+C or SIGTERM
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())?;
         let mut sigint = signal(SignalKind::interrupt())?;
 

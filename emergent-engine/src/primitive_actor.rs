@@ -402,9 +402,7 @@ fn create_system_event(
     error: Option<String>,
 ) -> IpcSystemEvent {
     let payload = match (event_type, error) {
-        ("system.started", None) => {
-            SystemEventPayload::started(info, pid.unwrap_or(0))
-        }
+        ("system.started", None) => SystemEventPayload::started(info, pid.unwrap_or(0)),
         ("system.stopped", None) => SystemEventPayload::stopped(info, pid),
         (_, Some(err)) => SystemEventPayload::error(info, pid, err),
         _ => SystemEventPayload::stopped(info, pid),
@@ -450,7 +448,11 @@ mod tests {
         PrimitiveInfo::source(name, publishes)
     }
 
-    fn make_handler_info(name: &str, subscribes: Vec<String>, publishes: Vec<String>) -> PrimitiveInfo {
+    fn make_handler_info(
+        name: &str,
+        subscribes: Vec<String>,
+        publishes: Vec<String>,
+    ) -> PrimitiveInfo {
         PrimitiveInfo::handler(name, subscribes, publishes)
     }
 
@@ -504,11 +506,8 @@ mod tests {
     #[test]
     fn test_system_event_payload_error() {
         let info = make_source_info("failing-source", vec!["data.event".to_string()]);
-        let payload = SystemEventPayload::error(
-            &info,
-            Some(9999),
-            "Connection refused".to_string(),
-        );
+        let payload =
+            SystemEventPayload::error(&info, Some(9999), "Connection refused".to_string());
 
         assert_eq!(payload.name, "failing-source");
         assert_eq!(payload.kind, "source");
@@ -542,7 +541,8 @@ mod tests {
     }
 
     #[test]
-    fn test_system_event_payload_includes_both_publishes_and_subscribes() -> Result<(), serde_json::Error> {
+    fn test_system_event_payload_includes_both_publishes_and_subscribes()
+    -> Result<(), serde_json::Error> {
         let info = make_handler_info(
             "enricher",
             vec!["input.event".to_string()],

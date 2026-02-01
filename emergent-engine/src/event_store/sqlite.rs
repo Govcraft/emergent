@@ -7,7 +7,7 @@ use super::{EventStore, EventStoreError};
 use crate::messages::{
     CausationId, CorrelationId, EmergentMessage, MessageId, MessageType, PrimitiveName, Timestamp,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -92,10 +92,14 @@ impl SqliteEventStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub fn query_by_type(&self, message_type: &str) -> Result<Vec<EmergentMessage>, EventStoreError> {
-        let conn = self.conn.lock().map_err(|e| {
-            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
-        })?;
+    pub fn query_by_type(
+        &self,
+        message_type: &str,
+    ) -> Result<Vec<EmergentMessage>, EventStoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| EventStoreError::LockPoisoned(format!("conn lock: {e}")))?;
         let mut stmt = conn.prepare(
             r"
             SELECT id, message_type, source, correlation_id, causation_id,
@@ -121,9 +125,10 @@ impl SqliteEventStore {
         start_ms: u64,
         end_ms: u64,
     ) -> Result<Vec<EmergentMessage>, EventStoreError> {
-        let conn = self.conn.lock().map_err(|e| {
-            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| EventStoreError::LockPoisoned(format!("conn lock: {e}")))?;
         let mut stmt = conn.prepare(
             r"
             SELECT id, message_type, source, correlation_id, causation_id,
@@ -134,9 +139,7 @@ impl SqliteEventStore {
             ",
         )?;
 
-        let events = stmt.query_map([start_ms, end_ms], |row| {
-            row_to_message(row)
-        })?;
+        let events = stmt.query_map([start_ms, end_ms], |row| row_to_message(row))?;
 
         events.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -146,10 +149,14 @@ impl SqliteEventStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub fn query_by_correlation(&self, correlation_id: &str) -> Result<Vec<EmergentMessage>, EventStoreError> {
-        let conn = self.conn.lock().map_err(|e| {
-            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
-        })?;
+    pub fn query_by_correlation(
+        &self,
+        correlation_id: &str,
+    ) -> Result<Vec<EmergentMessage>, EventStoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| EventStoreError::LockPoisoned(format!("conn lock: {e}")))?;
         let mut stmt = conn.prepare(
             r"
             SELECT id, message_type, source, correlation_id, causation_id,
@@ -160,9 +167,7 @@ impl SqliteEventStore {
             ",
         )?;
 
-        let events = stmt.query_map([correlation_id], |row| {
-            row_to_message(row)
-        })?;
+        let events = stmt.query_map([correlation_id], |row| row_to_message(row))?;
 
         events.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -173,9 +178,10 @@ impl SqliteEventStore {
     ///
     /// Returns an error if the query fails.
     pub fn count(&self) -> Result<u64, EventStoreError> {
-        let conn = self.conn.lock().map_err(|e| {
-            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| EventStoreError::LockPoisoned(format!("conn lock: {e}")))?;
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
         Ok(u64::try_from(count).unwrap_or(0))
     }
@@ -186,13 +192,11 @@ impl SqliteEventStore {
     ///
     /// Returns an error if the deletion fails.
     pub fn delete_before(&self, timestamp_ms: u64) -> Result<u64, EventStoreError> {
-        let conn = self.conn.lock().map_err(|e| {
-            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
-        })?;
-        let deleted = conn.execute(
-            "DELETE FROM events WHERE timestamp_ms < ?",
-            [timestamp_ms],
-        )?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| EventStoreError::LockPoisoned(format!("conn lock: {e}")))?;
+        let deleted = conn.execute("DELETE FROM events WHERE timestamp_ms < ?", [timestamp_ms])?;
         Ok(u64::try_from(deleted).unwrap_or(0))
     }
 }
@@ -223,7 +227,11 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<EmergentMessage, rusqlite::
     let correlation_id = correlation_id_str
         .map(|s| {
             CorrelationId::parse(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
             })
         })
         .transpose()?;
@@ -231,7 +239,11 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<EmergentMessage, rusqlite::
     let causation_id = causation_id_str
         .map(|s| {
             CausationId::parse(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
             })
         })
         .transpose()?;
@@ -253,9 +265,10 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<EmergentMessage, rusqlite::
 
 impl EventStore for SqliteEventStore {
     fn store(&self, message: &EmergentMessage) -> Result<(), EventStoreError> {
-        let conn = self.conn.lock().map_err(|e| {
-            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| EventStoreError::LockPoisoned(format!("conn lock: {e}")))?;
 
         let payload_json = serde_json::to_string(&message.payload)?;
         let metadata_json = message
@@ -297,9 +310,10 @@ impl EventStore for SqliteEventStore {
 
     fn flush(&self) -> Result<(), EventStoreError> {
         // SQLite commits are automatic, but we can force a checkpoint
-        let conn = self.conn.lock().map_err(|e| {
-            EventStoreError::LockPoisoned(format!("conn lock: {e}"))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| EventStoreError::LockPoisoned(format!("conn lock: {e}")))?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }

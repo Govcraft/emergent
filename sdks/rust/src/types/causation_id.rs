@@ -174,7 +174,10 @@ mod tests {
     #[test]
     fn parse_wrong_prefix_fails() {
         let result = CausationId::parse("cor_01h455vb4pex5vsknk084sn02q");
-        assert!(matches!(result, Err(InvalidCausationId::WrongPrefix { .. })));
+        assert!(matches!(
+            result,
+            Err(InvalidCausationId::WrongPrefix { .. })
+        ));
     }
 
     #[test]

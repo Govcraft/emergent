@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use clap::Args;
-use dialoguer::{theme::ColorfulTheme, Input, Select};
+use dialoguer::{Input, Select, theme::ColorfulTheme};
 use heck::{ToSnakeCase, ToUpperCamelCase};
 
 use crate::scaffold::messages::{Language, PrimitiveType, ScaffoldRequest, TemplateContext};
@@ -145,7 +145,9 @@ pub fn run_wizard(args: &ScaffoldArgs) -> Result<ScaffoldRequest, ScaffoldError>
 
     // Language selection
     let language = if let Some(ref lang_str) = args.language {
-        lang_str.parse::<Language>().map_err(ScaffoldError::InvalidInput)?
+        lang_str
+            .parse::<Language>()
+            .map_err(ScaffoldError::InvalidInput)?
     } else {
         let languages = ["Rust", "TypeScript (Deno)", "Python"];
         let selection = Select::with_theme(&theme)
@@ -164,9 +166,15 @@ pub fn run_wizard(args: &ScaffoldArgs) -> Result<ScaffoldRequest, ScaffoldError>
 
     // Primitive type selection
     let primitive_type = if let Some(ref type_str) = args.primitive_type {
-        type_str.parse::<PrimitiveType>().map_err(ScaffoldError::InvalidInput)?
+        type_str
+            .parse::<PrimitiveType>()
+            .map_err(ScaffoldError::InvalidInput)?
     } else {
-        let types = ["Source (emits events)", "Handler (transforms events)", "Sink (consumes events)"];
+        let types = [
+            "Source (emits events)",
+            "Handler (transforms events)",
+            "Sink (consumes events)",
+        ];
         let selection = Select::with_theme(&theme)
             .with_prompt("Select primitive type")
             .items(&types)
@@ -198,7 +206,8 @@ pub fn run_wizard(args: &ScaffoldArgs) -> Result<ScaffoldRequest, ScaffoldError>
     let description = if let Some(ref desc) = args.description {
         desc.clone()
     } else {
-        let default_desc = format!("A {} that {}",
+        let default_desc = format!(
+            "A {} that {}",
             primitive_type.as_str(),
             match primitive_type {
                 PrimitiveType::Source => "emits events",
@@ -228,7 +237,10 @@ pub fn run_wizard(args: &ScaffoldArgs) -> Result<ScaffoldRequest, ScaffoldError>
     };
 
     // Publishes (for sources and handlers)
-    let publishes = if matches!(primitive_type, PrimitiveType::Source | PrimitiveType::Handler) {
+    let publishes = if matches!(
+        primitive_type,
+        PrimitiveType::Source | PrimitiveType::Handler
+    ) {
         if let Some(ref pubs) = args.publishes {
             parse_comma_list(pubs)
         } else {
@@ -275,41 +287,48 @@ pub fn has_required_args(args: &ScaffoldArgs) -> bool {
 
 /// Build a scaffold request from command-line arguments only (no prompting).
 pub fn build_from_args(args: &ScaffoldArgs) -> Result<ScaffoldRequest, ScaffoldError> {
-    let language = args.language
+    let language = args
+        .language
         .as_ref()
         .map(|s| s.parse::<Language>())
         .transpose()
         .map_err(ScaffoldError::InvalidInput)?
         .unwrap_or_default();
 
-    let primitive_type = args.primitive_type
+    let primitive_type = args
+        .primitive_type
         .as_ref()
         .ok_or_else(|| ScaffoldError::InvalidInput("--type is required".to_string()))?
         .parse::<PrimitiveType>()
         .map_err(ScaffoldError::InvalidInput)?;
 
-    let name = args.name
+    let name = args
+        .name
         .as_ref()
         .ok_or_else(|| ScaffoldError::InvalidInput("--name is required".to_string()))?
         .clone();
 
     validate_name(&name).map_err(ScaffoldError::InvalidInput)?;
 
-    let subscribes = args.subscribes
+    let subscribes = args
+        .subscribes
         .as_ref()
         .map(|s| parse_comma_list(s))
         .unwrap_or_default();
 
-    let publishes = args.publishes
+    let publishes = args
+        .publishes
         .as_ref()
         .map(|s| parse_comma_list(s))
         .unwrap_or_default();
 
-    let description = args.description
+    let description = args
+        .description
         .clone()
         .unwrap_or_else(|| format!("A {} primitive", primitive_type.as_str()));
 
-    let output_dir = args.output
+    let output_dir = args
+        .output
         .clone()
         .unwrap_or_else(|| PathBuf::from(format!("./{name}")));
 
@@ -367,10 +386,7 @@ mod tests {
             parse_comma_list("timer.tick, filter.processed"),
             vec!["timer.tick", "filter.processed"]
         );
-        assert_eq!(
-            parse_comma_list("single"),
-            vec!["single"]
-        );
+        assert_eq!(parse_comma_list("single"), vec!["single"]);
         assert!(parse_comma_list("").is_empty());
     }
 

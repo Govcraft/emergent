@@ -147,7 +147,10 @@ mod tests {
         let result = MessageId::parse("cor_01h455vb4pex5vsknk084sn02q");
         assert!(matches!(
             result,
-            Err(InvalidMessageId::WrongPrefix { expected: "msg", .. })
+            Err(InvalidMessageId::WrongPrefix {
+                expected: "msg",
+                ..
+            })
         ));
     }
 

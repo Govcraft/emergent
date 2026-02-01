@@ -149,7 +149,10 @@ impl PrimitiveInfo {
     /// Check if this primitive is running.
     #[must_use]
     pub fn is_running(&self) -> bool {
-        matches!(self.state, PrimitiveState::Running | PrimitiveState::External)
+        matches!(
+            self.state,
+            PrimitiveState::Running | PrimitiveState::External
+        )
     }
 
     /// Check if this primitive can be started.

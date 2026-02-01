@@ -42,8 +42,8 @@ use acton_reactive::prelude::*;
 
 use cli::ScaffoldArgs;
 use handler::build_template_handler_actor;
-use sink::{build_file_writer_actor, ScaffoldCompleteMessage};
-use source::{build_cli_source_actor, StartScaffold};
+use sink::{ScaffoldCompleteMessage, build_file_writer_actor};
+use source::{StartScaffold, build_cli_source_actor};
 
 /// Run the scaffold command with the given arguments.
 ///
@@ -82,7 +82,9 @@ pub async fn run_scaffold(args: ScaffoldArgs) -> anyhow::Result<()> {
     });
 
     let completion_handle = completion_actor.start().await;
-    completion_handle.subscribe::<ScaffoldCompleteMessage>().await;
+    completion_handle
+        .subscribe::<ScaffoldCompleteMessage>()
+        .await;
 
     // Trigger the workflow
     source_handle.send(StartScaffold { args }).await;
@@ -118,7 +120,10 @@ mod tests {
     fn test_language_from_str() {
         assert_eq!("rust".parse::<Language>().ok(), Some(Language::Rust));
         assert_eq!("rs".parse::<Language>().ok(), Some(Language::Rust));
-        assert_eq!("typescript".parse::<Language>().ok(), Some(Language::TypeScript));
+        assert_eq!(
+            "typescript".parse::<Language>().ok(),
+            Some(Language::TypeScript)
+        );
         assert_eq!("ts".parse::<Language>().ok(), Some(Language::TypeScript));
         assert_eq!("python".parse::<Language>().ok(), Some(Language::Python));
         assert_eq!("py".parse::<Language>().ok(), Some(Language::Python));
@@ -127,9 +132,18 @@ mod tests {
 
     #[test]
     fn test_primitive_type_from_str() {
-        assert_eq!("source".parse::<PrimitiveType>().ok(), Some(PrimitiveType::Source));
-        assert_eq!("handler".parse::<PrimitiveType>().ok(), Some(PrimitiveType::Handler));
-        assert_eq!("sink".parse::<PrimitiveType>().ok(), Some(PrimitiveType::Sink));
+        assert_eq!(
+            "source".parse::<PrimitiveType>().ok(),
+            Some(PrimitiveType::Source)
+        );
+        assert_eq!(
+            "handler".parse::<PrimitiveType>().ok(),
+            Some(PrimitiveType::Handler)
+        );
+        assert_eq!(
+            "sink".parse::<PrimitiveType>().ok(),
+            Some(PrimitiveType::Sink)
+        );
         assert!("invalid".parse::<PrimitiveType>().is_err());
     }
 }

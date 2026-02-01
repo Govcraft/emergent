@@ -25,7 +25,7 @@ use clap::Parser;
 use emergent_client::{EmergentHandler, EmergentMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 /// Filter Handler - passes through every Nth timer tick.
 #[derive(Parser, Debug)]

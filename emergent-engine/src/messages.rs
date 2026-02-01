@@ -33,10 +33,8 @@ mod tests {
         let id = MessageId::new();
         let timestamp = Timestamp::from_millis(1704067200000); // 2024-01-01 00:00:00 UTC
 
-        let msg1 =
-            EmergentMessage::new_with_id_and_timestamp("test.event", id.clone(), timestamp);
-        let msg2 =
-            EmergentMessage::new_with_id_and_timestamp("test.event", id.clone(), timestamp);
+        let msg1 = EmergentMessage::new_with_id_and_timestamp("test.event", id.clone(), timestamp);
+        let msg2 = EmergentMessage::new_with_id_and_timestamp("test.event", id.clone(), timestamp);
 
         // Pure function should produce identical results for identical inputs
         assert_eq!(msg1.id, msg2.id);
@@ -47,8 +45,7 @@ mod tests {
     #[test]
     fn test_causation_chain() {
         let parent = EmergentMessage::new("parent.event");
-        let child =
-            EmergentMessage::new("child.event").with_causation_from_message(parent.id());
+        let child = EmergentMessage::new("child.event").with_causation_from_message(parent.id());
 
         assert_eq!(
             child.causation_id.as_ref().map(|c| c.to_string()),

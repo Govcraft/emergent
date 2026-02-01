@@ -12,7 +12,7 @@
 
 use crate::config::{HandlerConfig, SinkConfig, SourceConfig};
 use crate::primitive_actor::{
-    build_primitive_actor, create_shutdown_event, PrimitiveActorConfig, StopPrimitive,
+    PrimitiveActorConfig, StopPrimitive, build_primitive_actor, create_shutdown_event,
 };
 use crate::primitives::{PrimitiveInfo, PrimitiveKind};
 use acton_reactive::prelude::*;
@@ -407,7 +407,6 @@ impl ProcessManager {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
-
 }
 
 #[cfg(test)]

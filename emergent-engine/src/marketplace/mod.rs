@@ -61,7 +61,7 @@ pub mod platform;
 pub mod registry;
 pub mod storage;
 
-pub use cli::{execute, MarketplaceArgs, MarketplaceCommand};
+pub use cli::{MarketplaceArgs, MarketplaceCommand, execute};
 pub use error::{MarketplaceError, Result};
 pub use installer::{InstallOptions, InstallResult, Installer};
 pub use platform::TargetPlatform;
@@ -69,4 +69,6 @@ pub use registry::{
     ArgumentInfo, BinaryInfo, MessageInfo, PrimitiveEntry, PrimitiveInfo, PrimitiveManifest,
     Registry, RegistryInfo, RegistryMetadata,
 };
-pub use storage::{InstalledPrimitive, InstallationManifest, MarketplaceConfig, MarketplaceStorage};
+pub use storage::{
+    InstallationManifest, InstalledPrimitive, MarketplaceConfig, MarketplaceStorage,
+};

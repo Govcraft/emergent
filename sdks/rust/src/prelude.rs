@@ -14,13 +14,13 @@
 //! }
 //! ```
 
+pub use crate::Result;
 pub use crate::connection::{EmergentHandler, EmergentSink, EmergentSource};
 pub use crate::error::ClientError;
-pub use crate::message::{create_message, EmergentMessage};
+pub use crate::message::{EmergentMessage, create_message};
 pub use crate::stream::MessageStream;
 pub use crate::subscribe::IntoSubscription;
 pub use crate::types::{SystemEventPayload, SystemShutdownPayload};
-pub use crate::Result;
 
 // Re-export StreamExt for convenient stream operations
 pub use futures::StreamExt;

@@ -248,11 +248,7 @@ async fn handle_remove(installer: &Installer, name: String, yes: bool) -> Result
     Ok(())
 }
 
-async fn handle_update(
-    installer: &Installer,
-    name: Option<String>,
-    dry_run: bool,
-) -> Result<()> {
+async fn handle_update(installer: &Installer, name: Option<String>, dry_run: bool) -> Result<()> {
     if let Some(name) = name {
         installer.update(&name, dry_run).await?;
     } else {

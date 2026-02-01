@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 # Type alias for primitive kinds
 PrimitiveKind = Literal["Source", "Handler", "Sink"]
+SystemPrimitiveKind = Literal["source", "handler", "sink"]
 
 
 # ============================================================================
@@ -152,6 +153,99 @@ class ConnectOptions(BaseModel):
 
     socket_path: str | None = None
     timeout: float = 30.0
+
+
+# ============================================================================
+# System Event Types
+# ============================================================================
+
+
+class SystemEventPayload(BaseModel):
+    """
+    Payload for system lifecycle events.
+
+    This represents the payload for `system.started.*`, `system.stopped.*`,
+    and `system.error.*` events. The presence of specific fields varies:
+
+    - `system.started.*`: Always has `pid`, never has `error`
+    - `system.stopped.*`: May have `pid`, never has `error`
+    - `system.error.*`: May have `pid`, always has `error`
+
+    Attributes:
+        name: Name of the primitive
+        kind: Kind of the primitive ("source", "handler", or "sink")
+        pid: Process ID if available
+        publishes: Message types this primitive publishes
+        subscribes: Message types this primitive subscribes to
+        error: Error message if this is an error event
+
+    Example:
+        >>> if msg.message_type.startswith("system.started."):
+        ...     payload = msg.payload_as(SystemEventPayload)
+        ...     print(f"{payload.name} ({payload.kind}) started")
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    name: str
+    kind: SystemPrimitiveKind
+    pid: int | None = None
+    publishes: list[str] = Field(default_factory=list)
+    subscribes: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+    def is_source(self) -> bool:
+        """Return True if the primitive is a source."""
+        return self.kind == "source"
+
+    def is_handler(self) -> bool:
+        """Return True if the primitive is a handler."""
+        return self.kind == "handler"
+
+    def is_sink(self) -> bool:
+        """Return True if the primitive is a sink."""
+        return self.kind == "sink"
+
+    def is_error(self) -> bool:
+        """Return True if this is an error event."""
+        return self.error is not None
+
+
+class SystemShutdownPayload(BaseModel):
+    """
+    Payload for `system.shutdown` events.
+
+    This is sent by the engine when it is shutting down, signaling
+    all primitives to gracefully stop. The shutdown is phased:
+    1. Sources receive shutdown first
+    2. Handlers receive shutdown after sources exit
+    3. Sinks receive shutdown after handlers exit
+
+    Attributes:
+        kind: The type of primitive this shutdown is targeting
+
+    Example:
+        >>> if msg.message_type == "system.shutdown":
+        ...     payload = msg.payload_as(SystemShutdownPayload)
+        ...     if payload.is_handler_shutdown():
+        ...         print("Time to gracefully exit!")
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    kind: SystemPrimitiveKind
+
+    def is_source_shutdown(self) -> bool:
+        """Return True if this shutdown is targeting sources."""
+        return self.kind == "source"
+
+    def is_handler_shutdown(self) -> bool:
+        """Return True if this shutdown is targeting handlers."""
+        return self.kind == "handler"
+
+    def is_sink_shutdown(self) -> bool:
+        """Return True if this shutdown is targeting sinks."""
+        return self.kind == "sink"
 
 
 # ============================================================================

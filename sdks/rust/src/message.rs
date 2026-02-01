@@ -1,7 +1,7 @@
 //! Message types for the Emergent client library.
 
 use crate::types::{CausationId, CorrelationId, MessageId, MessageType, PrimitiveName, Timestamp};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Create a new message with the given type.
 ///
@@ -84,11 +84,7 @@ impl EmergentMessage {
     /// Panics if the message type is invalid.
     #[must_use]
     pub fn new(message_type: &str) -> Self {
-        Self::new_with_id_and_timestamp(
-            message_type,
-            MessageId::new(),
-            Timestamp::now(),
-        )
+        Self::new_with_id_and_timestamp(message_type, MessageId::new(), Timestamp::now())
     }
 
     /// Create a new message with explicit ID and timestamp.
@@ -100,7 +96,11 @@ impl EmergentMessage {
     ///
     /// Panics if the message type is invalid.
     #[must_use]
-    pub fn new_with_id_and_timestamp(message_type: &str, id: MessageId, timestamp_ms: Timestamp) -> Self {
+    pub fn new_with_id_and_timestamp(
+        message_type: &str,
+        id: MessageId,
+        timestamp_ms: Timestamp,
+    ) -> Self {
         // For backwards compatibility, we'll panic on invalid message types
         // In a future version, we might want to return Result instead
         let msg_type = MessageType::new(message_type)

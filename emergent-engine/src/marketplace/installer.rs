@@ -37,11 +37,7 @@ pub struct InstallResult {
 
 impl Installer {
     /// Create a new installer.
-    pub fn new(
-        storage: MarketplaceStorage,
-        registry: Registry,
-        platform: TargetPlatform,
-    ) -> Self {
+    pub fn new(storage: MarketplaceStorage, registry: Registry, platform: TargetPlatform) -> Self {
         Self {
             storage,
             registry,
@@ -80,12 +76,16 @@ impl Installer {
         let manifest = self.registry.get_manifest(&options.name).await?;
 
         // Use version from manifest if not specified
-        let version = options.version.unwrap_or_else(|| manifest.primitive.version.clone());
+        let version = options
+            .version
+            .unwrap_or_else(|| manifest.primitive.version.clone());
 
         // Check if already installed
         if !options.force {
             let manifest_data = self.storage.load_manifest()?;
-            if let Some(installed) = manifest_data.primitives.get(&options.name) && installed.version == version {
+            if let Some(installed) = manifest_data.primitives.get(&options.name)
+                && installed.version == version
+            {
                 return Err(MarketplaceError::AlreadyInstalled {
                     name: options.name.clone(),
                     version: version.clone(),
@@ -95,14 +95,12 @@ impl Installer {
 
         // Check platform support
         let platform_str = self.platform.as_str();
-        let filename = manifest
-            .binaries
-            .targets
-            .get(platform_str)
-            .ok_or_else(|| MarketplaceError::PlatformNotSupported {
+        let filename = manifest.binaries.targets.get(platform_str).ok_or_else(|| {
+            MarketplaceError::PlatformNotSupported {
                 platform: platform_str.to_string(),
                 primitive: options.name.clone(),
-            })?;
+            }
+        })?;
 
         if options.dry_run {
             eprintln!("[DRY RUN] Would install {} v{}", options.name, version);
@@ -232,12 +230,11 @@ impl Installer {
     /// - Update fails
     pub async fn update(&self, name: &str, dry_run: bool) -> Result<Option<InstallResult>> {
         let manifest_data = self.storage.load_manifest()?;
-        let installed = manifest_data
-            .primitives
-            .get(name)
-            .ok_or_else(|| MarketplaceError::PrimitiveNotFound {
+        let installed = manifest_data.primitives.get(name).ok_or_else(|| {
+            MarketplaceError::PrimitiveNotFound {
                 name: name.to_string(),
-            })?;
+            }
+        })?;
 
         // Fetch latest version from registry
         let registry_manifest = self.registry.get_manifest(name).await?;
@@ -338,32 +335,30 @@ impl Installer {
         let file = std::fs::File::open(archive)?;
 
         // Determine archive type from extension
-        let extension = archive
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
+        let extension = archive.extension().and_then(|s| s.to_str()).unwrap_or("");
 
         match extension {
             "gz" => {
                 // tar.gz
                 let decoder = flate2::read::GzDecoder::new(file);
                 let mut tar = tar::Archive::new(decoder);
-                tar.unpack(dest).map_err(|e| MarketplaceError::ExtractionFailed {
-                    path: archive.display().to_string(),
-                    source: Box::new(e),
-                })?;
-            }
-            "zip" => {
-                let mut zip = zip::ZipArchive::new(file).map_err(|e| {
-                    MarketplaceError::ExtractionFailed {
+                tar.unpack(dest)
+                    .map_err(|e| MarketplaceError::ExtractionFailed {
                         path: archive.display().to_string(),
                         source: Box::new(e),
-                    }
-                })?;
-                zip.extract(dest).map_err(|e| MarketplaceError::ExtractionFailed {
-                    path: archive.display().to_string(),
-                    source: Box::new(e),
-                })?;
+                    })?;
+            }
+            "zip" => {
+                let mut zip =
+                    zip::ZipArchive::new(file).map_err(|e| MarketplaceError::ExtractionFailed {
+                        path: archive.display().to_string(),
+                        source: Box::new(e),
+                    })?;
+                zip.extract(dest)
+                    .map_err(|e| MarketplaceError::ExtractionFailed {
+                        path: archive.display().to_string(),
+                        source: Box::new(e),
+                    })?;
             }
             _ => {
                 return Err(MarketplaceError::InvalidManifest {

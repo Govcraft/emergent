@@ -32,7 +32,7 @@ pub mod scaffold;
 pub use config::EmergentConfig;
 pub use messages::EmergentMessage;
 pub use primitive_actor::{
-    build_primitive_actor, IpcSystemEvent, PrimitiveActorConfig, PrimitiveActorState,
-    SystemEventPayload,
+    IpcSystemEvent, PrimitiveActorConfig, PrimitiveActorState, SystemEventPayload,
+    build_primitive_actor,
 };
 pub use primitives::{PrimitiveKind, PrimitiveState};

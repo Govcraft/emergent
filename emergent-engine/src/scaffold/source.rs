@@ -5,7 +5,10 @@
 
 use acton_reactive::prelude::*;
 
-use crate::scaffold::cli::{build_from_args, build_template_context, has_required_args, run_wizard, ScaffoldArgs, ScaffoldError};
+use crate::scaffold::cli::{
+    ScaffoldArgs, ScaffoldError, build_from_args, build_template_context, has_required_args,
+    run_wizard,
+};
 use crate::scaffold::messages::ScaffoldRequest;
 
 /// Message to start the scaffold workflow.
@@ -69,7 +72,5 @@ pub fn build_cli_source_actor(runtime: &mut ActorRuntime) -> ActorHandle {
 
     // Start actor and return handle
     // We use block_on here because we need the handle synchronously
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(actor.start())
-    })
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(actor.start()))
 }

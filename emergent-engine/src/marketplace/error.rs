@@ -12,10 +12,7 @@ pub enum MarketplaceError {
     Io { source: std::io::Error },
 
     /// Error downloading files
-    Download {
-        url: String,
-        source: reqwest::Error,
-    },
+    Download { url: String, source: reqwest::Error },
 
     /// Error parsing TOML manifests
     TomlParse {
@@ -79,7 +76,10 @@ impl fmt::Display for MarketplaceError {
             Self::VersionNotFound { name, version } => {
                 write!(f, "Version '{version}' not found for primitive '{name}'")
             }
-            Self::PlatformNotSupported { platform, primitive } => {
+            Self::PlatformNotSupported {
+                platform,
+                primitive,
+            } => {
                 write!(
                     f,
                     "Platform '{platform}' not supported for primitive '{primitive}'"
@@ -92,7 +92,10 @@ impl fmt::Display for MarketplaceError {
                 write!(f, "Failed to extract archive at {path}: {source}")
             }
             Self::AlreadyInstalled { name, version } => {
-                write!(f, "Primitive '{name}' version '{version}' is already installed")
+                write!(
+                    f,
+                    "Primitive '{name}' version '{version}' is already installed"
+                )
             }
             Self::InvalidManifest { reason } => write!(f, "Invalid manifest: {reason}"),
             Self::GitError { message } => write!(f, "Git error: {message}"),

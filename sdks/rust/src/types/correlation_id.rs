@@ -147,7 +147,10 @@ mod tests {
         let result = CorrelationId::parse("msg_01h455vb4pex5vsknk084sn02q");
         assert!(matches!(
             result,
-            Err(InvalidCorrelationId::WrongPrefix { expected: "cor", .. })
+            Err(InvalidCorrelationId::WrongPrefix {
+                expected: "cor",
+                ..
+            })
         ));
     }
 

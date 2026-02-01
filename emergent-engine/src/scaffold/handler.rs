@@ -4,7 +4,7 @@
 //! and emits `TemplateRenderedMessage` for each file.
 
 use acton_reactive::prelude::*;
-use minijinja::{context, Environment};
+use minijinja::{Environment, context};
 
 use crate::scaffold::cli::build_template_context;
 use crate::scaffold::messages::TemplateRendered;
@@ -76,7 +76,8 @@ fn render_template(
 /// 3. Emits `TemplateRenderedMessage` for each file
 /// 4. Emits `AllTemplatesRendered` when done
 pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
-    let mut actor = runtime.new_actor_with_name::<TemplateHandlerState>("scaffold_handler".to_string());
+    let mut actor =
+        runtime.new_actor_with_name::<TemplateHandlerState>("scaffold_handler".to_string());
 
     actor.act_on::<ScaffoldRequestMessage>(|actor, envelope| {
         let request = envelope.message().request.clone();
@@ -102,8 +103,7 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
             if total_files == 0 {
                 eprintln!(
                     "No templates found for {} {}",
-                    request.language,
-                    request.primitive_type
+                    request.language, request.primitive_type
                 );
                 return;
             }
@@ -114,13 +114,14 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
 
             // Render each template
             for (index, filename) in files.iter().enumerate() {
-                let template_content = match registry.get(request.language, request.primitive_type, filename) {
-                    Some(content) => content,
-                    None => {
-                        eprintln!("Template not found: {filename}");
-                        continue;
-                    }
-                };
+                let template_content =
+                    match registry.get(request.language, request.primitive_type, filename) {
+                        Some(content) => content,
+                        None => {
+                            eprintln!("Template not found: {filename}");
+                            continue;
+                        }
+                    };
 
                 match render_template(&env, template_content, &context) {
                     Ok(content) => {

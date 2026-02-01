@@ -44,7 +44,9 @@ impl std::str::FromStr for Language {
             "rust" | "rs" => Ok(Self::Rust),
             "typescript" | "ts" => Ok(Self::TypeScript),
             "python" | "py" => Ok(Self::Python),
-            _ => Err(format!("Unknown language: {s}. Valid options: rust, typescript, python")),
+            _ => Err(format!(
+                "Unknown language: {s}. Valid options: rust, typescript, python"
+            )),
         }
     }
 }
@@ -84,7 +86,9 @@ impl std::str::FromStr for PrimitiveType {
             "source" => Ok(Self::Source),
             "handler" => Ok(Self::Handler),
             "sink" => Ok(Self::Sink),
-            _ => Err(format!("Unknown primitive type: {s}. Valid options: source, handler, sink")),
+            _ => Err(format!(
+                "Unknown primitive type: {s}. Valid options: source, handler, sink"
+            )),
         }
     }
 }

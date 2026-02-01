@@ -60,9 +60,11 @@ impl MarketplaceStorage {
     /// - XDG directories cannot be determined
     /// - Directory creation fails
     pub fn new() -> Result<Self> {
-        let proj_dirs = directories::ProjectDirs::from("ai", "govcraft", "emergent")
-            .ok_or_else(|| MarketplaceError::XdgDirectories {
-                message: "Could not determine XDG directories".to_string(),
+        let proj_dirs =
+            directories::ProjectDirs::from("ai", "govcraft", "emergent").ok_or_else(|| {
+                MarketplaceError::XdgDirectories {
+                    message: "Could not determine XDG directories".to_string(),
+                }
             })?;
 
         let config_dir = proj_dirs.config_dir().to_path_buf();
@@ -120,12 +122,11 @@ impl MarketplaceStorage {
         }
 
         let content = std::fs::read_to_string(&path)?;
-        let config: MarketplaceConfig = toml::from_str(&content).map_err(|e| {
-            MarketplaceError::TomlParse {
+        let config: MarketplaceConfig =
+            toml::from_str(&content).map_err(|e| MarketplaceError::TomlParse {
                 path: path.display().to_string(),
                 source: e,
-            }
-        })?;
+            })?;
         Ok(config)
     }
 
@@ -140,12 +141,11 @@ impl MarketplaceStorage {
     /// Returns an error if writing fails.
     pub fn save_config(&self, config: &MarketplaceConfig) -> Result<()> {
         let path = self.config_path();
-        let content = toml::to_string_pretty(config).map_err(|e| {
-            MarketplaceError::TomlSerialize {
+        let content =
+            toml::to_string_pretty(config).map_err(|e| MarketplaceError::TomlSerialize {
                 path: path.display().to_string(),
                 source: e,
-            }
-        })?;
+            })?;
         std::fs::write(&path, content)?;
         Ok(())
     }
@@ -183,12 +183,11 @@ impl MarketplaceStorage {
     /// Returns an error if writing fails.
     pub fn save_manifest(&self, manifest: &InstallationManifest) -> Result<()> {
         let path = self.manifest_path();
-        let content = toml::to_string_pretty(manifest).map_err(|e| {
-            MarketplaceError::TomlSerialize {
+        let content =
+            toml::to_string_pretty(manifest).map_err(|e| MarketplaceError::TomlSerialize {
                 path: path.display().to_string(),
                 source: e,
-            }
-        })?;
+            })?;
         std::fs::write(&path, content)?;
         Ok(())
     }

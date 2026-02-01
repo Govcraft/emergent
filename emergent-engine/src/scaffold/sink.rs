@@ -127,12 +127,14 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                 });
                 println!("{output}");
             } else if dry_run {
-                println!("\nDry run complete. {} file(s) would be created in {}",
+                println!(
+                    "\nDry run complete. {} file(s) would be created in {}",
                     files.len(),
                     output_dir.display()
                 );
             } else {
-                println!("\nScaffold complete! {} file(s) created in {}",
+                println!(
+                    "\nScaffold complete! {} file(s) created in {}",
                     files.len(),
                     output_dir.display()
                 );

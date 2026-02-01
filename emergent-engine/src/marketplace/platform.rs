@@ -97,7 +97,10 @@ mod tests {
 
         // Should have three parts separated by hyphens
         let parts: Vec<&str> = platform.as_str().split('-').collect();
-        assert!(parts.len() >= 3, "Platform triple should have at least 3 parts");
+        assert!(
+            parts.len() >= 3,
+            "Platform triple should have at least 3 parts"
+        );
     }
 
     #[test]

@@ -19,7 +19,7 @@ use chrono::Utc;
 use clap::Parser;
 use emergent_client::EmergentSink;
 use serde::Deserialize;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 /// Console Sink - displays events in plain text format.
 #[derive(Parser, Debug)]

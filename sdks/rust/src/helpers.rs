@@ -128,7 +128,7 @@ use crate::connection::{EmergentHandler, EmergentSink, EmergentSource};
 use crate::message::EmergentMessage;
 use std::future::Future;
 use thiserror::Error;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 
 /// Errors that can occur when running helper functions.
@@ -241,10 +241,7 @@ pub type ShutdownReceiver = watch::Receiver<bool>;
 ///     Ok(())
 /// }).await?;
 /// ```
-pub async fn run_source<F, Fut>(
-    name: Option<&str>,
-    run_fn: F,
-) -> HelperResult<()>
+pub async fn run_source<F, Fut>(name: Option<&str>, run_fn: F) -> HelperResult<()>
 where
     F: FnOnce(EmergentSource, ShutdownReceiver) -> Fut + Send,
     Fut: Future<Output = Result<(), String>> + Send,
@@ -262,8 +259,8 @@ where
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Set up signal handler
-    let mut sigterm =
-        signal(SignalKind::terminate()).map_err(|e| HelperError::SignalHandlerFailed(e.to_string()))?;
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| HelperError::SignalHandlerFailed(e.to_string()))?;
 
     // Spawn signal handler task
     let signal_task = tokio::spawn(async move {
@@ -342,8 +339,8 @@ where
         .await
         .map_err(|e| HelperError::SubscribeFailed(e.to_string()))?;
 
-    let mut sigterm =
-        signal(SignalKind::terminate()).map_err(|e| HelperError::SignalHandlerFailed(e.to_string()))?;
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| HelperError::SignalHandlerFailed(e.to_string()))?;
 
     loop {
         tokio::select! {
@@ -417,20 +414,21 @@ where
 {
     let resolved_name = resolve_name(name, "sink");
 
-    let sink = EmergentSink::connect(&resolved_name)
-        .await
-        .map_err(|e| HelperError::ConnectionFailed {
-            name: resolved_name.clone(),
-            error: e.to_string(),
-        })?;
+    let sink =
+        EmergentSink::connect(&resolved_name)
+            .await
+            .map_err(|e| HelperError::ConnectionFailed {
+                name: resolved_name.clone(),
+                error: e.to_string(),
+            })?;
 
     let mut stream = sink
         .subscribe(subscriptions)
         .await
         .map_err(|e| HelperError::SubscribeFailed(e.to_string()))?;
 
-    let mut sigterm =
-        signal(SignalKind::terminate()).map_err(|e| HelperError::SignalHandlerFailed(e.to_string()))?;
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| HelperError::SignalHandlerFailed(e.to_string()))?;
 
     loop {
         tokio::select! {

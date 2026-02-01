@@ -34,11 +34,13 @@ const TS_SINK_DENO_JSON: &str = include_str!("../../templates/typescript/sink/de
 const TS_SINK_MAIN_TS: &str = include_str!("../../templates/typescript/sink/main.ts.j2");
 
 /// Embedded Python source templates.
-const PY_SOURCE_PYPROJECT_TOML: &str = include_str!("../../templates/python/source/pyproject.toml.j2");
+const PY_SOURCE_PYPROJECT_TOML: &str =
+    include_str!("../../templates/python/source/pyproject.toml.j2");
 const PY_SOURCE_MAIN_PY: &str = include_str!("../../templates/python/source/main.py.j2");
 
 /// Embedded Python handler templates.
-const PY_HANDLER_PYPROJECT_TOML: &str = include_str!("../../templates/python/handler/pyproject.toml.j2");
+const PY_HANDLER_PYPROJECT_TOML: &str =
+    include_str!("../../templates/python/handler/pyproject.toml.j2");
 const PY_HANDLER_MAIN_PY: &str = include_str!("../../templates/python/handler/main.py.j2");
 
 /// Embedded Python sink templates.
@@ -56,7 +58,11 @@ pub struct TemplateKey {
 impl TemplateKey {
     /// Creates a new template key.
     #[must_use]
-    pub const fn new(language: Language, primitive_type: PrimitiveType, filename: &'static str) -> Self {
+    pub const fn new(
+        language: Language,
+        primitive_type: PrimitiveType,
+        filename: &'static str,
+    ) -> Self {
         Self {
             language,
             primitive_type,
@@ -82,7 +88,8 @@ impl TemplateRegistry {
     #[must_use]
     pub fn new() -> Self {
         let mut templates = HashMap::new();
-        let mut files_by_type: HashMap<(Language, PrimitiveType), Vec<&'static str>> = HashMap::new();
+        let mut files_by_type: HashMap<(Language, PrimitiveType), Vec<&'static str>> =
+            HashMap::new();
 
         // Rust source templates
         templates.insert(
@@ -210,15 +217,26 @@ impl TemplateRegistry {
             vec!["pyproject.toml", "main.py"],
         );
 
-        Self { templates, files_by_type }
+        Self {
+            templates,
+            files_by_type,
+        }
     }
 
     /// Gets a template by language, primitive type, and filename.
     #[must_use]
-    pub fn get(&self, language: Language, primitive_type: PrimitiveType, filename: &str) -> Option<&'static str> {
+    pub fn get(
+        &self,
+        language: Language,
+        primitive_type: PrimitiveType,
+        filename: &str,
+    ) -> Option<&'static str> {
         // Look for exact match first
         for (key, template) in &self.templates {
-            if key.language == language && key.primitive_type == primitive_type && key.filename == filename {
+            if key.language == language
+                && key.primitive_type == primitive_type
+                && key.filename == filename
+            {
                 return Some(*template);
             }
         }
@@ -227,7 +245,11 @@ impl TemplateRegistry {
 
     /// Gets the list of files to generate for a language/primitive type combination.
     #[must_use]
-    pub fn files_for(&self, language: Language, primitive_type: PrimitiveType) -> Vec<&'static str> {
+    pub fn files_for(
+        &self,
+        language: Language,
+        primitive_type: PrimitiveType,
+    ) -> Vec<&'static str> {
         self.files_by_type
             .get(&(language, primitive_type))
             .cloned()
@@ -243,7 +265,6 @@ impl TemplateRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn test_registry_has_rust_templates() {

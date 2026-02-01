@@ -13,22 +13,22 @@ use crate::types::PrimitiveName;
 use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
 use acton_reactive::ipc::protocol::{
-    read_frame, write_frame, Format, MAX_FRAME_SIZE, MSG_TYPE_DISCOVER, MSG_TYPE_PUSH,
-    MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE, MSG_TYPE_SUBSCRIBE, MSG_TYPE_UNSUBSCRIBE,
+    Format, MAX_FRAME_SIZE, MSG_TYPE_DISCOVER, MSG_TYPE_PUSH, MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
+    MSG_TYPE_SUBSCRIBE, MSG_TYPE_UNSUBSCRIBE, read_frame, write_frame,
 };
 use acton_reactive::ipc::{
-    socket_exists, socket_is_alive, IpcConfig, IpcDiscoverRequest, IpcDiscoverResponse,
-    IpcEnvelope, IpcPushNotification, IpcResponse, IpcSubscribeRequest, IpcSubscriptionResponse,
-    IpcUnsubscribeRequest,
+    IpcConfig, IpcDiscoverRequest, IpcDiscoverResponse, IpcEnvelope, IpcPushNotification,
+    IpcResponse, IpcSubscribeRequest, IpcSubscriptionResponse, IpcUnsubscribeRequest,
+    socket_exists, socket_is_alive,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
-use tokio::sync::{mpsc, Mutex};
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 
 /// Default timeout for connection operations.
@@ -108,7 +108,9 @@ async fn discover_impl(
 
     if !response.success {
         return Err(ClientError::DiscoveryFailed(
-            response.error.unwrap_or_else(|| "Unknown error".to_string()),
+            response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string()),
         ));
     }
 
@@ -154,7 +156,9 @@ async fn subscribe_impl(
 
     if !response.success {
         return Err(ClientError::SubscriptionFailed(
-            response.error.unwrap_or_else(|| "Unknown error".to_string()),
+            response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string()),
         ));
     }
 
@@ -193,7 +197,9 @@ async fn unsubscribe_impl(
 
     if !response.success {
         return Err(ClientError::SubscriptionFailed(
-            response.error.unwrap_or_else(|| "Unknown error".to_string()),
+            response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string()),
         ));
     }
 
@@ -256,7 +262,9 @@ async fn get_my_subscriptions_impl(
 
     if !response.success {
         return Err(ClientError::SubscriptionFailed(
-            response.error.unwrap_or_else(|| "GetSubscriptions failed".to_string()),
+            response
+                .error
+                .unwrap_or_else(|| "GetSubscriptions failed".to_string()),
         ));
     }
 
@@ -333,7 +341,10 @@ impl EmergentSource {
         // Set the source if not already set
         if message.source.is_default() {
             message.source = PrimitiveName::new(&self.name).map_err(|e| {
-                ClientError::ConnectionFailed(format!("invalid primitive name '{}': {}", self.name, e))
+                ClientError::ConnectionFailed(format!(
+                    "invalid primitive name '{}': {}",
+                    self.name, e
+                ))
             })?;
         }
 
@@ -377,9 +388,14 @@ impl EmergentSource {
         let payload = rmp_serde::to_vec(&request)?;
 
         // Send the unsubscribe request
-        if write_frame(&mut *writer, MSG_TYPE_UNSUBSCRIBE, Format::MessagePack, &payload)
-            .await
-            .is_err()
+        if write_frame(
+            &mut *writer,
+            MSG_TYPE_UNSUBSCRIBE,
+            Format::MessagePack,
+            &payload,
+        )
+        .await
+        .is_err()
         {
             // Connection already closed, that's fine for disconnect
             return Ok(());
@@ -494,7 +510,10 @@ impl EmergentHandler {
         // Update tracked subscriptions (excluding internal system.shutdown)
         {
             let mut subs = self.subscribed_types.lock().await;
-            *subs = subscribed.into_iter().filter(|s| s != "system.shutdown").collect();
+            *subs = subscribed
+                .into_iter()
+                .filter(|s| s != "system.shutdown")
+                .collect();
         }
 
         // Create channel for message stream
@@ -516,7 +535,10 @@ impl EmergentHandler {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
-                                        if let Some(kind) = notification.payload.get("kind").and_then(|v| v.as_str())
+                                        if let Some(kind) = notification
+                                            .payload
+                                            .get("kind")
+                                            .and_then(|v| v.as_str())
                                             && kind == "handler"
                                         {
                                             // Graceful shutdown - close the stream
@@ -597,7 +619,10 @@ impl EmergentHandler {
     pub async fn publish(&self, mut message: EmergentMessage) -> Result<()> {
         if message.source.is_default() {
             message.source = PrimitiveName::new(&self.name).map_err(|e| {
-                ClientError::ConnectionFailed(format!("invalid primitive name '{}': {}", self.name, e))
+                ClientError::ConnectionFailed(format!(
+                    "invalid primitive name '{}': {}",
+                    self.name, e
+                ))
             })?;
         }
 
@@ -762,7 +787,10 @@ impl EmergentSink {
         // Update tracked subscriptions (excluding internal system.shutdown)
         {
             let mut subs = self.subscribed_types.lock().await;
-            *subs = subscribed.into_iter().filter(|s| s != "system.shutdown").collect();
+            *subs = subscribed
+                .into_iter()
+                .filter(|s| s != "system.shutdown")
+                .collect();
         }
 
         // Create channel for message stream
@@ -784,7 +812,10 @@ impl EmergentSink {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
-                                        if let Some(kind) = notification.payload.get("kind").and_then(|v| v.as_str())
+                                        if let Some(kind) = notification
+                                            .payload
+                                            .get("kind")
+                                            .and_then(|v| v.as_str())
                                             && kind == "sink"
                                         {
                                             // Graceful shutdown - close the stream

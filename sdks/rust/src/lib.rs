@@ -79,7 +79,7 @@ pub mod types;
 
 pub use connection::{EmergentHandler, EmergentSink, EmergentSource};
 pub use error::ClientError;
-pub use message::{create_message, EmergentMessage};
+pub use message::{EmergentMessage, create_message};
 pub use stream::MessageStream;
 pub use subscribe::IntoSubscription;
 

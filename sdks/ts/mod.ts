@@ -71,6 +71,20 @@ export type {
   PrimitiveKind,
 } from "./src/types.ts";
 
+// System Event Types
+export type {
+  SystemEventPayload,
+  SystemShutdownPayload,
+} from "./src/system-events.ts";
+export {
+  isSystemEventPayload,
+  isSystemShutdownPayload,
+  isErrorEvent,
+  isSourceEvent,
+  isHandlerEvent,
+  isSinkEvent,
+} from "./src/system-events.ts";
+
 // ============================================================================
 // Client Primitives
 // ============================================================================

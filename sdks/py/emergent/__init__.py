@@ -63,6 +63,8 @@ from emergent.types import (
     DiscoveryInfo,
     EmergentMessage,
     PrimitiveInfo,
+    SystemEventPayload,
+    SystemShutdownPayload,
 )
 
 # Helpers
@@ -96,6 +98,9 @@ __all__ = [
     "PublishError",
     "SocketNotFoundError",
     "SubscriptionError",
+    # System Event Types
+    "SystemEventPayload",
+    "SystemShutdownPayload",
     "TimeoutError",
     "ValidationError",
     # Version

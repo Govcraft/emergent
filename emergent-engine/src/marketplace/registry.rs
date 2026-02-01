@@ -128,12 +128,11 @@ impl Registry {
         // Read and parse index.toml
         let index_path = repo_dir.join("index.toml");
         let content = std::fs::read_to_string(&index_path)?;
-        let metadata: RegistryMetadata = toml::from_str(&content).map_err(|e| {
-            MarketplaceError::TomlParse {
+        let metadata: RegistryMetadata =
+            toml::from_str(&content).map_err(|e| MarketplaceError::TomlParse {
                 path: index_path.display().to_string(),
                 source: e,
-            }
-        })?;
+            })?;
 
         Ok(metadata)
     }
@@ -160,12 +159,11 @@ impl Registry {
         }
 
         let content = std::fs::read_to_string(&manifest_path)?;
-        let manifest: PrimitiveManifest = toml::from_str(&content).map_err(|e| {
-            MarketplaceError::TomlParse {
+        let manifest: PrimitiveManifest =
+            toml::from_str(&content).map_err(|e| MarketplaceError::TomlParse {
                 path: manifest_path.display().to_string(),
                 source: e,
-            }
-        })?;
+            })?;
 
         Ok(manifest)
     }
@@ -190,7 +188,9 @@ impl Registry {
             .filter(|p| {
                 p.name.to_lowercase().contains(&query_lower)
                     || p.description.to_lowercase().contains(&query_lower)
-                    || p.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
+                    || p.tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&query_lower))
             })
             .collect()
     }

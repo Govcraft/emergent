@@ -20,7 +20,7 @@ use clap::Parser;
 use emergent_client::{EmergentMessage, EmergentSource};
 use serde_json::json;
 use std::time::Duration;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 /// Timer Source - emits periodic tick events.
 #[derive(Parser, Debug)]

@@ -22,7 +22,7 @@ use emergent_client::EmergentSink;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 /// Log Sink - writes received events to a log file.
 #[derive(Parser, Debug)]
