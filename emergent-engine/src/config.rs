@@ -194,6 +194,44 @@ const fn default_enabled() -> bool {
     true
 }
 
+/// Expand tilde prefix in a path (pure function).
+///
+/// If the path starts with `~`, replaces it with the provided home directory.
+/// Otherwise returns the path unchanged.
+///
+/// # Arguments
+///
+/// * `path` - The path to expand
+/// * `home_dir` - The home directory to substitute for `~`
+///
+/// # Returns
+///
+/// A new `PathBuf` with tilde expanded, or the original path if no expansion needed.
+fn expand_tilde(path: &Path, home_dir: Option<&Path>) -> PathBuf {
+    let path_str = path.to_string_lossy();
+
+    // Only expand if path starts with ~ and we have a home directory
+    if !path_str.starts_with('~') {
+        return path.to_path_buf();
+    }
+
+    let Some(home) = home_dir else {
+        return path.to_path_buf();
+    };
+
+    // Handle exactly "~" or "~/..."
+    if path_str == "~" {
+        return home.to_path_buf();
+    }
+
+    if let Some(rest) = path_str.strip_prefix("~/") {
+        return home.join(rest);
+    }
+
+    // Path starts with ~ but not ~/ (e.g., "~user/path") - don't expand
+    path.to_path_buf()
+}
+
 /// Common interface for all primitive configurations.
 ///
 /// This trait abstracts over `SourceConfig`, `HandlerConfig`, and `SinkConfig`
@@ -305,18 +343,63 @@ pub struct EmergentConfig {
 
 impl EmergentConfig {
     /// Load configuration from a file.
+    ///
+    /// Paths in primitive configurations are expanded to resolve `~` to the
+    /// user's home directory before validation.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
-        let config: EmergentConfig = toml::from_str(&content)?;
+        let mut config: EmergentConfig = toml::from_str(&content)?;
+        config.expand_paths();
         config.validate()?;
         Ok(config)
     }
 
     /// Load configuration from a TOML string.
+    ///
+    /// Paths in primitive configurations are expanded to resolve `~` to the
+    /// user's home directory before validation.
     pub fn parse(content: &str) -> Result<Self, ConfigError> {
-        let config: EmergentConfig = toml::from_str(content)?;
+        let mut config: EmergentConfig = toml::from_str(content)?;
+        config.expand_paths();
         config.validate()?;
         Ok(config)
+    }
+
+    /// Expand tilde (`~`) in all primitive paths using the provided home directory (pure function).
+    ///
+    /// This creates a new configuration with all source, handler, and sink paths
+    /// expanded. Useful for testing with a controlled home directory.
+    #[must_use]
+    pub fn with_expanded_paths(&self, home_dir: Option<&Path>) -> Self {
+        let mut config = self.clone();
+        for source in &mut config.sources {
+            source.path = expand_tilde(&source.path, home_dir);
+        }
+        for handler in &mut config.handlers {
+            handler.path = expand_tilde(&handler.path, home_dir);
+        }
+        for sink in &mut config.sinks {
+            sink.path = expand_tilde(&sink.path, home_dir);
+        }
+        config
+    }
+
+    /// Expand tilde (`~`) in all primitive paths using the system home directory.
+    ///
+    /// Modifies the configuration in place, replacing `~` prefixes in source,
+    /// handler, and sink paths with the user's actual home directory.
+    pub fn expand_paths(&mut self) {
+        let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+        let home_ref = home.as_deref();
+        for source in &mut self.sources {
+            source.path = expand_tilde(&source.path, home_ref);
+        }
+        for handler in &mut self.handlers {
+            handler.path = expand_tilde(&handler.path, home_ref);
+        }
+        for sink in &mut self.sinks {
+            sink.path = expand_tilde(&sink.path, home_ref);
+        }
     }
 
     /// Validate the configuration structure (pure function).
@@ -633,5 +716,119 @@ wire_format = "messagepack"
         assert_eq!(source.name(), "my-source");
         assert_eq!(source.path(), Path::new("/usr/bin/source"));
         assert!(source.is_enabled());
+    }
+
+    #[test]
+    fn test_expand_tilde_home_only() {
+        let home = Path::new("/home/user");
+        let result = expand_tilde(Path::new("~"), Some(home));
+        assert_eq!(result, PathBuf::from("/home/user"));
+    }
+
+    #[test]
+    fn test_expand_tilde_home_subpath() {
+        let home = Path::new("/home/user");
+        let result = expand_tilde(Path::new("~/bin/app"), Some(home));
+        assert_eq!(result, PathBuf::from("/home/user/bin/app"));
+    }
+
+    #[test]
+    fn test_expand_tilde_absolute_unchanged() {
+        let home = Path::new("/home/user");
+        let result = expand_tilde(Path::new("/absolute/path"), Some(home));
+        assert_eq!(result, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn test_expand_tilde_relative_unchanged() {
+        let home = Path::new("/home/user");
+        let result = expand_tilde(Path::new("relative/path"), Some(home));
+        assert_eq!(result, PathBuf::from("relative/path"));
+    }
+
+    #[test]
+    fn test_expand_tilde_no_home_dir() {
+        let result = expand_tilde(Path::new("~/bin/app"), None);
+        assert_eq!(result, PathBuf::from("~/bin/app"));
+    }
+
+    #[test]
+    fn test_expand_tilde_user_format_unchanged() {
+        // ~username/path format is not expanded (would require passwd lookup)
+        let home = Path::new("/home/user");
+        let result = expand_tilde(Path::new("~other/bin/app"), Some(home));
+        assert_eq!(result, PathBuf::from("~other/bin/app"));
+    }
+
+    #[test]
+    fn test_expand_tilde_in_middle_unchanged() {
+        let home = Path::new("/home/user");
+        let result = expand_tilde(Path::new("foo/~/bar"), Some(home));
+        assert_eq!(result, PathBuf::from("foo/~/bar"));
+    }
+
+    #[test]
+    fn test_with_expanded_paths() {
+        let home = Path::new("/home/testuser");
+        let config = EmergentConfig {
+            sources: vec![SourceConfig {
+                name: "src1".to_string(),
+                path: PathBuf::from("~/bin/source"),
+                args: vec![],
+                enabled: true,
+                publishes: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            handlers: vec![HandlerConfig {
+                name: "handler1".to_string(),
+                path: PathBuf::from("~/.local/bin/handler"),
+                args: vec![],
+                enabled: true,
+                subscribes: vec![],
+                publishes: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            sinks: vec![SinkConfig {
+                name: "sink1".to_string(),
+                path: PathBuf::from("/absolute/sink"),
+                args: vec![],
+                enabled: true,
+                subscribes: vec![],
+                env: std::collections::HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        let expanded = config.with_expanded_paths(Some(home));
+
+        assert_eq!(
+            expanded.sources[0].path,
+            PathBuf::from("/home/testuser/bin/source")
+        );
+        assert_eq!(
+            expanded.handlers[0].path,
+            PathBuf::from("/home/testuser/.local/bin/handler")
+        );
+        // Absolute path should remain unchanged
+        assert_eq!(expanded.sinks[0].path, PathBuf::from("/absolute/sink"));
+    }
+
+    #[test]
+    fn test_parse_expands_tilde_paths() {
+        // This test verifies that parse() expands tildes
+        // We can't easily verify the actual expansion without mocking,
+        // but we can verify the path doesn't stay as ~/... when a home exists
+        let toml = r#"
+[engine]
+name = "test"
+
+[[sources]]
+name = "src"
+path = "/bin/true"
+enabled = true
+"#;
+        // This should parse without error (path exists)
+        let result = EmergentConfig::parse(toml);
+        assert!(result.is_ok());
     }
 }

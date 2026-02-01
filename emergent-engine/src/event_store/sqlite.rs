@@ -139,7 +139,7 @@ impl SqliteEventStore {
             ",
         )?;
 
-        let events = stmt.query_map([start_ms, end_ms], |row| row_to_message(row))?;
+        let events = stmt.query_map([start_ms, end_ms], row_to_message)?;
 
         events.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -167,7 +167,7 @@ impl SqliteEventStore {
             ",
         )?;
 
-        let events = stmt.query_map([correlation_id], |row| row_to_message(row))?;
+        let events = stmt.query_map([correlation_id], row_to_message)?;
 
         events.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
