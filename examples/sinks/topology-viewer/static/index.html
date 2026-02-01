@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Emergent Topology Viewer</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Emergent Topology</h1>
+    <div class="status">
+      <span id="connection-status" class="disconnected">Disconnected</span>
+      <span id="node-count">0 nodes</span>
+    </div>
+  </header>
+
+  <main>
+    <svg id="graph"></svg>
+  </main>
+
+  <aside class="legend">
+    <h3>Legend</h3>
+    <div class="legend-item">
+      <span class="node-dot source"></span>
+      <span>Source</span>
+    </div>
+    <div class="legend-item">
+      <span class="node-dot handler"></span>
+      <span>Handler</span>
+    </div>
+    <div class="legend-item">
+      <span class="node-dot sink"></span>
+      <span>Sink</span>
+    </div>
+    <hr>
+    <div class="legend-item">
+      <span class="status-dot running"></span>
+      <span>Running</span>
+    </div>
+    <div class="legend-item">
+      <span class="status-dot stopped"></span>
+      <span>Stopped</span>
+    </div>
+    <div class="legend-item">
+      <span class="status-dot error"></span>
+      <span>Error</span>
+    </div>
+  </aside>
+
+  <div id="tooltip" class="tooltip"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

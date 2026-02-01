@@ -129,6 +129,22 @@ args = ["run", "--project", "./examples/sources/webhook", "python", "./examples/
 enabled = true
 subscribes = ["webhook.received"]
 
+# Topology viewer - real-time D3.js force-directed graph visualization
+# Serves HTTP on port 8080 with SSE updates for live topology changes
+[[sinks]]
+name = "topology-viewer"
+path = "/home/rodzilla/.deno/bin/deno"
+args = [
+    "run",
+    "--allow-env",
+    "--allow-read",
+    "--allow-net",
+    "./examples/sinks/topology-viewer/main.ts",
+    "--port", "8080"
+]
+enabled = true
+subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
+
 # =============================================================================
 # Message Flow
 # =============================================================================
