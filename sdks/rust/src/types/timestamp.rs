@@ -161,17 +161,19 @@ mod tests {
     }
 
     #[test]
-    fn serde_roundtrip() {
+    fn serde_roundtrip() -> Result<(), serde_json::Error> {
         let ts = Timestamp::from_millis(1_704_067_200_000);
-        let json = serde_json::to_string(&ts).expect("serialize");
-        let restored: Timestamp = serde_json::from_str(&json).expect("deserialize");
+        let json = serde_json::to_string(&ts)?;
+        let restored: Timestamp = serde_json::from_str(&json)?;
         assert_eq!(ts, restored);
+        Ok(())
     }
 
     #[test]
-    fn serde_is_transparent() {
+    fn serde_is_transparent() -> Result<(), serde_json::Error> {
         let ts = Timestamp::from_millis(12345);
-        let json = serde_json::to_string(&ts).expect("serialize");
+        let json = serde_json::to_string(&ts)?;
         assert_eq!(json, "12345");
+        Ok(())
     }
 }

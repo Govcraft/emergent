@@ -220,43 +220,49 @@ mod tests {
     }
 
     #[test]
-    fn parts_extraction() {
-        let msg_type = MessageType::new("user.created").expect("valid");
+    fn parts_extraction() -> Result<(), InvalidMessageType> {
+        let msg_type = MessageType::new("user.created")?;
         assert_eq!(msg_type.parts(), vec!["user", "created"]);
+        Ok(())
     }
 
     #[test]
-    fn category_extraction() {
-        let msg_type = MessageType::new("user.created").expect("valid");
+    fn category_extraction() -> Result<(), InvalidMessageType> {
+        let msg_type = MessageType::new("user.created")?;
         assert_eq!(msg_type.category(), Some("user"));
+        Ok(())
     }
 
     #[test]
-    fn matches_pattern_exact() {
-        let msg_type = MessageType::new("timer.tick").expect("valid");
+    fn matches_pattern_exact() -> Result<(), InvalidMessageType> {
+        let msg_type = MessageType::new("timer.tick")?;
         assert!(msg_type.matches_pattern("timer.tick"));
         assert!(!msg_type.matches_pattern("timer.tock"));
+        Ok(())
     }
 
     #[test]
-    fn matches_pattern_wildcard() {
-        let msg_type = MessageType::new("system.started.timer").expect("valid");
+    fn matches_pattern_wildcard() -> Result<(), InvalidMessageType> {
+        let msg_type = MessageType::new("system.started.timer")?;
         assert!(msg_type.matches_pattern("system.started.*"));
         assert!(msg_type.matches_pattern("system.*"));
         assert!(!msg_type.matches_pattern("user.*"));
+        Ok(())
     }
 
     #[test]
-    fn serde_roundtrip() {
-        let msg_type = MessageType::new("timer.tick").expect("valid");
-        let json = serde_json::to_string(&msg_type).expect("serialize");
-        let restored: MessageType = serde_json::from_str(&json).expect("deserialize");
+    fn serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let msg_type = MessageType::new("timer.tick")?;
+        let json = serde_json::to_string(&msg_type)?;
+        let restored: MessageType = serde_json::from_str(&json)?;
         assert_eq!(msg_type, restored);
+        Ok(())
     }
 
     #[test]
-    fn from_str_works() {
-        let msg_type: MessageType = "timer.tick".parse().expect("parse");
+    fn from_str_works() -> Result<(), InvalidMessageType> {
+        let msg_type: MessageType = "timer.tick".parse()?;
         assert_eq!(msg_type.as_str(), "timer.tick");
+        Ok(())
     }
 }

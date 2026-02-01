@@ -156,6 +156,15 @@ impl EmergentMessage {
         self
     }
 
+    /// Set the correlation ID from an optional value.
+    ///
+    /// Useful for copying correlation IDs from request messages to responses.
+    #[must_use]
+    pub fn with_correlation_id_option(mut self, id: Option<&CorrelationId>) -> Self {
+        self.correlation_id = id.cloned();
+        self
+    }
+
     /// Set the causation ID from a MessageId.
     ///
     /// This is a convenience method that converts the MessageId to a CausationId.

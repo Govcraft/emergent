@@ -9,7 +9,7 @@ use crate::error::ClientError;
 use crate::message::EmergentMessage;
 use crate::stream::MessageStream;
 use crate::subscribe::IntoSubscription;
-use crate::types::PrimitiveName;
+use crate::types::{CorrelationId, PrimitiveName};
 use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
 use acton_reactive::ipc::protocol::{
@@ -18,8 +18,8 @@ use acton_reactive::ipc::protocol::{
 };
 use acton_reactive::ipc::{
     IpcConfig, IpcDiscoverRequest, IpcDiscoverResponse, IpcEnvelope, IpcPushNotification,
-    IpcResponse, IpcSubscribeRequest, IpcSubscriptionResponse, IpcUnsubscribeRequest,
-    socket_exists, socket_is_alive,
+    IpcSubscribeRequest, IpcSubscriptionResponse, IpcUnsubscribeRequest, socket_exists,
+    socket_is_alive,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -261,99 +261,108 @@ pub struct TopologyState {
     pub primitives: Vec<TopologyPrimitive>,
 }
 
-/// Get configured subscriptions from the engine's config service.
+/// Get configured subscriptions from the engine via pub/sub.
+///
+/// Uses the `system.request.subscriptions` / `system.response.subscriptions` pattern.
 async fn get_my_subscriptions_impl(
     reader: &mut OwnedReadHalf,
     writer: &mut OwnedWriteHalf,
     name: &str,
 ) -> Result<Vec<String>> {
-    let envelope = IpcEnvelope::new_request(
-        "config_service",
-        "GetSubscriptions",
-        json!({ "name": name }),
-    );
+    // Generate correlation ID for matching response
+    let correlation_id = CorrelationId::new();
 
-    let payload = rmp_serde::to_vec(&envelope)?;
-    write_frame(writer, MSG_TYPE_REQUEST, Format::MessagePack, &payload)
-        .await
-        .map_err(ClientError::from)?;
+    // Subscribe to response type first
+    subscribe_impl(reader, writer, &["system.response.subscriptions"]).await?;
 
-    let (msg_type, _, payload) = timeout(DEFAULT_TIMEOUT, read_frame(reader, MAX_FRAME_SIZE))
-        .await
-        .map_err(|_| ClientError::Timeout)?
-        .map_err(ClientError::from)?;
+    // Create and publish request message
+    let request = EmergentMessage::new("system.request.subscriptions")
+        .with_source(name)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(json!({ "name": name }));
 
-    if msg_type != MSG_TYPE_RESPONSE {
-        return Err(ClientError::ProtocolError(format!(
-            "Expected RESPONSE, got message type {msg_type}"
-        )));
-    }
+    publish_impl(writer, request).await?;
 
-    // Parse IPC response using acton-reactive's type
-    let response: IpcResponse = rmp_serde::from_slice(&payload)?;
+    // Wait for response with matching correlation_id
+    timeout(DEFAULT_TIMEOUT, async {
+        loop {
+            let (msg_type, _, payload) = read_frame(reader, MAX_FRAME_SIZE)
+                .await
+                .map_err(ClientError::from)?;
 
-    if !response.success {
-        return Err(ClientError::SubscriptionFailed(
-            response
-                .error
-                .unwrap_or_else(|| "GetSubscriptions failed".to_string()),
-        ));
-    }
-
-    // Extract subscribes from payload
-    let subs_response: SubscriptionsResponse = response
-        .payload
-        .map(serde_json::from_value)
-        .transpose()?
-        .unwrap_or(SubscriptionsResponse { subscribes: vec![] });
-
-    Ok(subs_response.subscribes)
+            if msg_type == MSG_TYPE_PUSH {
+                let notification: IpcPushNotification = rmp_serde::from_slice(&payload)?;
+                if notification.message_type == "system.response.subscriptions" {
+                    // Parse the EmergentMessage from payload
+                    let msg: EmergentMessage = serde_json::from_value(notification.payload)?;
+                    // Check correlation_id matches
+                    if msg.correlation_id.as_ref().map(|c| c.to_string())
+                        == Some(correlation_id.to_string())
+                    {
+                        // Extract subscribes from payload
+                        let subs_response: SubscriptionsResponse =
+                            serde_json::from_value(msg.payload)?;
+                        return Ok(subs_response.subscribes);
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| ClientError::Timeout)?
 }
 
-/// Get current topology from the engine's config service.
+/// Get current topology from the engine via pub/sub.
+///
+/// Uses the `system.request.topology` / `system.response.topology` pattern.
 async fn get_topology_impl(
     reader: &mut OwnedReadHalf,
     writer: &mut OwnedWriteHalf,
+    name: &str,
 ) -> Result<TopologyState> {
-    let envelope = IpcEnvelope::new_request("config_service", "GetTopology", json!({}));
+    // Generate correlation ID for matching response
+    let correlation_id = CorrelationId::new();
 
-    let payload = rmp_serde::to_vec(&envelope)?;
-    write_frame(writer, MSG_TYPE_REQUEST, Format::MessagePack, &payload)
-        .await
-        .map_err(ClientError::from)?;
+    // Subscribe to response type first
+    subscribe_impl(reader, writer, &["system.response.topology"]).await?;
 
-    let (msg_type, _, payload) = timeout(DEFAULT_TIMEOUT, read_frame(reader, MAX_FRAME_SIZE))
-        .await
-        .map_err(|_| ClientError::Timeout)?
-        .map_err(ClientError::from)?;
+    // Create and publish request message
+    let request = EmergentMessage::new("system.request.topology")
+        .with_source(name)
+        .with_correlation_id(correlation_id.clone())
+        .with_payload(json!({}));
 
-    if msg_type != MSG_TYPE_RESPONSE {
-        return Err(ClientError::ProtocolError(format!(
-            "Expected RESPONSE, got message type {msg_type}"
-        )));
-    }
+    publish_impl(writer, request).await?;
 
-    // Parse IPC response using acton-reactive's type
-    let response: IpcResponse = rmp_serde::from_slice(&payload)?;
+    // Wait for response with matching correlation_id
+    timeout(DEFAULT_TIMEOUT, async {
+        loop {
+            let (msg_type, _, payload) = read_frame(reader, MAX_FRAME_SIZE)
+                .await
+                .map_err(ClientError::from)?;
 
-    if !response.success {
-        return Err(ClientError::SubscriptionFailed(
-            response
-                .error
-                .unwrap_or_else(|| "GetTopology failed".to_string()),
-        ));
-    }
-
-    // Extract primitives from payload
-    let topo_response: TopologyResponse = response
-        .payload
-        .map(serde_json::from_value)
-        .transpose()?
-        .unwrap_or(TopologyResponse { primitives: vec![] });
-
-    Ok(TopologyState {
-        primitives: topo_response.primitives,
+            if msg_type == MSG_TYPE_PUSH {
+                let notification: IpcPushNotification = rmp_serde::from_slice(&payload)?;
+                if notification.message_type == "system.response.topology" {
+                    // Parse the EmergentMessage from payload
+                    let msg: EmergentMessage = serde_json::from_value(notification.payload)?;
+                    // Check correlation_id matches
+                    if msg.correlation_id.as_ref().map(|c| c.to_string())
+                        == Some(correlation_id.to_string())
+                    {
+                        // Extract primitives from payload
+                        let topo_response: TopologyResponse =
+                            serde_json::from_value(msg.payload)?;
+                        return Ok(TopologyState {
+                            primitives: topo_response.primitives,
+                        });
+                    }
+                }
+            }
+        }
     })
+    .await
+    .map_err(|_| ClientError::Timeout)?
 }
 
 // ============================================================================
@@ -1000,7 +1009,7 @@ impl EmergentSink {
     pub async fn get_topology(&self) -> Result<TopologyState> {
         let stream = connect_to_engine(&self.name).await?;
         let (mut reader, mut writer) = stream.into_split();
-        get_topology_impl(&mut reader, &mut writer).await
+        get_topology_impl(&mut reader, &mut writer, &self.name).await
     }
 
     /// Get the name of this sink.

@@ -176,18 +176,20 @@ mod tests {
     }
 
     #[test]
-    fn serde_roundtrip() {
+    fn serde_roundtrip() -> Result<(), serde_json::Error> {
         let id = MessageId::new();
-        let json = serde_json::to_string(&id).expect("serialize");
-        let restored: MessageId = serde_json::from_str(&json).expect("deserialize");
+        let json = serde_json::to_string(&id)?;
+        let restored: MessageId = serde_json::from_str(&json)?;
         assert_eq!(id, restored);
+        Ok(())
     }
 
     #[test]
-    fn from_str_works() {
+    fn from_str_works() -> Result<(), InvalidMessageId> {
         let id = MessageId::new();
         let s = id.to_string();
-        let parsed: MessageId = s.parse().expect("parse");
+        let parsed: MessageId = s.parse()?;
         assert_eq!(id, parsed);
+        Ok(())
     }
 }

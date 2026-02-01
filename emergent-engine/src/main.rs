@@ -80,32 +80,9 @@ impl From<IpcEmergentMessage> for EmergentMessage {
     }
 }
 
-/// Request for a primitive's configured subscriptions.
-///
-/// SDKs send this to get the subscription types from config before subscribing.
-#[acton_message(ipc)]
-#[derive(Clone)]
-struct GetSubscriptions {
-    /// Name of the primitive requesting its subscriptions.
-    name: String,
-}
-
-/// Response containing configured subscription types.
-#[acton_message(ipc)]
-#[derive(Clone)]
-struct SubscriptionsResponse {
-    /// The message types this primitive should subscribe to.
-    subscribes: Vec<String>,
-}
-
-/// Request to get the current topology (all primitives and their state).
-///
-/// Used by visualization tools to get the current system state on connect.
-#[acton_message(ipc)]
-#[derive(Clone)]
-struct GetTopology {}
-
 /// Information about a primitive in the topology response.
+///
+/// Used in `system.response.topology` message payloads.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct TopologyPrimitive {
     /// Unique name of the primitive.
@@ -124,13 +101,20 @@ struct TopologyPrimitive {
     error: Option<String>,
 }
 
-/// Response containing the current topology.
-#[acton_message(ipc)]
-#[derive(Clone)]
-struct TopologyResponse {
+/// Payload for topology response messages.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct TopologyResponsePayload {
     /// All primitives in the system.
     primitives: Vec<TopologyPrimitive>,
 }
+
+/// Payload for subscriptions response messages.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct SubscriptionsResponsePayload {
+    /// The message types this primitive should subscribe to.
+    subscribes: Vec<String>,
+}
+
 
 // ============================================================================
 // Engine State
@@ -142,10 +126,6 @@ struct MessageBrokerState {
     /// Count of messages processed.
     message_count: u64,
 }
-
-/// Empty state for config service actor.
-#[derive(Default, Clone, Debug)]
-struct ConfigServiceState;
 
 /// Event store wrapper for async operations.
 struct EventStoreWrapper {
@@ -302,10 +282,6 @@ async fn main() -> Result<()> {
     let registry = runtime.ipc_registry();
     registry.register::<IpcEmergentMessage>("EmergentMessage");
     registry.register::<IpcSystemEvent>("SystemEvent");
-    registry.register::<GetSubscriptions>("GetSubscriptions");
-    registry.register::<SubscriptionsResponse>("SubscriptionsResponse");
-    registry.register::<GetTopology>("GetTopology");
-    registry.register::<TopologyResponse>("TopologyResponse");
     info!("Registered {} IPC message type(s)", registry.len());
 
     // Start the IPC listener first to get the subscription manager
@@ -326,8 +302,10 @@ async fn main() -> Result<()> {
         runtime.new_actor_with_name::<MessageBrokerState>("message_broker".to_string());
 
     // Handle IpcEmergentMessage (from external clients)
+    // This includes system.request.* messages for topology and subscriptions queries
     let event_store_for_emergent = event_store_clone.clone();
     let sub_mgr_for_emergent = sub_mgr_clone.clone();
+    let pm_for_requests = process_manager.clone();
     broker_actor.mutate_on::<IpcEmergentMessage>(move |actor, envelope| {
         let msg = envelope.message();
         actor.model.message_count += 1;
@@ -342,13 +320,119 @@ async fn main() -> Result<()> {
             actor.model.message_count, msg.inner.message_type, msg.inner.source
         );
 
-        // Forward to IPC subscribers based on the inner message_type
-        let notification = IpcPushNotification::new(
-            msg.inner.message_type.to_string(),
-            Some(msg.inner.source.to_string()),
-            serde_json::to_value(&msg.inner).unwrap_or_default(),
-        );
-        sub_mgr_for_emergent.forward_to_subscribers(&notification);
+        // Check for system.request.* messages that need special handling
+        let message_type = msg.inner.message_type.as_str();
+        let sub_mgr = sub_mgr_for_emergent.clone();
+        let pm = pm_for_requests.clone();
+        let inner = msg.inner.clone();
+
+        match message_type {
+            "system.request.topology" => {
+                // Handle topology request asynchronously
+                return Reply::pending(async move {
+                    // Build the engine primitive
+                    let engine_primitive = TopologyPrimitive {
+                        name: "emergent-engine".to_string(),
+                        kind: "source".to_string(),
+                        state: "running".to_string(),
+                        publishes: vec![
+                            "system.started.*".to_string(),
+                            "system.stopped.*".to_string(),
+                            "system.error.*".to_string(),
+                            "system.shutdown".to_string(),
+                            "system.response.topology".to_string(),
+                            "system.response.subscriptions".to_string(),
+                        ],
+                        subscribes: vec![
+                            "system.request.topology".to_string(),
+                            "system.request.subscriptions".to_string(),
+                        ],
+                        pid: Some(std::process::id()),
+                        error: None,
+                    };
+
+                    // Get all registered primitives
+                    let all_primitives = pm.list_all().await;
+
+                    let mut primitives: Vec<TopologyPrimitive> =
+                        Vec::with_capacity(all_primitives.len() + 1);
+                    primitives.push(engine_primitive);
+                    primitives.extend(all_primitives.into_iter().map(|p| TopologyPrimitive {
+                        name: p.name,
+                        kind: p.kind.to_string().to_lowercase(),
+                        state: p.state.to_string().to_lowercase(),
+                        publishes: p.publishes,
+                        subscribes: p.subscribes,
+                        pid: p.pid,
+                        error: p.error,
+                    }));
+
+                    info!("system.request.topology: {} primitive(s)", primitives.len());
+
+                    // Create response message with matching correlation_id
+                    let response_payload = TopologyResponsePayload { primitives };
+                    let response = EmergentMessage::new("system.response.topology")
+                        .with_source("emergent-engine")
+                        .with_correlation_id_option(inner.correlation_id.as_ref())
+                        .with_payload(serde_json::to_value(&response_payload).unwrap_or_default());
+
+                    // Send response to subscribers
+                    let notification = IpcPushNotification::new(
+                        response.message_type.to_string(),
+                        Some(response.source.to_string()),
+                        serde_json::to_value(&response).unwrap_or_default(),
+                    );
+                    sub_mgr.forward_to_subscribers(&notification);
+                });
+            }
+            "system.request.subscriptions" => {
+                // Handle subscriptions request asynchronously
+                return Reply::pending(async move {
+                    // Extract the name from the payload
+                    let name = inner
+                        .payload
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    // Look up the primitive's configured subscriptions
+                    let subscribes = if let Some(p) = pm.get_info(name).await {
+                        p.subscribes
+                    } else {
+                        Vec::new()
+                    };
+
+                    info!(
+                        "system.request.subscriptions for '{}': {:?}",
+                        name, subscribes
+                    );
+
+                    // Create response message with matching correlation_id
+                    let response_payload = SubscriptionsResponsePayload { subscribes };
+                    let response = EmergentMessage::new("system.response.subscriptions")
+                        .with_source("emergent-engine")
+                        .with_correlation_id_option(inner.correlation_id.as_ref())
+                        .with_payload(serde_json::to_value(&response_payload).unwrap_or_default());
+
+                    // Send response to subscribers
+                    let notification = IpcPushNotification::new(
+                        response.message_type.to_string(),
+                        Some(response.source.to_string()),
+                        serde_json::to_value(&response).unwrap_or_default(),
+                    );
+                    sub_mgr.forward_to_subscribers(&notification);
+                });
+            }
+            _ => {
+                // Forward to IPC subscribers based on the inner message_type
+                let notification = IpcPushNotification::new(
+                    msg.inner.message_type.to_string(),
+                    Some(msg.inner.source.to_string()),
+                    serde_json::to_value(&msg.inner).unwrap_or_default(),
+                );
+                sub_mgr.forward_to_subscribers(&notification);
+            }
+        }
 
         Reply::ready()
     });
@@ -387,83 +471,6 @@ async fn main() -> Result<()> {
 
     let broker_handle = broker_actor.start().await;
     runtime.ipc_expose("message_broker", broker_handle.clone());
-
-    // Create config service actor for SDK subscription lookups
-    let mut config_service =
-        runtime.new_actor_with_name::<ConfigServiceState>("config_service".to_string());
-
-    // Handle GetSubscriptions requests from SDKs
-    // Uses reply_envelope pattern for IPC request-response
-    let pm_for_handler = process_manager.clone();
-    config_service.mutate_on::<GetSubscriptions>(move |_actor, envelope| {
-        let pm = pm_for_handler.clone();
-        let msg = envelope.message();
-        let name = msg.name.clone();
-
-        let reply_envelope = envelope.reply_envelope();
-        Reply::pending(async move {
-            // Look up the primitive's configured subscriptions
-            let subscribes = if let Some(info) = pm.get_info(&name).await {
-                info.subscribes
-            } else {
-                Vec::new()
-            };
-
-            info!("GetSubscriptions for '{}': {:?}", name, subscribes);
-
-            reply_envelope
-                .send(SubscriptionsResponse { subscribes })
-                .await;
-        })
-    });
-
-    // Handle GetTopology requests for visualization tools
-    let pm_for_topology = process_manager.clone();
-    config_service.mutate_on::<GetTopology>(move |_actor, envelope| {
-        let pm = pm_for_topology.clone();
-
-        let reply_envelope = envelope.reply_envelope();
-        Reply::pending(async move {
-            // Start with the engine as a virtual source (it publishes system events)
-            let engine_primitive = TopologyPrimitive {
-                name: "emergent-engine".to_string(),
-                kind: "source".to_string(),
-                state: "running".to_string(),
-                publishes: vec![
-                    "system.started.*".to_string(),
-                    "system.stopped.*".to_string(),
-                    "system.error.*".to_string(),
-                    "system.shutdown".to_string(),
-                ],
-                subscribes: vec![],
-                pid: Some(std::process::id()),
-                error: None,
-            };
-
-            // Get all registered primitives
-            let all_primitives = pm.list_all().await;
-
-            let mut primitives: Vec<TopologyPrimitive> =
-                Vec::with_capacity(all_primitives.len() + 1);
-            primitives.push(engine_primitive);
-            primitives.extend(all_primitives.into_iter().map(|info| TopologyPrimitive {
-                name: info.name,
-                kind: info.kind.to_string().to_lowercase(),
-                state: info.state.to_string().to_lowercase(),
-                publishes: info.publishes,
-                subscribes: info.subscribes,
-                pid: info.pid,
-                error: info.error,
-            }));
-
-            info!("GetTopology: {} primitive(s)", primitives.len());
-
-            reply_envelope.send(TopologyResponse { primitives }).await;
-        })
-    });
-
-    let config_handle = config_service.start().await;
-    runtime.ipc_expose("config_service", config_handle);
 
     // Wait a moment for the listener to be ready
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

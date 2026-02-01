@@ -204,10 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn serde_roundtrip() {
+    fn serde_roundtrip() -> Result<(), serde_json::Error> {
         let id = CausationId::new();
-        let json = serde_json::to_string(&id).expect("serialize");
-        let restored: CausationId = serde_json::from_str(&json).expect("deserialize");
+        let json = serde_json::to_string(&id)?;
+        let restored: CausationId = serde_json::from_str(&json)?;
         assert_eq!(id, restored);
+        Ok(())
     }
 }

@@ -212,16 +212,18 @@ mod tests {
     }
 
     #[test]
-    fn serde_roundtrip() {
-        let name = PrimitiveName::new("timer").expect("valid");
-        let json = serde_json::to_string(&name).expect("serialize");
-        let restored: PrimitiveName = serde_json::from_str(&json).expect("deserialize");
+    fn serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let name = PrimitiveName::new("timer")?;
+        let json = serde_json::to_string(&name)?;
+        let restored: PrimitiveName = serde_json::from_str(&json)?;
         assert_eq!(name, restored);
+        Ok(())
     }
 
     #[test]
-    fn from_str_works() {
-        let name: PrimitiveName = "timer".parse().expect("parse");
+    fn from_str_works() -> Result<(), InvalidPrimitiveName> {
+        let name: PrimitiveName = "timer".parse()?;
         assert_eq!(name.as_str(), "timer");
+        Ok(())
     }
 }

@@ -243,7 +243,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn deserialize_started_source() {
+    fn deserialize_started_source() -> Result<(), serde_json::Error> {
         let json = r#"{
             "name": "timer",
             "kind": "source",
@@ -252,7 +252,7 @@ mod tests {
             "subscribes": []
         }"#;
 
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         assert_eq!(payload.name(), "timer");
         assert_eq!(payload.kind(), "source");
@@ -264,10 +264,11 @@ mod tests {
         assert!(!payload.is_handler());
         assert!(!payload.is_sink());
         assert!(!payload.is_error());
+        Ok(())
     }
 
     #[test]
-    fn deserialize_started_handler() {
+    fn deserialize_started_handler() -> Result<(), serde_json::Error> {
         let json = r#"{
             "name": "filter",
             "kind": "handler",
@@ -276,7 +277,7 @@ mod tests {
             "subscribes": ["timer.tick"]
         }"#;
 
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         assert_eq!(payload.name(), "filter");
         assert_eq!(payload.kind(), "handler");
@@ -284,10 +285,11 @@ mod tests {
         assert_eq!(payload.publishes(), &["timer.filtered"]);
         assert_eq!(payload.subscribes(), &["timer.tick"]);
         assert!(payload.is_handler());
+        Ok(())
     }
 
     #[test]
-    fn deserialize_started_sink() {
+    fn deserialize_started_sink() -> Result<(), serde_json::Error> {
         let json = r#"{
             "name": "console",
             "kind": "sink",
@@ -295,7 +297,7 @@ mod tests {
             "subscribes": ["timer.filtered"]
         }"#;
 
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         assert_eq!(payload.name(), "console");
         assert_eq!(payload.kind(), "sink");
@@ -303,24 +305,26 @@ mod tests {
         assert!(payload.publishes().is_empty());
         assert_eq!(payload.subscribes(), &["timer.filtered"]);
         assert!(payload.is_sink());
+        Ok(())
     }
 
     #[test]
-    fn deserialize_stopped_without_pid() {
+    fn deserialize_stopped_without_pid() -> Result<(), serde_json::Error> {
         let json = r#"{
             "name": "timer",
             "kind": "source",
             "publishes": ["timer.tick"]
         }"#;
 
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         assert_eq!(payload.name(), "timer");
         assert!(payload.pid().is_none());
+        Ok(())
     }
 
     #[test]
-    fn deserialize_error_event() {
+    fn deserialize_error_event() -> Result<(), serde_json::Error> {
         let json = r#"{
             "name": "failing-source",
             "kind": "source",
@@ -329,19 +333,20 @@ mod tests {
             "error": "Connection refused"
         }"#;
 
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         assert_eq!(payload.name(), "failing-source");
         assert_eq!(payload.error(), Some("Connection refused"));
         assert!(payload.is_error());
+        Ok(())
     }
 
     #[test]
-    fn deserialize_minimal_payload() {
+    fn deserialize_minimal_payload() -> Result<(), serde_json::Error> {
         // Only required fields
         let json = r#"{"name": "test", "kind": "source"}"#;
 
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         assert_eq!(payload.name(), "test");
         assert_eq!(payload.kind(), "source");
@@ -349,10 +354,11 @@ mod tests {
         assert!(payload.publishes().is_empty());
         assert!(payload.subscribes().is_empty());
         assert!(payload.error().is_none());
+        Ok(())
     }
 
     #[test]
-    fn serialize_roundtrip() {
+    fn serialize_roundtrip() -> Result<(), serde_json::Error> {
         let json = r#"{
             "name": "my-handler",
             "kind": "handler",
@@ -361,47 +367,52 @@ mod tests {
             "subscribes": ["input.event"]
         }"#;
 
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
-        let serialized = serde_json::to_string(&payload).expect("serialize");
-        let restored: SystemEventPayload = serde_json::from_str(&serialized).expect("deserialize");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
+        let serialized = serde_json::to_string(&payload)?;
+        let restored: SystemEventPayload = serde_json::from_str(&serialized)?;
 
         assert_eq!(payload, restored);
+        Ok(())
     }
 
     #[test]
-    fn display_format_basic() {
+    fn display_format_basic() -> Result<(), serde_json::Error> {
         let json = r#"{"name": "timer", "kind": "source", "pid": 1234}"#;
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         let display = payload.to_string();
         assert_eq!(display, "timer (source) [pid: 1234]");
+        Ok(())
     }
 
     #[test]
-    fn display_format_without_pid() {
+    fn display_format_without_pid() -> Result<(), serde_json::Error> {
         let json = r#"{"name": "timer", "kind": "source"}"#;
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         let display = payload.to_string();
         assert_eq!(display, "timer (source)");
+        Ok(())
     }
 
     #[test]
-    fn display_format_with_error() {
+    fn display_format_with_error() -> Result<(), serde_json::Error> {
         let json = r#"{"name": "failing", "kind": "source", "error": "Connection refused"}"#;
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
 
         let display = payload.to_string();
         assert_eq!(display, "failing (source) error: Connection refused");
+        Ok(())
     }
 
     #[test]
-    fn payload_is_clone() {
+    fn payload_is_clone() -> Result<(), serde_json::Error> {
         let json = r#"{"name": "timer", "kind": "source"}"#;
-        let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemEventPayload = serde_json::from_str(json)?;
         let cloned = payload.clone();
 
         assert_eq!(payload, cloned);
+        Ok(())
     }
 
     // ========================================================================
@@ -409,54 +420,58 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn deserialize_handler_shutdown() {
+    fn deserialize_handler_shutdown() -> Result<(), serde_json::Error> {
         let json = r#"{"kind": "handler"}"#;
 
-        let payload: SystemShutdownPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemShutdownPayload = serde_json::from_str(json)?;
 
         assert_eq!(payload.kind(), "handler");
         assert!(payload.is_handler_shutdown());
         assert!(!payload.is_sink_shutdown());
+        Ok(())
     }
 
     #[test]
-    fn deserialize_sink_shutdown() {
+    fn deserialize_sink_shutdown() -> Result<(), serde_json::Error> {
         let json = r#"{"kind": "sink"}"#;
 
-        let payload: SystemShutdownPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemShutdownPayload = serde_json::from_str(json)?;
 
         assert_eq!(payload.kind(), "sink");
         assert!(!payload.is_handler_shutdown());
         assert!(payload.is_sink_shutdown());
+        Ok(())
     }
 
     #[test]
-    fn shutdown_serialize_roundtrip() {
+    fn shutdown_serialize_roundtrip() -> Result<(), serde_json::Error> {
         let json = r#"{"kind": "handler"}"#;
 
-        let payload: SystemShutdownPayload = serde_json::from_str(json).expect("valid json");
-        let serialized = serde_json::to_string(&payload).expect("serialize");
-        let restored: SystemShutdownPayload =
-            serde_json::from_str(&serialized).expect("deserialize");
+        let payload: SystemShutdownPayload = serde_json::from_str(json)?;
+        let serialized = serde_json::to_string(&payload)?;
+        let restored: SystemShutdownPayload = serde_json::from_str(&serialized)?;
 
         assert_eq!(payload, restored);
+        Ok(())
     }
 
     #[test]
-    fn shutdown_display_format() {
+    fn shutdown_display_format() -> Result<(), serde_json::Error> {
         let json = r#"{"kind": "handler"}"#;
-        let payload: SystemShutdownPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemShutdownPayload = serde_json::from_str(json)?;
 
         let display = payload.to_string();
         assert_eq!(display, "shutdown (handler)");
+        Ok(())
     }
 
     #[test]
-    fn shutdown_is_clone() {
+    fn shutdown_is_clone() -> Result<(), serde_json::Error> {
         let json = r#"{"kind": "sink"}"#;
-        let payload: SystemShutdownPayload = serde_json::from_str(json).expect("valid json");
+        let payload: SystemShutdownPayload = serde_json::from_str(json)?;
         let cloned = payload.clone();
 
         assert_eq!(payload, cloned);
+        Ok(())
     }
 }

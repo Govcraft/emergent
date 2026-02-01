@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from ._protocol import (
     MessageType,
     encode_frame,
     generate_correlation_id,
+    generate_message_id,
     try_decode_frame,
 )
 from .errors import (
@@ -94,6 +96,22 @@ class PendingRequest:
 
 
 @dataclass
+class PendingTopologyRequest:
+    """Tracks a pending topology request awaiting response."""
+
+    future: asyncio.Future[TopologyState]
+    timer: asyncio.TimerHandle | None = None
+
+
+@dataclass
+class PendingSubscriptionsRequest:
+    """Tracks a pending subscriptions request awaiting response."""
+
+    future: asyncio.Future[list[str]]
+    timer: asyncio.TimerHandle | None = None
+
+
+@dataclass
 class BaseClient:
     """
     Base client with shared connection logic.
@@ -118,6 +136,12 @@ class BaseClient:
     _writer: asyncio.StreamWriter | None = field(default=None, init=False, repr=False)
     _read_buffer: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _pending_requests: dict[str, PendingRequest] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _pending_topology_requests: dict[str, PendingTopologyRequest] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _pending_subscriptions_requests: dict[str, PendingSubscriptionsRequest] = field(
         default_factory=dict, init=False, repr=False
     )
     _message_stream: MessageStream | None = field(default=None, init=False, repr=False)
@@ -319,92 +343,129 @@ class BaseClient:
         """
         Get the configured subscription types for this primitive.
 
-        Queries the engine's config service to get the message types
-        this primitive should subscribe to based on the config.
+        Uses pub/sub pattern: publishes `system.request.subscriptions` and
+        waits for `system.response.subscriptions` with matching correlation_id.
 
         Returns:
             List of message type names to subscribe to
 
         Raises:
             ConnectionError: If the request fails
+            TimeoutError: If the request times out
         """
         self._ensure_connected()
 
         correlation_id = generate_correlation_id("getsub")
 
-        envelope = IpcEnvelope(
+        # Subscribe to response type first
+        sub_correlation_id = generate_correlation_id("sub")
+        sub_response = await self._send_request(
+            MessageType.SUBSCRIBE,
+            IpcSubscribeRequest(
+                correlation_id=sub_correlation_id,
+                message_types=["system.response.subscriptions"],
+            ).model_dump(),
+            sub_correlation_id,
+        )
+
+        if not sub_response.success:
+            raise ConnectionError(
+                sub_response.error or "Failed to subscribe to response type"
+            )
+
+        # Create promise to wait for response
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[list[str]] = loop.create_future()
+
+        def timeout_callback() -> None:
+            self._pending_subscriptions_requests.pop(correlation_id, None)
+            if not future.done():
+                future.set_exception(
+                    TimeoutError("GetSubscriptions request timed out", self.timeout)
+                )
+
+        timer = loop.call_later(self.timeout, timeout_callback)
+        self._pending_subscriptions_requests[correlation_id] = (
+            PendingSubscriptionsRequest(future=future, timer=timer)
+        )
+
+        # Create and publish request message
+        request = EmergentMessage(
+            id=generate_message_id(),
+            message_type="system.request.subscriptions",
+            source=self.name,
             correlation_id=correlation_id,
-            target="config_service",
-            message_type="GetSubscriptions",
+            timestamp_ms=int(time.time() * 1000),
             payload={"name": self.name},
-            expects_reply=True,
         )
+        await self._publish(request)
 
-        response = await self._send_request(
-            MessageType.REQUEST,
-            envelope.model_dump(),
-            correlation_id,
-        )
-
-        if not response.success:
-            raise ConnectionError(response.error or "GetSubscriptions failed")
-
-        # Response payload has { "subscribes": [...] }
-        payload = response.payload or {}
-        return payload.get("subscribes", [])
+        # Wait for response
+        return await future
 
     async def _get_topology(self) -> TopologyState:
         """
         Get the current topology (all primitives and their state).
 
-        Queries the engine to get the current state of all registered
-        primitives, including their publish/subscribe configuration.
+        Uses pub/sub pattern: publishes `system.request.topology` and
+        waits for `system.response.topology` with matching correlation_id.
 
         Returns:
             TopologyState with all primitives
 
         Raises:
             ConnectionError: If the request fails
+            TimeoutError: If the request times out
         """
         self._ensure_connected()
 
         correlation_id = generate_correlation_id("gettopo")
 
-        envelope = IpcEnvelope(
-            correlation_id=correlation_id,
-            target="config_service",
-            message_type="GetTopology",
-            payload={},
-            expects_reply=True,
+        # Subscribe to response type first
+        sub_correlation_id = generate_correlation_id("sub")
+        sub_response = await self._send_request(
+            MessageType.SUBSCRIBE,
+            IpcSubscribeRequest(
+                correlation_id=sub_correlation_id,
+                message_types=["system.response.topology"],
+            ).model_dump(),
+            sub_correlation_id,
         )
 
-        response = await self._send_request(
-            MessageType.REQUEST,
-            envelope.model_dump(),
-            correlation_id,
-        )
-
-        if not response.success:
-            raise ConnectionError(response.error or "GetTopology failed")
-
-        # Response payload has { "primitives": [...] }
-        payload = response.payload or {}
-        primitives_data = payload.get("primitives", [])
-
-        primitives = tuple(
-            TopologyPrimitive(
-                name=p.get("name", ""),
-                kind=p.get("kind", ""),
-                state=p.get("state", "stopped"),
-                publishes=tuple(p.get("publishes", [])),
-                subscribes=tuple(p.get("subscribes", [])),
-                pid=p.get("pid"),
-                error=p.get("error"),
+        if not sub_response.success:
+            raise ConnectionError(
+                sub_response.error or "Failed to subscribe to response type"
             )
-            for p in primitives_data
+
+        # Create promise to wait for response
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[TopologyState] = loop.create_future()
+
+        def timeout_callback() -> None:
+            self._pending_topology_requests.pop(correlation_id, None)
+            if not future.done():
+                future.set_exception(
+                    TimeoutError("GetTopology request timed out", self.timeout)
+                )
+
+        timer = loop.call_later(self.timeout, timeout_callback)
+        self._pending_topology_requests[correlation_id] = PendingTopologyRequest(
+            future=future, timer=timer
         )
 
-        return TopologyState(primitives=primitives)
+        # Create and publish request message
+        request = EmergentMessage(
+            id=generate_message_id(),
+            message_type="system.request.topology",
+            source=self.name,
+            correlation_id=correlation_id,
+            timestamp_ms=int(time.time() * 1000),
+            payload={},
+        )
+        await self._publish(request)
+
+        # Wait for response
+        return await future
 
     def close(self) -> None:
         """
@@ -439,6 +500,23 @@ class BaseClient:
             if not pending.future.done():
                 pending.future.set_exception(ConnectionError("Connection closed"))
         self._pending_requests.clear()
+
+        # Cancel pending topology requests
+        for pending in self._pending_topology_requests.values():
+            if pending.timer is not None:
+                pending.timer.cancel()
+            if not pending.future.done():
+                pending.future.set_exception(ConnectionError("Connection closed"))
+        self._pending_topology_requests.clear()
+
+        # Cancel pending subscriptions requests
+        for pending in self._pending_subscriptions_requests.values():
+            if pending.timer is not None:
+                pending.timer.cancel()
+            if not pending.future.done():
+                pending.future.set_exception(ConnectionError("Connection closed"))
+        self._pending_subscriptions_requests.clear()
+
         self._subscribed_types.clear()
 
         self._disposed = True
@@ -566,6 +644,62 @@ class BaseClient:
                         self._message_stream = None
                 # Don't forward system.shutdown to user - it's internal
                 return
+
+            # Handle system.response.topology messages
+            if notification.message_type == "system.response.topology":
+                wire_message = WireMessage.model_validate(notification.payload)
+                correlation_id = wire_message.correlation_id
+                if correlation_id:
+                    pending = self._pending_topology_requests.pop(correlation_id, None)
+                    if pending is not None:
+                        if pending.timer is not None:
+                            pending.timer.cancel()
+                        if not pending.future.done():
+                            # Extract primitives from payload
+                            payload_data = wire_message.payload or {}
+                            primitives_data = (
+                                payload_data.get("primitives", [])
+                                if isinstance(payload_data, dict)
+                                else []
+                            )
+                            primitives = tuple(
+                                TopologyPrimitive(
+                                    name=p.get("name", ""),
+                                    kind=p.get("kind", ""),
+                                    state=p.get("state", "stopped"),
+                                    publishes=tuple(p.get("publishes", [])),
+                                    subscribes=tuple(p.get("subscribes", [])),
+                                    pid=p.get("pid"),
+                                    error=p.get("error"),
+                                )
+                                for p in primitives_data
+                            )
+                            pending.future.set_result(
+                                TopologyState(primitives=primitives)
+                            )
+                return  # Don't forward to message stream
+
+            # Handle system.response.subscriptions messages
+            if notification.message_type == "system.response.subscriptions":
+                wire_message = WireMessage.model_validate(notification.payload)
+                correlation_id = wire_message.correlation_id
+                if correlation_id:
+                    pending = self._pending_subscriptions_requests.pop(
+                        correlation_id, None
+                    )
+                    if pending is not None:
+                        if pending.timer is not None:
+                            pending.timer.cancel()
+                        if not pending.future.done():
+                            # Extract subscribes from payload
+                            payload_data = wire_message.payload or {}
+                            subscribes = (
+                                payload_data.get("subscribes", [])
+                                if isinstance(payload_data, dict)
+                                else []
+                            )
+                            pending.future.set_result(subscribes)
+                return  # Don't forward to message stream
 
             if self._message_stream is not None:
                 # The notification.payload IS the serialized EmergentMessage

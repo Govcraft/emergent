@@ -7,6 +7,7 @@ import {
   type ConnectOptions,
   type DiscoveryInfo,
   EmergentMessage,
+  type EmergentMessageData,
   type IpcDiscoverResponse,
   type IpcEnvelope,
   type IpcPushNotification,
@@ -17,6 +18,7 @@ import {
   type TopologyState,
   type WireMessage,
 } from "./types.ts";
+import { generateMessageId } from "./message.ts";
 import {
   ConnectionError,
   DisposedError,
@@ -84,6 +86,13 @@ interface PendingRequest {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+/** Pending pub/sub request with type-safe response */
+interface PendingPubSubRequest<T> {
+  resolve: (result: T) => void;
+  reject: (error: Error) => void;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 // ============================================================================
 // Base Client
 // ============================================================================
@@ -111,6 +120,8 @@ export class BaseClient {
   #readLoopRunning = false;
   #readBuffer: Uint8Array = new Uint8Array(0);
   #pendingRequests: Map<string, PendingRequest> = new Map();
+  #pendingTopologyRequests: Map<string, PendingPubSubRequest<TopologyState>> = new Map();
+  #pendingSubscriptionsRequests: Map<string, PendingPubSubRequest<string[]>> = new Map();
   #messageStream: MessageStream | null = null;
   #subscribedTypes: Set<string> = new Set();
   #timeoutMs: number;
@@ -332,8 +343,8 @@ export class BaseClient {
   /**
    * Get the configured subscription types for this primitive.
    *
-   * Queries the engine's config service to get the message types
-   * this primitive should subscribe to based on the config.
+   * Uses pub/sub pattern: publishes `system.request.subscriptions` and
+   * waits for `system.response.subscriptions` with matching correlation_id.
    *
    * @internal
    */
@@ -342,31 +353,58 @@ export class BaseClient {
 
     const correlationId = generateCorrelationId("getsub");
 
-    const envelope: IpcEnvelope = {
-      correlation_id: correlationId,
-      target: "config_service",
-      message_type: "GetSubscriptions",
-      payload: { name: this.name },
-      expects_reply: true,
-    };
-
-    const response = await this.#sendRequest<IpcEnvelope>(
-      MSG_TYPE_REQUEST,
-      envelope,
-      correlationId,
+    // Subscribe to response type first
+    const subCorrelationId = generateCorrelationId("sub");
+    const subResponse = await this.#sendRequest<IpcSubscribeRequest>(
+      MSG_TYPE_SUBSCRIBE,
+      {
+        correlation_id: subCorrelationId,
+        message_types: ["system.response.subscriptions"],
+      },
+      subCorrelationId,
     );
 
-    if (!response.success) {
-      throw new ConnectionError(response.error ?? "GetSubscriptions failed");
+    if (!subResponse.success) {
+      throw new ConnectionError(
+        subResponse.error ?? "Failed to subscribe to response type"
+      );
     }
 
-    // Response payload has { subscribes: [...] }
-    const payload = response.payload as { subscribes?: string[] } | null;
-    return payload?.subscribes ?? [];
+    // Create promise to wait for response
+    const resultPromise = new Promise<string[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#pendingSubscriptionsRequests.delete(correlationId);
+        reject(new TimeoutError("GetSubscriptions request timed out", this.#timeoutMs));
+      }, this.#timeoutMs);
+
+      this.#pendingSubscriptionsRequests.set(correlationId, {
+        resolve,
+        reject,
+        timer,
+      });
+    });
+
+    // Create and publish request message
+    const requestData: EmergentMessageData = {
+      id: generateMessageId(),
+      messageType: "system.request.subscriptions",
+      source: this.name,
+      correlationId: correlationId,
+      timestampMs: Date.now(),
+      payload: { name: this.name },
+    };
+    const requestMessage = new EmergentMessage(requestData);
+    await this.publishInternal(requestMessage);
+
+    // Wait for response
+    return resultPromise;
   }
 
   /**
    * Get the current topology (all primitives and their state).
+   *
+   * Uses pub/sub pattern: publishes `system.request.topology` and
+   * waits for `system.response.topology` with matching correlation_id.
    *
    * @internal
    */
@@ -375,27 +413,51 @@ export class BaseClient {
 
     const correlationId = generateCorrelationId("gettopo");
 
-    const envelope: IpcEnvelope = {
-      correlation_id: correlationId,
-      target: "config_service",
-      message_type: "GetTopology",
-      payload: {},
-      expects_reply: true,
-    };
-
-    const response = await this.#sendRequest<IpcEnvelope>(
-      MSG_TYPE_REQUEST,
-      envelope,
-      correlationId,
+    // Subscribe to response type first
+    const subCorrelationId = generateCorrelationId("sub");
+    const subResponse = await this.#sendRequest<IpcSubscribeRequest>(
+      MSG_TYPE_SUBSCRIBE,
+      {
+        correlation_id: subCorrelationId,
+        message_types: ["system.response.topology"],
+      },
+      subCorrelationId,
     );
 
-    if (!response.success) {
-      throw new ConnectionError(response.error ?? "GetTopology failed");
+    if (!subResponse.success) {
+      throw new ConnectionError(
+        subResponse.error ?? "Failed to subscribe to response type"
+      );
     }
 
-    // Response payload has { primitives: [...] }
-    const payload = response.payload as { primitives?: TopologyPrimitive[] } | null;
-    return { primitives: payload?.primitives ?? [] };
+    // Create promise to wait for response
+    const resultPromise = new Promise<TopologyState>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#pendingTopologyRequests.delete(correlationId);
+        reject(new TimeoutError("GetTopology request timed out", this.#timeoutMs));
+      }, this.#timeoutMs);
+
+      this.#pendingTopologyRequests.set(correlationId, {
+        resolve,
+        reject,
+        timer,
+      });
+    });
+
+    // Create and publish request message
+    const requestData: EmergentMessageData = {
+      id: generateMessageId(),
+      messageType: "system.request.topology",
+      source: this.name,
+      correlationId: correlationId,
+      timestampMs: Date.now(),
+      payload: {},
+    };
+    const requestMessage = new EmergentMessage(requestData);
+    await this.publishInternal(requestMessage);
+
+    // Wait for response
+    return resultPromise;
   }
 
   /**
@@ -428,6 +490,21 @@ export class BaseClient {
       pending.reject(new ConnectionError("Connection closed"));
     }
     this.#pendingRequests.clear();
+
+    // Cancel pending topology requests
+    for (const [, pending] of this.#pendingTopologyRequests) {
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject(new ConnectionError("Connection closed"));
+    }
+    this.#pendingTopologyRequests.clear();
+
+    // Cancel pending subscriptions requests
+    for (const [, pending] of this.#pendingSubscriptionsRequests) {
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject(new ConnectionError("Connection closed"));
+    }
+    this.#pendingSubscriptionsRequests.clear();
+
     this.#subscribedTypes.clear();
 
     this.disposed = true;
@@ -565,8 +642,7 @@ export class BaseClient {
       }
 
       case MSG_TYPE_PUSH: {
-        // CRITICAL FIX: The payload field contains the complete EmergentMessage
-        // Do NOT generate new IDs - extract the original message from payload
+        // The payload field contains the complete EmergentMessage
         const notification = payload as IpcPushNotification;
 
         // Check for shutdown signal - SDK handles this internally
@@ -584,6 +660,40 @@ export class BaseClient {
           }
           // Don't forward system.shutdown to user - it's internal
           break;
+        }
+
+        // Handle system.response.topology messages
+        if (notification.message_type === "system.response.topology") {
+          const wireMessage = notification.payload as WireMessage;
+          const correlationId = wireMessage.correlation_id;
+          if (correlationId) {
+            const pending = this.#pendingTopologyRequests.get(correlationId);
+            if (pending) {
+              this.#pendingTopologyRequests.delete(correlationId);
+              if (pending.timer) clearTimeout(pending.timer);
+              // Extract primitives from payload
+              const responsePayload = wireMessage.payload as { primitives?: TopologyPrimitive[] };
+              pending.resolve({ primitives: responsePayload?.primitives ?? [] });
+            }
+          }
+          break; // Don't forward to message stream
+        }
+
+        // Handle system.response.subscriptions messages
+        if (notification.message_type === "system.response.subscriptions") {
+          const wireMessage = notification.payload as WireMessage;
+          const correlationId = wireMessage.correlation_id;
+          if (correlationId) {
+            const pending = this.#pendingSubscriptionsRequests.get(correlationId);
+            if (pending) {
+              this.#pendingSubscriptionsRequests.delete(correlationId);
+              if (pending.timer) clearTimeout(pending.timer);
+              // Extract subscribes from payload
+              const responsePayload = wireMessage.payload as { subscribes?: string[] };
+              pending.resolve(responsePayload?.subscribes ?? []);
+            }
+          }
+          break; // Don't forward to message stream
         }
 
         if (this.#messageStream) {
