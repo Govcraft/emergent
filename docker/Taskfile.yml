@@ -1,0 +1,169 @@
+# ==============================================================================
+# Emergent Engine Docker Automation
+# ==============================================================================
+#
+# Usage:
+#   task            # Run all: setup → build → push → deploy
+#   task build      # Build image with version tags
+#   task push       # Push to GHCR
+#   task deploy     # Pull and start via docker-compose
+#
+# Prerequisites:
+#   - Docker and docker-compose installed
+#   - Authenticated to GHCR: docker login ghcr.io
+#
+# ==============================================================================
+
+version: "3"
+
+vars:
+  IMAGE_NAME: ghcr.io/govcraft/emergent
+  VERSION:
+    sh: grep -m1 '^version' ../Cargo.toml | sed 's/.*"\(.*\)".*/\1/'
+
+tasks:
+  # ============================================================================
+  # Primary Workflow
+  # ============================================================================
+
+  default:
+    desc: Build, push, and deploy in one idempotent command
+    cmds:
+      - task: all
+
+  all:
+    desc: Build, push, and deploy in one idempotent command
+    cmds:
+      - task: setup
+      - task: build
+      - task: push
+      - task: deploy
+
+  # ============================================================================
+  # Build Tasks
+  # ============================================================================
+
+  build:
+    desc: Build image with :latest and :VERSION tags
+    cmds:
+      - docker build -t {{.IMAGE_NAME}}:{{.VERSION}} -t {{.IMAGE_NAME}}:latest -f Dockerfile ..
+    sources:
+      - Dockerfile
+      - ../Cargo.toml
+      - ../Cargo.lock
+      - ../emergent-engine/**/*.rs
+
+  build:local:
+    desc: Build image tagged as emergent:local for testing
+    cmds:
+      - docker build -t emergent:local -f Dockerfile ..
+    sources:
+      - Dockerfile
+      - ../Cargo.toml
+      - ../Cargo.lock
+      - ../emergent-engine/**/*.rs
+
+  # ============================================================================
+  # Push Tasks
+  # ============================================================================
+
+  push:
+    desc: Push :latest and :VERSION tags to GHCR
+    cmds:
+      - docker push {{.IMAGE_NAME}}:{{.VERSION}}
+      - docker push {{.IMAGE_NAME}}:latest
+
+  push:version:
+    desc: Push only the versioned tag
+    cmds:
+      - docker push {{.IMAGE_NAME}}:{{.VERSION}}
+
+  # ============================================================================
+  # Deploy Tasks
+  # ============================================================================
+
+  deploy:
+    desc: Pull latest from GHCR and start via docker-compose
+    cmds:
+      - docker-compose pull
+      - docker-compose up -d
+
+  deploy:local:
+    desc: Deploy using locally built image
+    deps: [setup]
+    cmds:
+      - docker-compose up -d --build
+
+  # ============================================================================
+  # Docker Compose Operations
+  # ============================================================================
+
+  up:
+    desc: Start services (alias for docker-compose up -d)
+    deps: [setup]
+    cmds:
+      - docker-compose up -d
+
+  down:
+    desc: Stop services
+    cmds:
+      - docker-compose down
+
+  restart:
+    desc: Restart services
+    cmds:
+      - docker-compose restart
+
+  logs:
+    desc: Follow container logs
+    cmds:
+      - docker-compose logs -f
+
+  # ============================================================================
+  # Setup & Maintenance
+  # ============================================================================
+
+  setup:
+    desc: Create config/, data/, run/ directories and copy example config
+    cmds:
+      - mkdir -p config data run
+      - cmd: cp -n emergent.toml.example config/emergent.toml
+        ignore_error: true
+    status:
+      - test -d config
+      - test -d data
+      - test -d run
+      - test -f config/emergent.toml
+
+  clean:
+    desc: Remove data/ and run/ directories
+    prompt: This will delete all persistent data. Continue?
+    cmds:
+      - rm -rf data run
+
+  purge:
+    desc: Remove all local images and volumes
+    prompt: This will remove all emergent images and volumes. Continue?
+    cmds:
+      - docker-compose down -v
+      - docker rmi {{.IMAGE_NAME}}:{{.VERSION}} {{.IMAGE_NAME}}:latest emergent:local 2>/dev/null || true
+
+  # ============================================================================
+  # Diagnostics
+  # ============================================================================
+
+  version:
+    desc: Show current version from Cargo.toml
+    cmds:
+      - echo "{{.VERSION}}"
+
+  status:
+    desc: Show container status and health
+    cmds:
+      - docker-compose ps
+      - docker inspect emergent-engine --format '{{`{{.State.Health.Status}}`}}' 2>/dev/null || echo "Container not running"
+
+  shell:
+    desc: Open shell in running container
+    cmds:
+      - docker exec -it emergent-engine /bin/sh
