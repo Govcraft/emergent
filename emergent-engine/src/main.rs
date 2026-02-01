@@ -424,21 +424,36 @@ async fn main() -> Result<()> {
 
         let reply_envelope = envelope.reply_envelope();
         Reply::pending(async move {
+            // Start with the engine as a virtual source (it publishes system events)
+            let engine_primitive = TopologyPrimitive {
+                name: "emergent-engine".to_string(),
+                kind: "source".to_string(),
+                state: "running".to_string(),
+                publishes: vec![
+                    "system.started.*".to_string(),
+                    "system.stopped.*".to_string(),
+                    "system.error.*".to_string(),
+                    "system.shutdown".to_string(),
+                ],
+                subscribes: vec![],
+                pid: Some(std::process::id()),
+                error: None,
+            };
+
             // Get all registered primitives
             let all_primitives = pm.list_all().await;
 
-            let primitives: Vec<TopologyPrimitive> = all_primitives
-                .into_iter()
-                .map(|info| TopologyPrimitive {
-                    name: info.name,
-                    kind: info.kind.to_string().to_lowercase(),
-                    state: info.state.to_string().to_lowercase(),
-                    publishes: info.publishes,
-                    subscribes: info.subscribes,
-                    pid: info.pid,
-                    error: info.error,
-                })
-                .collect();
+            let mut primitives: Vec<TopologyPrimitive> = Vec::with_capacity(all_primitives.len() + 1);
+            primitives.push(engine_primitive);
+            primitives.extend(all_primitives.into_iter().map(|info| TopologyPrimitive {
+                name: info.name,
+                kind: info.kind.to_string().to_lowercase(),
+                state: info.state.to_string().to_lowercase(),
+                publishes: info.publishes,
+                subscribes: info.subscribes,
+                pid: info.pid,
+                error: info.error,
+            }));
 
             info!("GetTopology: {} primitive(s)", primitives.len());
 
