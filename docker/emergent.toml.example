@@ -89,15 +89,34 @@ retention_days = 30
 # =============================================================================
 # Topology Viewer - Real-time workflow visualization
 # =============================================================================
-# This sink runs in a separate container (see docker-compose.yml).
-# The engine doesn't spawn it, but needs this config for subscription routing.
+# A D3.js-based web UI that visualizes the primitive topology in real-time.
+# Run on the HOST (not inside container) for easier development:
+#
+#   cd /path/to/emergent
+#   EMERGENT_SOCKET=$(pwd)/docker/run/emergent.sock \
+#   EMERGENT_NAME=topology-viewer \
+#   deno run --allow-env --allow-read --allow-write --allow-net \
+#     ./examples/sinks/topology-viewer/main.ts --port 8080
+#
 # Access the visualization at http://localhost:8080
+#
+# Features:
+#   - Live node status (running/stopped/error)
+#   - Message flow edges based on pub/sub relationships
+#   - System event notifications
 
-[[sinks]]
-name = "topology-viewer"
-# Process managed by docker-compose, not engine (enabled=false)
-# Engine still uses this config for subscription routing when the external process connects
-path = "/bin/true"
-args = []
-enabled = false
-subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
+# Disabled - run on host instead (see instructions above)
+# [[sinks]]
+# name = "topology-viewer"
+# path = "/usr/bin/deno"
+# args = [
+#     "run",
+#     "--allow-env",
+#     "--allow-read",
+#     "--allow-write=/run/emergent",
+#     "--allow-net",
+#     "/app/examples/sinks/topology-viewer/main.ts",
+#     "--port", "8080"
+# ]
+# enabled = true
+# subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]

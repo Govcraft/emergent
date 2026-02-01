@@ -40,7 +40,7 @@ services:
       - RUST_LOG=trace
 
     ports:
-      # Topology viewer web UI
+      # Topology viewer web UI (when running inside container)
       - "8080:8080"
 
     # Healthcheck using process presence (engine doesn't have HTTP endpoint)
