@@ -32,7 +32,7 @@ RUN cargo build --release --package emergent-engine --target x86_64-unknown-linu
 FROM alpine:3.21
 
 # Install runtime dependencies (minimal)
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates git
 
 # Create non-root user for security
 RUN addgroup -g 1000 emergent && \

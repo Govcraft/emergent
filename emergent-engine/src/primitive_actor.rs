@@ -19,7 +19,7 @@
 //! - Use stored **PID for cleanup** (SIGTERM) in `before_stop`
 
 use crate::messages::EmergentMessage;
-use crate::primitives::{PrimitiveInfo, PrimitiveKind, PrimitiveState};
+use crate::primitives::{PrimitiveInfo, PrimitiveState};
 use acton_reactive::prelude::*;
 use serde::Serialize;
 use serde_json::json;
@@ -38,6 +38,12 @@ pub struct SystemEventPayload {
     /// Process ID if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Message types this primitive publishes (Sources and Handlers).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub publishes: Vec<String>,
+    /// Message types this primitive subscribes to (Handlers and Sinks).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub subscribes: Vec<String>,
     /// Optional error message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -46,33 +52,39 @@ pub struct SystemEventPayload {
 impl SystemEventPayload {
     /// Create a payload for a started event (pure function).
     #[must_use]
-    pub fn started(name: &str, kind: PrimitiveKind, pid: u32) -> Self {
+    pub fn started(info: &PrimitiveInfo, pid: u32) -> Self {
         Self {
-            name: name.to_string(),
-            kind: kind.as_str().to_string(),
+            name: info.name.clone(),
+            kind: info.kind.as_str().to_string(),
             pid: Some(pid),
+            publishes: info.publishes.clone(),
+            subscribes: info.subscribes.clone(),
             error: None,
         }
     }
 
     /// Create a payload for a stopped event (pure function).
     #[must_use]
-    pub fn stopped(name: &str, kind: PrimitiveKind, pid: Option<u32>) -> Self {
+    pub fn stopped(info: &PrimitiveInfo, pid: Option<u32>) -> Self {
         Self {
-            name: name.to_string(),
-            kind: kind.as_str().to_string(),
+            name: info.name.clone(),
+            kind: info.kind.as_str().to_string(),
             pid,
+            publishes: info.publishes.clone(),
+            subscribes: info.subscribes.clone(),
             error: None,
         }
     }
 
     /// Create a payload for an error event (pure function).
     #[must_use]
-    pub fn error(name: &str, kind: PrimitiveKind, pid: Option<u32>, error_msg: String) -> Self {
+    pub fn error(info: &PrimitiveInfo, pid: Option<u32>, error_msg: String) -> Self {
         Self {
-            name: name.to_string(),
-            kind: kind.as_str().to_string(),
+            name: info.name.clone(),
+            kind: info.kind.as_str().to_string(),
             pid,
+            publishes: info.publishes.clone(),
+            subscribes: info.subscribes.clone(),
             error: Some(error_msg),
         }
     }
@@ -160,7 +172,6 @@ pub fn build_primitive_actor(
     config: PrimitiveActorConfig,
 ) -> ManagedActor<Idle, PrimitiveActorState> {
     let name = config.info.name.clone();
-    let kind = config.info.kind;
     let path = config.path.clone();
     let args = config.args.clone();
     let env = config.env.clone();
@@ -174,7 +185,6 @@ pub fn build_primitive_actor(
 
     // Clone values for the after_start closure
     let after_start_name = name.clone();
-    let after_start_kind = kind;
     let after_start_path = path;
     let after_start_args = args;
     let after_start_env = env;
@@ -187,7 +197,6 @@ pub fn build_primitive_actor(
             let self_handle = actor.handle().clone();
             let broker = actor.broker().clone();
             let name = after_start_name.clone();
-            let kind = after_start_kind;
             let path = after_start_path.clone();
             let args = after_start_args.clone();
             let env = after_start_env.clone();
@@ -227,14 +236,13 @@ pub fn build_primitive_actor(
 
                             // Broadcast system.started event
                             let event =
-                                create_system_event("system.started", &name, kind, Some(pid), None);
+                                create_system_event("system.started", &spawn_info, Some(pid), None);
                             broker.broadcast(event).await;
 
                             // Monitor child in BACKGROUND TASK
                             // The Child handle lives HERE, not in actor state
                             let monitor_handle = self_handle.clone();
-                            let monitor_name = name.clone();
-                            let monitor_kind = kind;
+                            let monitor_info = spawn_info.clone();
                             let monitor_broker = broker.clone();
                             tokio::spawn(async move {
                                 match child.wait().await {
@@ -242,7 +250,7 @@ pub fn build_primitive_actor(
                                         let exit_code = status.code().unwrap_or(-1);
                                         info!(
                                             "{} exited with status {} (pid: {})",
-                                            monitor_name, exit_code, pid
+                                            monitor_info.name, exit_code, pid
                                         );
 
                                         // Notify actor of exit
@@ -266,15 +274,14 @@ pub fn build_primitive_actor(
                                         };
                                         let event = create_system_event(
                                             event_type,
-                                            &monitor_name,
-                                            monitor_kind,
+                                            &monitor_info,
                                             Some(pid),
                                             error_msg,
                                         );
                                         monitor_broker.broadcast(event).await;
                                     }
                                     Err(e) => {
-                                        error!("Error waiting for {}: {}", monitor_name, e);
+                                        error!("Error waiting for {}: {}", monitor_info.name, e);
                                     }
                                 }
                             });
@@ -288,8 +295,7 @@ pub fn build_primitive_actor(
                         // Broadcast system.error event
                         let event = create_system_event(
                             "system.error",
-                            &name,
-                            kind,
+                            &spawn_info,
                             None,
                             Some(e.to_string()),
                         );
@@ -391,21 +397,20 @@ pub fn build_primitive_actor(
 /// Create a system event message wrapped for IPC.
 fn create_system_event(
     event_type: &str,
-    name: &str,
-    kind: PrimitiveKind,
+    info: &PrimitiveInfo,
     pid: Option<u32>,
     error: Option<String>,
 ) -> IpcSystemEvent {
     let payload = match (event_type, error) {
         ("system.started", None) => {
-            SystemEventPayload::started(name, kind, pid.unwrap_or(0))
+            SystemEventPayload::started(info, pid.unwrap_or(0))
         }
-        ("system.stopped", None) => SystemEventPayload::stopped(name, kind, pid),
-        (_, Some(err)) => SystemEventPayload::error(name, kind, pid, err),
-        _ => SystemEventPayload::stopped(name, kind, pid),
+        ("system.stopped", None) => SystemEventPayload::stopped(info, pid),
+        (_, Some(err)) => SystemEventPayload::error(info, pid, err),
+        _ => SystemEventPayload::stopped(info, pid),
     };
 
-    let message = EmergentMessage::new(&format!("{}.{}", event_type, name))
+    let message = EmergentMessage::new(&format!("{}.{}", event_type, info.name))
         .with_source("emergent-engine")
         .with_payload(json!(payload));
 
@@ -441,41 +446,66 @@ impl From<EmergentMessage> for IpcSystemEvent {
 mod tests {
     use super::*;
 
+    fn make_source_info(name: &str, publishes: Vec<String>) -> PrimitiveInfo {
+        PrimitiveInfo::source(name, publishes)
+    }
+
+    fn make_handler_info(name: &str, subscribes: Vec<String>, publishes: Vec<String>) -> PrimitiveInfo {
+        PrimitiveInfo::handler(name, subscribes, publishes)
+    }
+
+    fn make_sink_info(name: &str, subscribes: Vec<String>) -> PrimitiveInfo {
+        PrimitiveInfo::sink(name, subscribes)
+    }
+
     #[test]
     fn test_system_event_payload_started() {
-        let payload = SystemEventPayload::started("my-source", PrimitiveKind::Source, 1234);
+        let info = make_source_info("my-source", vec!["timer.tick".to_string()]);
+        let payload = SystemEventPayload::started(&info, 1234);
 
         assert_eq!(payload.name, "my-source");
         assert_eq!(payload.kind, "source");
         assert_eq!(payload.pid, Some(1234));
+        assert_eq!(payload.publishes, vec!["timer.tick".to_string()]);
+        assert!(payload.subscribes.is_empty());
         assert!(payload.error.is_none());
     }
 
     #[test]
     fn test_system_event_payload_stopped() {
-        let payload = SystemEventPayload::stopped("my-handler", PrimitiveKind::Handler, Some(5678));
+        let info = make_handler_info(
+            "my-handler",
+            vec!["timer.tick".to_string()],
+            vec!["timer.filtered".to_string()],
+        );
+        let payload = SystemEventPayload::stopped(&info, Some(5678));
 
         assert_eq!(payload.name, "my-handler");
         assert_eq!(payload.kind, "handler");
         assert_eq!(payload.pid, Some(5678));
+        assert_eq!(payload.subscribes, vec!["timer.tick".to_string()]);
+        assert_eq!(payload.publishes, vec!["timer.filtered".to_string()]);
         assert!(payload.error.is_none());
     }
 
     #[test]
     fn test_system_event_payload_stopped_without_pid() {
-        let payload = SystemEventPayload::stopped("my-sink", PrimitiveKind::Sink, None);
+        let info = make_sink_info("my-sink", vec!["timer.filtered".to_string()]);
+        let payload = SystemEventPayload::stopped(&info, None);
 
         assert_eq!(payload.name, "my-sink");
         assert_eq!(payload.kind, "sink");
         assert!(payload.pid.is_none());
+        assert!(payload.publishes.is_empty());
+        assert_eq!(payload.subscribes, vec!["timer.filtered".to_string()]);
         assert!(payload.error.is_none());
     }
 
     #[test]
     fn test_system_event_payload_error() {
+        let info = make_source_info("failing-source", vec!["data.event".to_string()]);
         let payload = SystemEventPayload::error(
-            "failing-source",
-            PrimitiveKind::Source,
+            &info,
             Some(9999),
             "Connection refused".to_string(),
         );
@@ -483,6 +513,7 @@ mod tests {
         assert_eq!(payload.name, "failing-source");
         assert_eq!(payload.kind, "source");
         assert_eq!(payload.pid, Some(9999));
+        assert_eq!(payload.publishes, vec!["data.event".to_string()]);
         assert_eq!(payload.error, Some("Connection refused".to_string()));
     }
 
@@ -495,14 +526,33 @@ mod tests {
 
     #[test]
     fn test_system_event_payload_is_serializable() -> Result<(), serde_json::Error> {
-        let payload = SystemEventPayload::started("test", PrimitiveKind::Source, 100);
+        let info = make_source_info("test", vec!["test.event".to_string()]);
+        let payload = SystemEventPayload::started(&info, 100);
         let json = serde_json::to_string(&payload)?;
 
         assert!(json.contains("\"name\":\"test\""));
         assert!(json.contains("\"kind\":\"source\""));
         assert!(json.contains("\"pid\":100"));
+        assert!(json.contains("\"publishes\":[\"test.event\"]"));
         // error should not be present when None
         assert!(!json.contains("\"error\""));
+        // subscribes should not be present when empty (skip_serializing_if)
+        assert!(!json.contains("\"subscribes\""));
+        Ok(())
+    }
+
+    #[test]
+    fn test_system_event_payload_includes_both_publishes_and_subscribes() -> Result<(), serde_json::Error> {
+        let info = make_handler_info(
+            "enricher",
+            vec!["input.event".to_string()],
+            vec!["output.enriched".to_string()],
+        );
+        let payload = SystemEventPayload::started(&info, 42);
+        let json = serde_json::to_string(&payload)?;
+
+        assert!(json.contains("\"publishes\":[\"output.enriched\"]"));
+        assert!(json.contains("\"subscribes\":[\"input.event\"]"));
         Ok(())
     }
 }

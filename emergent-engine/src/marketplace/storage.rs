@@ -29,7 +29,7 @@ pub struct MarketplaceConfig {
 impl Default for MarketplaceConfig {
     fn default() -> Self {
         Self {
-            registry_url: "https://github.com/govcraft/emergent-primitives".to_string(),
+            registry_url: "https://github.com/Govcraft/emergent-registry".to_string(),
         }
     }
 }
