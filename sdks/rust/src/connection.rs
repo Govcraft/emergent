@@ -229,6 +229,38 @@ struct SubscriptionsResponse {
     subscribes: Vec<String>,
 }
 
+/// Information about a primitive in the topology.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologyPrimitive {
+    /// Unique name of the primitive.
+    pub name: String,
+    /// Kind of primitive (source, handler, sink).
+    pub kind: String,
+    /// Current lifecycle state.
+    pub state: String,
+    /// Message types this primitive publishes.
+    pub publishes: Vec<String>,
+    /// Message types this primitive subscribes to.
+    pub subscribes: Vec<String>,
+    /// Process ID if running.
+    pub pid: Option<u32>,
+    /// Error message if failed.
+    pub error: Option<String>,
+}
+
+/// Response from GetTopology request.
+#[derive(Debug, Deserialize)]
+struct TopologyResponse {
+    primitives: Vec<TopologyPrimitive>,
+}
+
+/// Current topology state (all primitives).
+#[derive(Debug, Clone)]
+pub struct TopologyState {
+    /// All primitives in the system.
+    pub primitives: Vec<TopologyPrimitive>,
+}
+
 /// Get configured subscriptions from the engine's config service.
 async fn get_my_subscriptions_impl(
     reader: &mut OwnedReadHalf,
@@ -276,6 +308,52 @@ async fn get_my_subscriptions_impl(
         .unwrap_or(SubscriptionsResponse { subscribes: vec![] });
 
     Ok(subs_response.subscribes)
+}
+
+/// Get current topology from the engine's config service.
+async fn get_topology_impl(
+    reader: &mut OwnedReadHalf,
+    writer: &mut OwnedWriteHalf,
+) -> Result<TopologyState> {
+    let envelope = IpcEnvelope::new_request("config_service", "GetTopology", json!({}));
+
+    let payload = rmp_serde::to_vec(&envelope)?;
+    write_frame(writer, MSG_TYPE_REQUEST, Format::MessagePack, &payload)
+        .await
+        .map_err(ClientError::from)?;
+
+    let (msg_type, _, payload) = timeout(DEFAULT_TIMEOUT, read_frame(reader, MAX_FRAME_SIZE))
+        .await
+        .map_err(|_| ClientError::Timeout)?
+        .map_err(ClientError::from)?;
+
+    if msg_type != MSG_TYPE_RESPONSE {
+        return Err(ClientError::ProtocolError(format!(
+            "Expected RESPONSE, got message type {msg_type}"
+        )));
+    }
+
+    // Parse IPC response using acton-reactive's type
+    let response: IpcResponse = rmp_serde::from_slice(&payload)?;
+
+    if !response.success {
+        return Err(ClientError::SubscriptionFailed(
+            response
+                .error
+                .unwrap_or_else(|| "GetTopology failed".to_string()),
+        ));
+    }
+
+    // Extract primitives from payload
+    let topo_response: TopologyResponse = response
+        .payload
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or(TopologyResponse { primitives: vec![] });
+
+    Ok(TopologyState {
+        primitives: topo_response.primitives,
+    })
 }
 
 // ============================================================================
@@ -909,6 +987,20 @@ impl EmergentSink {
         let stream = connect_to_engine(&self.name).await?;
         let (mut reader, mut writer) = stream.into_split();
         get_my_subscriptions_impl(&mut reader, &mut writer, &self.name).await
+    }
+
+    /// Get the current topology (all primitives and their state).
+    ///
+    /// Queries the engine to get the current state of all registered
+    /// primitives, including their publish/subscribe configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn get_topology(&self) -> Result<TopologyState> {
+        let stream = connect_to_engine(&self.name).await?;
+        let (mut reader, mut writer) = stream.into_split();
+        get_topology_impl(&mut reader, &mut writer).await
     }
 
     /// Get the name of this sink.

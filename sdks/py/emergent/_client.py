@@ -40,6 +40,8 @@ from .types import (
     IpcSubscribeRequest,
     PrimitiveInfo,
     PrimitiveKind,
+    TopologyPrimitive,
+    TopologyState,
     WireMessage,
 )
 
@@ -350,6 +352,59 @@ class BaseClient:
         # Response payload has { "subscribes": [...] }
         payload = response.payload or {}
         return payload.get("subscribes", [])
+
+    async def _get_topology(self) -> TopologyState:
+        """
+        Get the current topology (all primitives and their state).
+
+        Queries the engine to get the current state of all registered
+        primitives, including their publish/subscribe configuration.
+
+        Returns:
+            TopologyState with all primitives
+
+        Raises:
+            ConnectionError: If the request fails
+        """
+        self._ensure_connected()
+
+        correlation_id = generate_correlation_id("gettopo")
+
+        envelope = IpcEnvelope(
+            correlation_id=correlation_id,
+            target="config_service",
+            message_type="GetTopology",
+            payload={},
+            expects_reply=True,
+        )
+
+        response = await self._send_request(
+            MessageType.REQUEST,
+            envelope.model_dump(),
+            correlation_id,
+        )
+
+        if not response.success:
+            raise ConnectionError(response.error or "GetTopology failed")
+
+        # Response payload has { "primitives": [...] }
+        payload = response.payload or {}
+        primitives_data = payload.get("primitives", [])
+
+        primitives = tuple(
+            TopologyPrimitive(
+                name=p.get("name", ""),
+                kind=p.get("kind", ""),
+                state=p.get("state", "stopped"),
+                publishes=tuple(p.get("publishes", [])),
+                subscribes=tuple(p.get("subscribes", [])),
+                pid=p.get("pid"),
+                error=p.get("error"),
+            )
+            for p in primitives_data
+        )
+
+        return TopologyState(primitives=primitives)
 
     def close(self) -> None:
         """

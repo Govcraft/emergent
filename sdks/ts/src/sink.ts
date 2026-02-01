@@ -7,6 +7,7 @@ import type {
   ConnectOptions,
   DiscoveryInfo,
   EmergentMessage,
+  TopologyState,
 } from "./types.ts";
 import type { MessageStream } from "./stream.ts";
 import { BaseClient } from "./client.ts";
@@ -189,6 +190,25 @@ export class EmergentSink extends BaseClient
    */
   async getMySubscriptions(): Promise<string[]> {
     return await this.getMySubscriptionsInternal();
+  }
+
+  /**
+   * Get the current topology (all primitives and their state).
+   *
+   * Queries the engine to get the current state of all registered
+   * primitives, including their publish/subscribe configuration.
+   *
+   * @example
+   * ```typescript
+   * const sink = await EmergentSink.connect("my_sink");
+   * const topology = await sink.getTopology();
+   * for (const prim of topology.primitives) {
+   *   console.log(`${prim.name} (${prim.kind}): ${prim.state}`);
+   * }
+   * ```
+   */
+  async getTopology(): Promise<TopologyState> {
+    return await this.getTopologyInternal();
   }
 
   /**

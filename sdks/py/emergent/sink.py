@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from .stream import MessageStream
-    from .types import DiscoveryInfo, EmergentMessage
+    from .types import DiscoveryInfo, EmergentMessage, TopologyState
 
 
 class EmergentSink(BaseClient):
@@ -230,6 +230,24 @@ class EmergentSink(BaseClient):
             >>> print("Configured to receive:", types)
         """
         return await self._get_my_subscriptions()
+
+    async def get_topology(self) -> TopologyState:
+        """
+        Get the current topology (all primitives and their state).
+
+        Queries the engine to get the current state of all registered
+        primitives, including their publish/subscribe configuration.
+
+        Returns:
+            TopologyState with all primitives and their current state
+
+        Example:
+            >>> sink = await EmergentSink.connect("my_sink")
+            >>> topology = await sink.get_topology()
+            >>> for prim in topology.primitives:
+            ...     print(f"{prim.name} ({prim.kind}): {prim.state}")
+        """
+        return await self._get_topology()
 
     async def __aenter__(self) -> EmergentSink:
         """Enter the async context manager."""

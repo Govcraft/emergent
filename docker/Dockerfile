@@ -31,9 +31,11 @@ RUN cargo build --release --package emergent-engine --target x86_64-unknown-linu
 # ------------------------------------------------------------------------------
 FROM alpine:3.21
 
-# Install runtime dependencies (minimal)
+# Install runtime dependencies
 # gcompat + libgcc provide glibc compatibility for marketplace primitives built with glibc
-RUN apk add --no-cache ca-certificates git gcompat libgcc
+# deno for TypeScript primitives (installed via apk from testing repo)
+RUN apk add --no-cache ca-certificates git gcompat libgcc && \
+    apk add --no-cache --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing deno
 
 # Create non-root user for security
 RUN addgroup -g 1000 emergent && \

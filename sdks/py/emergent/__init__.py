@@ -65,6 +65,8 @@ from emergent.types import (
     PrimitiveInfo,
     SystemEventPayload,
     SystemShutdownPayload,
+    TopologyPrimitive,
+    TopologyState,
 )
 
 # Helpers
@@ -102,6 +104,9 @@ __all__ = [
     "SystemEventPayload",
     "SystemShutdownPayload",
     "TimeoutError",
+    # Topology Types
+    "TopologyPrimitive",
+    "TopologyState",
     "ValidationError",
     # Version
     "__version__",

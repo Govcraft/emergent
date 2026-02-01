@@ -98,6 +98,40 @@ struct SubscriptionsResponse {
     subscribes: Vec<String>,
 }
 
+/// Request to get the current topology (all primitives and their state).
+///
+/// Used by visualization tools to get the current system state on connect.
+#[acton_message(ipc)]
+#[derive(Clone)]
+struct GetTopology;
+
+/// Information about a primitive in the topology response.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct TopologyPrimitive {
+    /// Unique name of the primitive.
+    name: String,
+    /// Kind of primitive (source, handler, sink).
+    kind: String,
+    /// Current state (running, stopped, failed, etc.).
+    state: String,
+    /// Message types this primitive publishes.
+    publishes: Vec<String>,
+    /// Message types this primitive subscribes to.
+    subscribes: Vec<String>,
+    /// Process ID if running.
+    pid: Option<u32>,
+    /// Error message if failed.
+    error: Option<String>,
+}
+
+/// Response containing the current topology.
+#[acton_message(ipc)]
+#[derive(Clone)]
+struct TopologyResponse {
+    /// All primitives in the system.
+    primitives: Vec<TopologyPrimitive>,
+}
+
 // ============================================================================
 // Engine State
 // ============================================================================
@@ -270,6 +304,8 @@ async fn main() -> Result<()> {
     registry.register::<IpcSystemEvent>("SystemEvent");
     registry.register::<GetSubscriptions>("GetSubscriptions");
     registry.register::<SubscriptionsResponse>("SubscriptionsResponse");
+    registry.register::<GetTopology>("GetTopology");
+    registry.register::<TopologyResponse>("TopologyResponse");
     info!("Registered {} IPC message type(s)", registry.len());
 
     // Start the IPC listener first to get the subscription manager
@@ -377,6 +413,37 @@ async fn main() -> Result<()> {
 
             reply_envelope
                 .send(SubscriptionsResponse { subscribes })
+                .await;
+        })
+    });
+
+    // Handle GetTopology requests for visualization tools
+    let pm_for_topology = process_manager.clone();
+    config_service.mutate_on::<GetTopology>(move |_actor, envelope| {
+        let pm = pm_for_topology.clone();
+
+        let reply_envelope = envelope.reply_envelope();
+        Reply::pending(async move {
+            // Get all registered primitives
+            let all_primitives = pm.list_all().await;
+
+            let primitives: Vec<TopologyPrimitive> = all_primitives
+                .into_iter()
+                .map(|info| TopologyPrimitive {
+                    name: info.name,
+                    kind: info.kind.to_string().to_lowercase(),
+                    state: info.state.to_string().to_lowercase(),
+                    publishes: info.publishes,
+                    subscribes: info.subscribes,
+                    pid: info.pid,
+                    error: info.error,
+                })
+                .collect();
+
+            info!("GetTopology: {} primitive(s)", primitives.len());
+
+            reply_envelope
+                .send(TopologyResponse { primitives })
                 .await;
         })
     });

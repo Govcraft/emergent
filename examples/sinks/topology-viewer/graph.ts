@@ -11,7 +11,7 @@ import type {
   NodeStatus,
   PrimitiveKind,
 } from "./types.ts";
-import type { SystemEventPayload } from "../../../sdks/ts/mod.ts";
+import type { SystemEventPayload, TopologyPrimitive } from "../../../sdks/ts/mod.ts";
 
 /**
  * Manages the topology graph state and SSE broadcasting.
@@ -103,6 +103,58 @@ export class TopologyGraph {
       });
       this.broadcastEdges();
     }
+  }
+
+  /**
+   * Handle a primitive from the topology query (initial state).
+   */
+  handleTopologyPrimitive(prim: TopologyPrimitive): void {
+    // Map state to our NodeStatus
+    let status: NodeStatus;
+    switch (prim.state) {
+      case "running":
+        status = "running";
+        break;
+      case "stopped":
+      case "stopping":
+      case "configured":
+        status = "stopped";
+        break;
+      case "failed":
+        status = "error";
+        break;
+      default:
+        status = "stopped";
+    }
+
+    const node: TopologyNode = {
+      id: prim.name,
+      kind: prim.kind as PrimitiveKind,
+      status,
+      publishes: [...prim.publishes],
+      subscribes: [...prim.subscribes],
+      pid: prim.pid,
+      error: prim.error,
+    };
+
+    const isNew = !this.nodes.has(prim.name);
+    this.nodes.set(prim.name, node);
+
+    if (isNew) {
+      this.broadcast({
+        type: "node:added",
+        data: node,
+        timestamp: Date.now(),
+      });
+    } else {
+      this.broadcast({
+        type: "node:updated",
+        data: node,
+        timestamp: Date.now(),
+      });
+    }
+
+    this.broadcastEdges();
   }
 
   /**

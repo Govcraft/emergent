@@ -131,6 +131,46 @@ export interface PrimitiveInfo {
 export type PrimitiveKind = "Source" | "Handler" | "Sink";
 
 /**
+ * The lifecycle state of a primitive.
+ */
+export type PrimitiveState =
+  | "configured"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "external";
+
+/**
+ * Detailed information about a primitive in the topology.
+ */
+export interface TopologyPrimitive {
+  /** Unique name of the primitive. */
+  readonly name: string;
+  /** Kind of primitive (source, handler, sink). */
+  readonly kind: string;
+  /** Current lifecycle state. */
+  readonly state: PrimitiveState;
+  /** Message types this primitive publishes. */
+  readonly publishes: readonly string[];
+  /** Message types this primitive subscribes to. */
+  readonly subscribes: readonly string[];
+  /** Process ID if running. */
+  readonly pid?: number;
+  /** Error message if failed. */
+  readonly error?: string;
+}
+
+/**
+ * Current topology state (all primitives).
+ */
+export interface TopologyState {
+  /** All primitives in the system. */
+  readonly primitives: readonly TopologyPrimitive[];
+}
+
+/**
  * Options for connecting to the Emergent engine.
  */
 export interface ConnectOptions {

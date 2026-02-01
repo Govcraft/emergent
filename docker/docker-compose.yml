@@ -16,6 +16,7 @@
 # ==============================================================================
 
 services:
+  # Emergent Engine - The core workflow engine
   emergent:
     image: ghcr.io/govcraft/emergent:latest
     build:
@@ -31,13 +32,20 @@ services:
       - ./data:/var/lib/emergent
       # IPC socket directory (for external primitive connections)
       - ./run:/run/emergent
+      # TypeScript SDK and examples for Deno primitives
+      - ../sdks/ts:/app/sdks/ts:ro
+      - ../examples:/app/examples:ro
 
     environment:
-      - RUST_LOG=info
+      - RUST_LOG=trace
+
+    ports:
+      # Topology viewer web UI
+      - "8080:8080"
 
     # Healthcheck using process presence (engine doesn't have HTTP endpoint)
     healthcheck:
-      test: ["CMD", "pgrep", "-x", "emergent"]
+      test: ["CMD", "pgrep", "emergent"]
       interval: 30s
       timeout: 10s
       retries: 3

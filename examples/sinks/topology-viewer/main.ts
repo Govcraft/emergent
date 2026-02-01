@@ -12,7 +12,7 @@
  */
 
 import { EmergentSink } from "../../../sdks/ts/mod.ts";
-import type { SystemEventPayload } from "../../../sdks/ts/mod.ts";
+import type { SystemEventPayload, TopologyPrimitive } from "../../../sdks/ts/mod.ts";
 import { TopologyGraph } from "./graph.ts";
 
 // Parse command line arguments
@@ -79,6 +79,94 @@ function createSSEStream(graph: TopologyGraph): Response {
   });
 }
 
+// Delay helper
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Subscriptions for system lifecycle events
+const SUBSCRIPTIONS = [
+  "system.started.*",
+  "system.stopped.*",
+  "system.error.*",
+];
+
+// Connect to engine with retry logic
+async function connectWithRetry(
+  name: string,
+  graph: TopologyGraph,
+  maxRetries = 30,
+  retryDelayMs = 2000
+): Promise<void> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[${name}] Connecting to engine (attempt ${attempt}/${maxRetries})...`);
+
+      // Connect explicitly and subscribe with our own types
+      // (not relying on engine config since we're externally managed)
+      const sink = await EmergentSink.connect(name);
+
+      try {
+        // Try to query current topology to populate initial state
+        // This may fail if the GetTopology IPC routing isn't working
+        try {
+          console.log(`[${name}] Connected, querying current topology...`);
+          const topology = await sink.getTopology();
+          console.log(`[${name}] Got ${topology.primitives.length} primitive(s)`);
+
+          // Populate graph with existing primitives
+          for (const prim of topology.primitives) {
+            graph.handleTopologyPrimitive(prim as TopologyPrimitive);
+          }
+        } catch (topoErr) {
+          console.log(`[${name}] Could not query topology (will rely on events): ${topoErr instanceof Error ? topoErr.message : topoErr}`);
+        }
+
+        // Subscribe to real-time updates
+        console.log(`[${name}] Subscribing to: ${SUBSCRIPTIONS.join(", ")}`);
+        const stream = await sink.subscribe(SUBSCRIPTIONS);
+
+        try {
+          for await (const msg of stream) {
+            const payload = msg.payloadAs<SystemEventPayload>();
+
+            if (msg.messageType.startsWith("system.started.")) {
+              console.log(
+                `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`
+              );
+              graph.handleStarted(payload);
+            } else if (msg.messageType.startsWith("system.stopped.")) {
+              console.log(`[${name}] Stopped: ${payload.name}`);
+              graph.handleStopped(payload);
+            } else if (msg.messageType.startsWith("system.error.")) {
+              console.log(`[${name}] Error: ${payload.name} - ${payload.error}`);
+              graph.handleError(payload);
+            }
+          }
+        } finally {
+          stream.close();
+        }
+      } finally {
+        sink.close();
+      }
+
+      // Stream ended gracefully (shutdown)
+      console.log(`[${name}] Engine connection closed`);
+      return;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.log(`[${name}] Connection failed: ${errorMsg}`);
+
+      if (attempt < maxRetries) {
+        console.log(`[${name}] Retrying in ${retryDelayMs / 1000}s...`);
+        await delay(retryDelayMs);
+      }
+    }
+  }
+
+  console.error(`[${name}] Failed to connect after ${maxRetries} attempts`);
+}
+
 // Main entry point
 async function main(): Promise<void> {
   const { port } = parseArgs();
@@ -87,7 +175,7 @@ async function main(): Promise<void> {
 
   console.log(`[${name}] Starting topology viewer on port ${port}`);
 
-  // Start HTTP server
+  // Start HTTP server first (non-blocking)
   const server = Deno.serve({ port }, (req: Request): Response | Promise<Response> => {
     const url = new URL(req.url);
     const path = url.pathname;
@@ -115,33 +203,8 @@ async function main(): Promise<void> {
 
   console.log(`[${name}] HTTP server listening on http://localhost:${port}`);
 
-  // Process messages from the engine
-  try {
-    for await (const msg of EmergentSink.messages(name, [
-      "system.started.*",
-      "system.stopped.*",
-      "system.error.*",
-    ])) {
-      const payload = msg.payloadAs<SystemEventPayload>();
-
-      if (msg.messageType.startsWith("system.started.")) {
-        console.log(
-          `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`
-        );
-        graph.handleStarted(payload);
-      } else if (msg.messageType.startsWith("system.stopped.")) {
-        console.log(`[${name}] Stopped: ${payload.name}`);
-        graph.handleStopped(payload);
-      } else if (msg.messageType.startsWith("system.error.")) {
-        console.log(
-          `[${name}] Error: ${payload.name} - ${payload.error}`
-        );
-        graph.handleError(payload);
-      }
-    }
-  } catch (err) {
-    console.error(`[${name}] Error processing messages:`, err);
-  }
+  // Connect to engine with retry (runs in background)
+  await connectWithRetry(name, graph);
 
   console.log(`[${name}] Shutting down`);
   await server.shutdown();

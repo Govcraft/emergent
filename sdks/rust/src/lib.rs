@@ -77,7 +77,7 @@ mod stream;
 mod subscribe;
 pub mod types;
 
-pub use connection::{EmergentHandler, EmergentSink, EmergentSource};
+pub use connection::{EmergentHandler, EmergentSink, EmergentSource, TopologyPrimitive, TopologyState};
 pub use error::ClientError;
 pub use message::{EmergentMessage, create_message};
 pub use stream::MessageStream;

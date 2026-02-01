@@ -13,6 +13,8 @@ import {
   type IpcResponse,
   type IpcSubscribeRequest,
   type PrimitiveKind,
+  type TopologyPrimitive,
+  type TopologyState,
   type WireMessage,
 } from "./types.ts";
 import {
@@ -361,6 +363,39 @@ export class BaseClient {
     // Response payload has { subscribes: [...] }
     const payload = response.payload as { subscribes?: string[] } | null;
     return payload?.subscribes ?? [];
+  }
+
+  /**
+   * Get the current topology (all primitives and their state).
+   *
+   * @internal
+   */
+  protected async getTopologyInternal(): Promise<TopologyState> {
+    this.#ensureConnected();
+
+    const correlationId = generateCorrelationId("gettopo");
+
+    const envelope: IpcEnvelope = {
+      correlation_id: correlationId,
+      target: "config_service",
+      message_type: "GetTopology",
+      payload: {},
+      expects_reply: true,
+    };
+
+    const response = await this.#sendRequest<IpcEnvelope>(
+      MSG_TYPE_REQUEST,
+      envelope,
+      correlationId,
+    );
+
+    if (!response.success) {
+      throw new ConnectionError(response.error ?? "GetTopology failed");
+    }
+
+    // Response payload has { primitives: [...] }
+    const payload = response.payload as { primitives?: TopologyPrimitive[] } | null;
+    return { primitives: payload?.primitives ?? [] };
   }
 
   /**

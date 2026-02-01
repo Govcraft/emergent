@@ -322,3 +322,51 @@ class IpcDiscoverResponse(BaseModel):
 
     message_types: list[str]
     primitives: list[dict[str, str]]
+
+
+# ============================================================================
+# Topology Types
+# ============================================================================
+
+# State of a registered primitive
+PrimitiveState = Literal[
+    "configured", "starting", "running", "stopping", "stopped", "failed", "external"
+]
+
+
+class TopologyPrimitive(BaseModel):
+    """
+    Information about a primitive in the topology.
+
+    Attributes:
+        name: Name of the primitive
+        kind: Type of primitive (source, handler, sink)
+        state: Current state of the primitive
+        publishes: Message types this primitive publishes
+        subscribes: Message types this primitive subscribes to
+        pid: Process ID if available
+        error: Error message if in failed state
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    kind: str
+    state: PrimitiveState
+    publishes: tuple[str, ...] = ()
+    subscribes: tuple[str, ...] = ()
+    pid: int | None = None
+    error: str | None = None
+
+
+class TopologyState(BaseModel):
+    """
+    Current topology state from the engine.
+
+    Attributes:
+        primitives: List of all primitives in the topology
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    primitives: tuple[TopologyPrimitive, ...]

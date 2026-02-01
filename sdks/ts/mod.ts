@@ -69,6 +69,9 @@ export type {
   EmergentMessageData,
   PrimitiveInfo,
   PrimitiveKind,
+  PrimitiveState,
+  TopologyPrimitive,
+  TopologyState,
 } from "./src/types.ts";
 
 // System Event Types

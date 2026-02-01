@@ -411,8 +411,47 @@ function connectSSE() {
   });
 }
 
+/**
+ * Manually refresh the topology from the API.
+ */
+async function refreshTopology() {
+  try {
+    const response = await fetch("/api/topology");
+    if (!response.ok) {
+      console.error("[Refresh] Failed to fetch topology:", response.statusText);
+      return;
+    }
+
+    const state = await response.json();
+    console.log("[Refresh] topology", state);
+
+    // Preserve existing node positions
+    const positionMap = new Map();
+    nodes.forEach((n) => {
+      if (n.x !== undefined) {
+        positionMap.set(n.id, { x: n.x, y: n.y });
+      }
+    });
+
+    nodes = state.nodes.map((n) => {
+      const pos = positionMap.get(n.id);
+      return pos ? { ...n, x: pos.x, y: pos.y } : n;
+    });
+    edges = state.edges;
+    updateGraph();
+  } catch (err) {
+    console.error("[Refresh] Error:", err);
+  }
+}
+
 // Initialize on page load
 document.addEventListener("DOMContentLoaded", () => {
   initGraph();
   connectSSE();
+
+  // Wire up refresh button
+  const refreshBtn = document.getElementById("refresh-btn");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", refreshTopology);
+  }
 });

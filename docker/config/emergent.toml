@@ -87,17 +87,23 @@ retention_days = 30
 # subscribes = ["timer.filtered", "system.started.*", "system.stopped.*"]
 
 # =============================================================================
-# Topology Viewer - Real-time workflow visualization
+# Topology Viewer
 # =============================================================================
-# This sink runs in a separate container (see docker-compose.yml).
-# The engine doesn't spawn it, but needs this config for subscription routing.
+# The topology-viewer runs as a separate container (see docker-compose.yml)
+# and connects to the engine via the shared socket.
 # Access the visualization at http://localhost:8080
 
 [[sinks]]
 name = "topology-viewer"
-# Process managed by docker-compose, not engine (enabled=false)
-# Engine still uses this config for subscription routing when the external process connects
-path = "/bin/true"
-args = []
-enabled = false
+path = "/usr/bin/deno"
+args = [
+    "run",
+    "--allow-env",
+    "--allow-read",
+    "--allow-write",
+    "--allow-net",
+    "/app/examples/sinks/topology-viewer/main.ts",
+    "--port", "8080"
+]
+enabled = true
 subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
