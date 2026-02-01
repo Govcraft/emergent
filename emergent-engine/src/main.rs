@@ -443,7 +443,8 @@ async fn main() -> Result<()> {
             // Get all registered primitives
             let all_primitives = pm.list_all().await;
 
-            let mut primitives: Vec<TopologyPrimitive> = Vec::with_capacity(all_primitives.len() + 1);
+            let mut primitives: Vec<TopologyPrimitive> =
+                Vec::with_capacity(all_primitives.len() + 1);
             primitives.push(engine_primitive);
             primitives.extend(all_primitives.into_iter().map(|info| TopologyPrimitive {
                 name: info.name,
@@ -457,9 +458,7 @@ async fn main() -> Result<()> {
 
             info!("GetTopology: {} primitive(s)", primitives.len());
 
-            reply_envelope
-                .send(TopologyResponse { primitives })
-                .await;
+            reply_envelope.send(TopologyResponse { primitives }).await;
         })
     });
 

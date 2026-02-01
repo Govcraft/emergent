@@ -363,8 +363,7 @@ mod tests {
 
         let payload: SystemEventPayload = serde_json::from_str(json).expect("valid json");
         let serialized = serde_json::to_string(&payload).expect("serialize");
-        let restored: SystemEventPayload =
-            serde_json::from_str(&serialized).expect("deserialize");
+        let restored: SystemEventPayload = serde_json::from_str(&serialized).expect("deserialize");
 
         assert_eq!(payload, restored);
     }
