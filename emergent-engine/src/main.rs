@@ -103,7 +103,7 @@ struct SubscriptionsResponse {
 /// Used by visualization tools to get the current system state on connect.
 #[acton_message(ipc)]
 #[derive(Clone)]
-struct GetTopology;
+struct GetTopology {}
 
 /// Information about a primitive in the topology response.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
