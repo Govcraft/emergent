@@ -23,8 +23,14 @@ COPY emergent-engine ./emergent-engine
 COPY sdks/rust ./sdks/rust
 COPY examples ./examples
 
-# Build release binary with static linking
-RUN cargo build --release --package emergent-engine --target x86_64-unknown-linux-musl
+# Build release binaries with static linking
+# Engine + built-in primitives
+RUN cargo build --release --target x86_64-unknown-linux-musl \
+    --package emergent-engine \
+    --package timer \
+    --package filter \
+    --package console \
+    --package log
 
 # ------------------------------------------------------------------------------
 # Stage 2: Runtime
@@ -45,11 +51,15 @@ RUN addgroup -g 1000 emergent && \
 RUN mkdir -p /etc/emergent /var/lib/emergent/logs /run/emergent && \
     chown -R emergent:emergent /var/lib/emergent /run/emergent
 
-# Copy the compiled binary
+# Copy the compiled binaries
 COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/emergent /usr/local/bin/emergent
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/timer /usr/local/bin/timer
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/filter /usr/local/bin/filter
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/console /usr/local/bin/console
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/log /usr/local/bin/log
 
 # Set ownership
-RUN chmod +x /usr/local/bin/emergent
+RUN chmod +x /usr/local/bin/emergent /usr/local/bin/timer /usr/local/bin/filter /usr/local/bin/console /usr/local/bin/log
 
 # Switch to non-root user
 USER emergent
