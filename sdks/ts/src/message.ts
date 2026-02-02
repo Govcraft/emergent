@@ -6,18 +6,16 @@
 import { EmergentMessage, type EmergentMessageData } from "./types.ts";
 import { ValidationError } from "./errors.ts";
 
+import { typeid } from "npm:typeid-js@1.2.0";
+
 /**
- * Generate a unique message ID in MTI format.
+ * Generate a unique message ID in TypeID format.
  *
- * Format: `{prefix}_{timestamp_hex}{random_hex}`
- * This produces time-ordered, unique IDs similar to UUIDv7.
+ * Uses the typeid-js library to generate proper TypeID format IDs
+ * with Crockford's base32 encoding and UUIDv7 timestamps.
  */
 export function generateMessageId(prefix = "msg"): string {
-  const timestamp = Date.now().toString(16).padStart(12, "0");
-  const random = Array.from(crypto.getRandomValues(new Uint8Array(8)))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return `${prefix}_${timestamp}${random}`;
+  return typeid(prefix).toString();
 }
 
 /**

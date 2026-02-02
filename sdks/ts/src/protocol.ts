@@ -162,13 +162,11 @@ export function tryDecodeFrame(buffer: Uint8Array): DecodedFrame | null {
   };
 }
 
+import { typeid } from "npm:typeid-js@1.2.0";
+
 /**
- * Generate a unique correlation ID.
+ * Generate a unique correlation ID in TypeID format.
  */
 export function generateCorrelationId(prefix = "req"): string {
-  const timestamp = Date.now().toString(16).padStart(12, "0");
-  const random = Array.from(crypto.getRandomValues(new Uint8Array(4)))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return `${prefix}_${timestamp}${random}`;
+  return typeid(prefix).toString();
 }
