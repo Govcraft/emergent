@@ -10,22 +10,17 @@ let svg = null;
 let g = null;
 let linkGroup = null;
 let nodeGroup = null;
+let selectedNodeId = "emergent-engine"; // Default selected node
 
 // D3 selections
 let linkSelection = null;
 let nodeSelection = null;
 
-// Color mappings
+// Color mappings by node kind
 const kindColors = {
   source: "source",
   handler: "handler",
   sink: "sink",
-};
-
-const statusColors = {
-  running: null, // use kind color
-  stopped: "stopped",
-  error: "error",
 };
 
 /**
@@ -100,11 +95,9 @@ function initGraph() {
 }
 
 /**
- * Get the CSS class for a node based on its status and kind.
+ * Get the CSS class for a node based on its kind.
  */
 function getNodeClass(node) {
-  if (node.status === "stopped") return "stopped";
-  if (node.status === "error") return "error";
   return kindColors[node.kind] || "handler";
 }
 
@@ -173,11 +166,21 @@ function updateGraph() {
   // Update all node circles with current class
   nodeSelection.select("circle").attr("class", (d) => getNodeClass(d));
 
-  // Add event handlers for tooltips
+  // Add event handlers for tooltips and selection
   nodeSelection
     .on("mouseenter", showTooltip)
     .on("mousemove", moveTooltip)
-    .on("mouseleave", hideTooltip);
+    .on("mouseleave", hideTooltip)
+    .on("click", selectNode);
+
+  // Update selected node visual and details
+  updateSelectedNodeVisual();
+
+  // Update details panel for selected node
+  const selectedNode = nodes.find((n) => n.id === selectedNodeId);
+  if (selectedNode) {
+    updateNodeDetails(selectedNode);
+  }
 
   // Update simulation
   simulation.nodes(nodes);
@@ -331,6 +334,93 @@ function hideTooltip() {
 }
 
 /**
+ * Select a node.
+ */
+function selectNode(event, d) {
+  selectedNodeId = d.id;
+  updateSelectedNodeVisual();
+  updateNodeDetails(d);
+}
+
+/**
+ * Update the visual appearance of the selected node.
+ */
+function updateSelectedNodeVisual() {
+  if (!nodeSelection) return;
+
+  nodeSelection.select("circle")
+    .classed("selected", (d) => d.id === selectedNodeId);
+}
+
+/**
+ * Update the node details panel.
+ */
+function updateNodeDetails(node) {
+  const panel = document.getElementById("node-details");
+  if (!panel) return;
+
+  // Clear existing content
+  while (panel.firstChild) {
+    panel.removeChild(panel.firstChild);
+  }
+
+  if (!node) {
+    appendTextElement(panel, "details-empty", "Select a node to view details");
+    return;
+  }
+
+  // Title
+  appendTextElement(panel, "details-title", node.id);
+
+  // Kind and status
+  const kindSpan = document.createElement("span");
+  kindSpan.className = `details-kind kind-${node.kind}`;
+  kindSpan.textContent = node.kind;
+  panel.appendChild(kindSpan);
+
+  // Status
+  appendTextElement(panel, "details-status", `Status: ${node.status}`);
+
+  // PID
+  if (node.pid) {
+    appendTextElement(panel, "details-pid", `PID: ${node.pid}`);
+  }
+
+  // Publishes section
+  if (node.publishes && node.publishes.length > 0) {
+    const section = document.createElement("div");
+    section.className = "details-section";
+    appendTextElement(section, "details-section-title", "Publishes");
+    const list = document.createElement("div");
+    list.className = "details-list";
+    node.publishes.forEach((p) => {
+      appendTextElement(list, "details-item", p);
+    });
+    section.appendChild(list);
+    panel.appendChild(section);
+  }
+
+  // Subscribes section
+  if (node.subscribes && node.subscribes.length > 0) {
+    const section = document.createElement("div");
+    section.className = "details-section";
+    appendTextElement(section, "details-section-title", "Subscribes");
+    const list = document.createElement("div");
+    list.className = "details-list";
+    node.subscribes.forEach((s) => {
+      appendTextElement(list, "details-item", s);
+    });
+    section.appendChild(list);
+    panel.appendChild(section);
+  }
+
+  // Error if present
+  if (node.error) {
+    appendTextElement(panel, "details-error", node.error);
+  }
+}
+
+/**
  * Connect to SSE endpoint with auto-reconnect.
  */
 function connectSSE() {
@@ -409,21 +499,66 @@ function connectSSE() {
     edges = newEdges;
     updateGraph();
   });
+
+  // Handle message activity - animate edges
+  eventSource.addEventListener("message:activity", (event) => {
+    const { source, messageType } = JSON.parse(event.data);
+    animateEdge(source, messageType);
+  });
+}
+
+// Configuration - topology-api source endpoint
+// This should match the port configured for the topology-api source
+const TOPOLOGY_API_URL = "http://localhost:8892";
+
+/**
+ * Request a topology refresh via the topology-api source.
+ * The source publishes system.request.topology, engine responds with
+ * system.response.topology, which the topology-viewer sink receives.
+ */
+async function refreshTopology() {
+  const refreshBtn = document.getElementById("refresh-btn");
+  if (refreshBtn) {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = "Refreshing...";
+  }
+
+  try {
+    const response = await fetch(`${TOPOLOGY_API_URL}/refresh`);
+    if (!response.ok) {
+      console.error("[Refresh] Failed to request topology refresh:", response.statusText);
+      return;
+    }
+
+    const result = await response.json();
+    console.log("[Refresh] Request sent:", result);
+    // The actual topology update will come via SSE when the engine responds
+  } catch (err) {
+    console.error("[Refresh] Error:", err);
+    // If topology-api is not running, fall back to local state
+    console.log("[Refresh] Falling back to local state");
+    await refreshTopologyLocal();
+  } finally {
+    if (refreshBtn) {
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = "Refresh";
+    }
+  }
 }
 
 /**
- * Manually refresh the topology from the API.
+ * Fall back to local graph state if topology-api is not available.
  */
-async function refreshTopology() {
+async function refreshTopologyLocal() {
   try {
     const response = await fetch("/api/topology");
     if (!response.ok) {
-      console.error("[Refresh] Failed to fetch topology:", response.statusText);
+      console.error("[Refresh] Failed to fetch local topology:", response.statusText);
       return;
     }
 
     const state = await response.json();
-    console.log("[Refresh] topology", state);
+    console.log("[Refresh] Local topology", state);
 
     // Preserve existing node positions
     const positionMap = new Map();
@@ -440,8 +575,49 @@ async function refreshTopology() {
     edges = state.edges;
     updateGraph();
   } catch (err) {
-    console.error("[Refresh] Error:", err);
+    console.error("[Refresh] Local error:", err);
   }
+}
+
+/**
+ * Animate an edge to show message activity.
+ * Highlights edges from the source node that match the message type.
+ */
+function animateEdge(source, messageType) {
+  if (!linkSelection) return;
+
+  // Find and animate edges from this source
+  linkSelection
+    .filter((d) => {
+      // Match edges from this source
+      if (d.source.id !== source && d.source !== source) return false;
+      // Check if message type matches the edge's message type
+      return d.messageType === messageType || matchesPattern(messageType, d.messageType);
+    })
+    .classed("active", true)
+    .transition()
+    .duration(300)
+    .attr("stroke-opacity", 1)
+    .transition()
+    .duration(500)
+    .attr("stroke-opacity", 0.6)
+    .on("end", function () {
+      d3.select(this).classed("active", false);
+    });
+}
+
+/**
+ * Check if a message type matches a pattern (client-side version).
+ */
+function matchesPattern(messageType, pattern) {
+  if (pattern === "*") return true;
+  if (pattern === messageType) return true;
+  if (!pattern.includes("*")) return false;
+
+  const regex = new RegExp(
+    "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, "[^.]+") + "$"
+  );
+  return regex.test(messageType);
 }
 
 // Initialize on page load
