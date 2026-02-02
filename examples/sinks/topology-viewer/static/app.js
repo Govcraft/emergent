@@ -455,21 +455,18 @@ function updateNodeDetails(node) {
   kindEl.className = `inspector-badge ${node.kind}`;
   iconEl.className = `inspector-icon ${node.kind}`;
 
-  // Status section
-  const statusSection = createSection("Status");
-  const statusContent = document.createElement("div");
-  statusContent.className = "inspector-section-content";
-
-  const statusRow = createRow("State", node.status || "unknown");
-  statusContent.appendChild(statusRow);
-
+  // Process info section (only if we have useful data)
   if (node.pid) {
-    const pidRow = createRow("PID", node.pid);
-    statusContent.appendChild(pidRow);
-  }
+    const processSection = createSection("Process");
+    const processContent = document.createElement("div");
+    processContent.className = "inspector-section-content";
 
-  statusSection.appendChild(statusContent);
-  panel.appendChild(statusSection);
+    const pidRow = createRow("PID", node.pid);
+    processContent.appendChild(pidRow);
+
+    processSection.appendChild(processContent);
+    panel.appendChild(processSection);
+  }
 
   // Publishes section
   if (node.publishes && node.publishes.length > 0) {
