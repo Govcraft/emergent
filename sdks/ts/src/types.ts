@@ -269,3 +269,22 @@ export interface IpcEnvelope {
   payload: unknown;
   expects_reply: boolean;
 }
+
+/**
+ * IPC topology request (direct API, not pub/sub).
+ * @internal
+ */
+export interface IpcTopologyRequest {
+  correlation_id: string;
+}
+
+/**
+ * IPC topology response (direct API, not pub/sub).
+ * @internal
+ */
+export interface IpcTopologyResponse {
+  correlation_id: string;
+  success: boolean;
+  error?: string;
+  primitives?: TopologyPrimitive[];
+}

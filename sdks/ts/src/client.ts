@@ -13,8 +13,9 @@ import {
   type IpcPushNotification,
   type IpcResponse,
   type IpcSubscribeRequest,
+  type IpcTopologyRequest,
+  type IpcTopologyResponse,
   type PrimitiveKind,
-  type TopologyPrimitive,
   type TopologyState,
   type WireMessage,
 } from "./types.ts";
@@ -35,6 +36,7 @@ import {
   MSG_TYPE_REQUEST,
   MSG_TYPE_RESPONSE,
   MSG_TYPE_SUBSCRIBE,
+  MSG_TYPE_TOPOLOGY,
   MSG_TYPE_UNSUBSCRIBE,
   tryDecodeFrame,
 } from "./protocol.ts";
@@ -406,32 +408,19 @@ export class BaseClient {
   /**
    * Get the current topology (all primitives and their state).
    *
-   * Uses pub/sub pattern: publishes `system.request.topology` and
-   * waits for `system.response.topology` with matching correlation_id.
+   * Uses direct IPC TOPOLOGY message type (not pub/sub).
+   * This queries the engine's topology provider directly.
    *
    * @internal
    */
   protected async getTopologyInternal(): Promise<TopologyState> {
     this.#ensureConnected();
 
-    const correlationId = generateCorrelationId("gettopo");
+    const correlationId = generateCorrelationId("topo");
 
-    // Subscribe to response type first
-    const subCorrelationId = generateCorrelationId("sub");
-    const subResponse = await this.#sendRequest<IpcSubscribeRequest>(
-      MSG_TYPE_SUBSCRIBE,
-      {
-        correlation_id: subCorrelationId,
-        message_types: ["system.response.topology"],
-      },
-      subCorrelationId,
-    );
-
-    if (!subResponse.success) {
-      throw new ConnectionError(
-        subResponse.error ?? "Failed to subscribe to response type"
-      );
-    }
+    const request: IpcTopologyRequest = {
+      correlation_id: correlationId,
+    };
 
     // Create promise to wait for response
     const resultPromise = new Promise<TopologyState>((resolve, reject) => {
@@ -447,17 +436,9 @@ export class BaseClient {
       });
     });
 
-    // Create and publish request message
-    const requestData: EmergentMessageData = {
-      id: generateMessageId(),
-      messageType: "system.request.topology",
-      source: this.name,
-      correlationId: correlationId,
-      timestampMs: Date.now(),
-      payload: {},
-    };
-    const requestMessage = new EmergentMessage(requestData);
-    await this.publishInternal(requestMessage);
+    // Send direct topology request
+    const frame = encodeFrame(MSG_TYPE_TOPOLOGY, request);
+    await this.conn!.write(frame);
 
     // Wait for response
     return resultPromise;
@@ -634,12 +615,55 @@ export class BaseClient {
   #handleFrame(msgType: number, payload: unknown): void {
     switch (msgType) {
       case MSG_TYPE_RESPONSE: {
-        const response = payload as IpcResponse;
+        // Handle both object format and array format (MessagePack struct serialization)
+        // Array format: [correlation_id, success, subscribed_types] or [correlation_id, success, error, subscribed_types]
+        let response: IpcResponse;
+        if (Array.isArray(payload)) {
+          // rmp-serde serializes structs as arrays in positional order
+          const arr = payload as unknown[];
+          if (arr.length === 3) {
+            // No error field: [correlation_id, success, subscribed_types/payload]
+            response = {
+              correlation_id: arr[0] as string,
+              success: arr[1] as boolean,
+              payload: arr[2],
+            };
+          } else if (arr.length === 4) {
+            // With error field: [correlation_id, success, error, subscribed_types/payload]
+            response = {
+              correlation_id: arr[0] as string,
+              success: arr[1] as boolean,
+              error: arr[2] as string | undefined,
+              payload: arr[3],
+            };
+          } else {
+            // Unknown format, try to use as-is
+            response = payload as unknown as IpcResponse;
+          }
+        } else {
+          response = payload as IpcResponse;
+        }
         const pending = this.#pendingRequests.get(response.correlation_id);
         if (pending) {
           this.#pendingRequests.delete(response.correlation_id);
           if (pending.timer) clearTimeout(pending.timer);
           pending.resolve(response);
+        }
+        break;
+      }
+
+      case MSG_TYPE_TOPOLOGY: {
+        // Direct topology response from engine
+        const response = payload as IpcTopologyResponse;
+        const pending = this.#pendingTopologyRequests.get(response.correlation_id);
+        if (pending) {
+          this.#pendingTopologyRequests.delete(response.correlation_id);
+          if (pending.timer) clearTimeout(pending.timer);
+          if (response.success) {
+            pending.resolve({ primitives: response.primitives ?? [] });
+          } else {
+            pending.reject(new ConnectionError(response.error ?? "Topology request failed"));
+          }
         }
         break;
       }
@@ -665,24 +689,7 @@ export class BaseClient {
           break;
         }
 
-        // Handle system.response.topology messages
-        if (notification.message_type === "system.response.topology") {
-          const wireMessage = notification.payload as WireMessage;
-          const correlationId = wireMessage.correlation_id;
-          if (correlationId) {
-            const pending = this.#pendingTopologyRequests.get(correlationId);
-            if (pending) {
-              this.#pendingTopologyRequests.delete(correlationId);
-              if (pending.timer) clearTimeout(pending.timer);
-              // Extract primitives from payload
-              const responsePayload = wireMessage.payload as { primitives?: TopologyPrimitive[] };
-              pending.resolve({ primitives: responsePayload?.primitives ?? [] });
-            }
-          }
-          break; // Don't forward to message stream
-        }
-
-        // Handle system.response.subscriptions messages
+        // Handle system.response.subscriptions messages - check for pending internal request first
         if (notification.message_type === "system.response.subscriptions") {
           const wireMessage = notification.payload as WireMessage;
           const correlationId = wireMessage.correlation_id;
@@ -694,9 +701,10 @@ export class BaseClient {
               // Extract subscribes from payload
               const responsePayload = wireMessage.payload as { subscribes?: string[] };
               pending.resolve(responsePayload?.subscribes ?? []);
+              break; // Don't forward internal request responses to stream
             }
           }
-          break; // Don't forward to message stream
+          // Fall through to forward to message stream if no pending internal request
         }
 
         if (this.#messageStream) {

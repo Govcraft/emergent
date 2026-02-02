@@ -29,6 +29,7 @@ export const MSG_TYPE_SUBSCRIBE = 0x06;
 export const MSG_TYPE_UNSUBSCRIBE = 0x07;
 export const MSG_TYPE_DISCOVER = 0x08;
 export const MSG_TYPE_STREAM = 0x09;
+export const MSG_TYPE_TOPOLOGY = 0x0a;
 
 // Serialization formats
 export const FORMAT_JSON = 0x01;

@@ -12,7 +12,7 @@
  */
 
 import { EmergentSink } from "../../../sdks/ts/mod.ts";
-import type { SystemEventPayload, TopologyPrimitive } from "../../../sdks/ts/mod.ts";
+import type { SystemEventPayload } from "../../../sdks/ts/mod.ts";
 import { TopologyGraph } from "./graph.ts";
 
 // Parse command line arguments
@@ -84,11 +84,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Subscriptions for system lifecycle events
+// Subscribe to events for real-time updates
+// Note: system.started.* wildcards require acton-reactive wildcard support
 const SUBSCRIPTIONS = [
-  "system.started.*",
-  "system.stopped.*",
-  "system.error.*",
+  "timer.tick",
+  "filtered.tick",
+  // We no longer need system.response.topology - we use the direct API instead
 ];
 
 // Connect to engine with retry logic
@@ -107,38 +108,46 @@ async function connectWithRetry(
       const sink = await EmergentSink.connect(name);
 
       try {
-        // Try to query current topology to populate initial state
-        // This may fail if the GetTopology IPC routing isn't working
-        try {
-          console.log(`[${name}] Connected, querying current topology...`);
-          const topology = await sink.getTopology();
-          console.log(`[${name}] Got ${topology.primitives.length} primitive(s)`);
-
-          // Populate graph with existing primitives
-          for (const prim of topology.primitives) {
-            graph.handleTopologyPrimitive(prim as TopologyPrimitive);
-          }
-        } catch (topoErr) {
-          console.log(`[${name}] Could not query topology (will rely on events): ${topoErr instanceof Error ? topoErr.message : topoErr}`);
-        }
+        // Query topology directly using the new direct API
+        // Sinks can now query topology without needing to publish!
+        console.log(`[${name}] Querying initial topology...`);
+        const topology = await sink.getTopology();
+        console.log(`[${name}] Got topology: ${topology.primitives.length} primitive(s)`);
+        graph.handleTopologyRefresh(topology.primitives.map(p => ({
+          name: p.name,
+          kind: p.kind,
+          state: p.state,
+          publishes: [...p.publishes],
+          subscribes: [...p.subscribes],
+          pid: p.pid,
+          error: p.error,
+        })));
 
         // Subscribe to real-time updates
         console.log(`[${name}] Subscribing to: ${SUBSCRIPTIONS.join(", ")}`);
         const stream = await sink.subscribe(SUBSCRIPTIONS);
+        console.log(`[${name}] Subscribed, waiting for messages...`);
 
         try {
           for await (const msg of stream) {
-            const payload = msg.payloadAs<SystemEventPayload>();
+            // Log all received messages for debugging
+            console.log(`[${name}] Received: ${msg.messageType} from ${msg.source}`);
+
+            // Broadcast ALL message activity for real-time visualization
+            graph.handleMessage(msg.source, msg.messageType);
 
             if (msg.messageType.startsWith("system.started.")) {
+              const payload = msg.payloadAs<SystemEventPayload>();
               console.log(
                 `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`
               );
               graph.handleStarted(payload);
             } else if (msg.messageType.startsWith("system.stopped.")) {
+              const payload = msg.payloadAs<SystemEventPayload>();
               console.log(`[${name}] Stopped: ${payload.name}`);
               graph.handleStopped(payload);
             } else if (msg.messageType.startsWith("system.error.")) {
+              const payload = msg.payloadAs<SystemEventPayload>();
               console.log(`[${name}] Error: ${payload.name} - ${payload.error}`);
               graph.handleError(payload);
             }
@@ -172,6 +181,9 @@ async function main(): Promise<void> {
   const { port } = parseArgs();
   const name = Deno.env.get("EMERGENT_NAME") ?? "topology-viewer";
   const graph = new TopologyGraph();
+
+  // Note: Engine is now included in topology response from direct API
+  // No need to add hardcoded engine node
 
   console.log(`[${name}] Starting topology viewer on port ${port}`);
 
