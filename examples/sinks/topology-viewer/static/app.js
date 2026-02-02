@@ -1,8 +1,11 @@
 /**
- * Emergent Topology Viewer - D3.js Force-Directed Graph
+ * Emergent Topology Viewer
+ * D3.js Force-Directed Graph with Observatory UI
  */
 
+// =============================================================================
 // State
+// =============================================================================
 let nodes = [];
 let edges = [];
 let simulation = null;
@@ -10,7 +13,7 @@ let svg = null;
 let g = null;
 let linkGroup = null;
 let nodeGroup = null;
-let selectedNodeId = "emergent-engine"; // Default selected node
+let selectedNodeId = "emergent-engine";
 
 // D3 selections
 let linkSelection = null;
@@ -22,6 +25,10 @@ const kindColors = {
   handler: "handler",
   sink: "sink",
 };
+
+// =============================================================================
+// Initialization
+// =============================================================================
 
 /**
  * Initialize the graph SVG and force simulation.
@@ -37,10 +44,10 @@ function initGraph() {
     .attr("height", height)
     .attr("viewBox", [0, 0, width, height]);
 
-  // Define arrow marker
-  svg
-    .append("defs")
-    .append("marker")
+  // Define arrow marker with updated color
+  const defs = svg.append("defs");
+
+  defs.append("marker")
     .attr("id", "arrow")
     .attr("viewBox", "0 -5 10 10")
     .attr("refX", 35)
@@ -50,7 +57,7 @@ function initGraph() {
     .attr("orient", "auto")
     .append("path")
     .attr("d", "M0,-5L10,0L0,5")
-    .attr("fill", "#4a5568");
+    .attr("fill", "#3a3a50");
 
   // Add zoom behavior
   const zoom = d3
@@ -69,19 +76,20 @@ function initGraph() {
   linkGroup = g.append("g").attr("class", "links");
   nodeGroup = g.append("g").attr("class", "nodes");
 
-  // Initialize force simulation
+  // Initialize force simulation with easing parameters
   simulation = d3
     .forceSimulation()
     .force(
       "link",
-      d3
-        .forceLink()
+      d3.forceLink()
         .id((d) => d.id)
         .distance(150)
     )
     .force("charge", d3.forceManyBody().strength(-400))
     .force("center", d3.forceCenter(width / 2, height / 2))
     .force("collision", d3.forceCollide().radius(40))
+    .alphaDecay(0.02)
+    .velocityDecay(0.4)
     .on("tick", ticked);
 
   // Handle window resize
@@ -101,12 +109,36 @@ function getNodeClass(node) {
   return kindColors[node.kind] || "handler";
 }
 
+// =============================================================================
+// Graph Updates
+// =============================================================================
+
 /**
  * Update the graph with new data.
  */
 function updateGraph() {
-  // Update node count
-  document.getElementById("node-count").textContent = `${nodes.length} nodes`;
+  // Update node count display
+  const nodeCountEl = document.getElementById("node-count");
+  if (nodeCountEl) {
+    // Clear and rebuild safely
+    while (nodeCountEl.firstChild) {
+      nodeCountEl.removeChild(nodeCountEl.firstChild);
+    }
+    const valueSpan = document.createElement("span");
+    valueSpan.className = "stat-value";
+    valueSpan.textContent = nodes.length;
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "stat-label";
+    labelSpan.textContent = "nodes";
+    nodeCountEl.appendChild(valueSpan);
+    nodeCountEl.appendChild(labelSpan);
+  }
+
+  // Hide canvas hint when we have nodes
+  const canvasHint = document.getElementById("canvas-hint");
+  if (canvasHint) {
+    canvasHint.classList.toggle("hidden", nodes.length > 0);
+  }
 
   // Create edge data with source/target references
   const edgeData = edges.map((e) => ({
@@ -127,7 +159,7 @@ function updateGraph() {
     .attr("marker-end", "url(#arrow)")
     .attr("stroke-opacity", 0);
 
-  linkEnter.transition().duration(300).attr("stroke-opacity", 0.6);
+  linkEnter.transition().duration(300).attr("stroke-opacity", 0.5);
 
   linkSelection = linkEnter.merge(linkSelection);
 
@@ -146,12 +178,12 @@ function updateGraph() {
   nodeEnter
     .append("circle")
     .attr("r", 24)
-    .attr("stroke", "#1a1a2e")
-    .attr("stroke-opacity", 0.5);
+    .attr("stroke", "#0a0a0f")
+    .attr("stroke-width", 2);
 
   nodeEnter
     .append("text")
-    .attr("dy", "0.35em")
+    .attr("dy", 42)
     .text((d) => d.id);
 
   nodeEnter.transition().duration(300).attr("opacity", 1);
@@ -166,12 +198,8 @@ function updateGraph() {
   // Update all node circles with current class
   nodeSelection.select("circle").attr("class", (d) => getNodeClass(d));
 
-  // Add event handlers for tooltips and selection
-  nodeSelection
-    .on("mouseenter", showTooltip)
-    .on("mousemove", moveTooltip)
-    .on("mouseleave", hideTooltip)
-    .on("click", selectNode);
+  // Add click handler for selection
+  nodeSelection.on("click", selectNode);
 
   // Update selected node visual and details
   updateSelectedNodeVisual();
@@ -181,6 +209,9 @@ function updateGraph() {
   if (selectedNode) {
     updateNodeDetails(selectedNode);
   }
+
+  // Update depth-of-field effect
+  updateDepthOfField();
 
   // Update simulation
   simulation.nodes(nodes);
@@ -194,8 +225,6 @@ function updateGraph() {
 function ticked() {
   if (linkSelection) {
     linkSelection.attr("d", (d) => {
-      const dx = d.target.x - d.source.x;
-      const dy = d.target.y - d.source.y;
       return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
     });
   }
@@ -233,105 +262,9 @@ function drag(simulation) {
     .on("end", dragended);
 }
 
-/**
- * Helper to create a text element and append it to a container.
- */
-function appendTextElement(container, className, text) {
-  const el = document.createElement("div");
-  if (className) el.className = className;
-  el.textContent = text;
-  container.appendChild(el);
-  return el;
-}
-
-/**
- * Show tooltip for a node using safe DOM manipulation.
- */
-function showTooltip(event, d) {
-  const tooltip = document.getElementById("tooltip");
-
-  // Clear existing content safely
-  while (tooltip.firstChild) {
-    tooltip.removeChild(tooltip.firstChild);
-  }
-
-  // Title
-  appendTextElement(tooltip, "tooltip-title", d.id);
-
-  // Kind and status
-  appendTextElement(tooltip, "tooltip-kind", `${d.kind} (${d.status})`);
-
-  // PID if present
-  if (d.pid) {
-    appendTextElement(tooltip, "", `PID: ${d.pid}`);
-  }
-
-  // Publishes section
-  if (d.publishes && d.publishes.length > 0) {
-    const section = document.createElement("div");
-    section.className = "tooltip-section";
-    appendTextElement(section, "tooltip-section-title", "Publishes");
-    const list = document.createElement("div");
-    list.className = "tooltip-list";
-    d.publishes.forEach((p) => {
-      appendTextElement(list, "", p);
-    });
-    section.appendChild(list);
-    tooltip.appendChild(section);
-  }
-
-  // Subscribes section
-  if (d.subscribes && d.subscribes.length > 0) {
-    const section = document.createElement("div");
-    section.className = "tooltip-section";
-    appendTextElement(section, "tooltip-section-title", "Subscribes");
-    const list = document.createElement("div");
-    list.className = "tooltip-list";
-    d.subscribes.forEach((s) => {
-      appendTextElement(list, "", s);
-    });
-    section.appendChild(list);
-    tooltip.appendChild(section);
-  }
-
-  // Error if present
-  if (d.error) {
-    appendTextElement(tooltip, "tooltip-error", d.error);
-  }
-
-  tooltip.classList.add("visible");
-  moveTooltip(event);
-}
-
-/**
- * Move tooltip to follow mouse.
- */
-function moveTooltip(event) {
-  const tooltip = document.getElementById("tooltip");
-  const padding = 15;
-  let x = event.clientX + padding;
-  let y = event.clientY + padding;
-
-  // Keep tooltip on screen
-  const rect = tooltip.getBoundingClientRect();
-  if (x + rect.width > window.innerWidth) {
-    x = event.clientX - rect.width - padding;
-  }
-  if (y + rect.height > window.innerHeight) {
-    y = event.clientY - rect.height - padding;
-  }
-
-  tooltip.style.left = `${x}px`;
-  tooltip.style.top = `${y}px`;
-}
-
-/**
- * Hide tooltip.
- */
-function hideTooltip() {
-  const tooltip = document.getElementById("tooltip");
-  tooltip.classList.remove("visible");
-}
+// =============================================================================
+// Selection & Depth of Field
+// =============================================================================
 
 /**
  * Select a node.
@@ -340,6 +273,130 @@ function selectNode(event, d) {
   selectedNodeId = d.id;
   updateSelectedNodeVisual();
   updateNodeDetails(d);
+  updateDepthOfField();
+}
+
+/**
+ * Get the set of neighbor node IDs for a given node.
+ */
+function getNeighborIds(nodeId) {
+  const neighbors = new Set();
+  edges.forEach((e) => {
+    const sourceId = typeof e.source === "object" ? e.source.id : e.source;
+    const targetId = typeof e.target === "object" ? e.target.id : e.target;
+    if (sourceId === nodeId) {
+      neighbors.add(targetId);
+    } else if (targetId === nodeId) {
+      neighbors.add(sourceId);
+    }
+  });
+  return neighbors;
+}
+
+/**
+ * Update the depth-of-field effect based on selection.
+ */
+function updateDepthOfField() {
+  if (!nodeSelection || !linkSelection) return;
+
+  const neighborIds = getNeighborIds(selectedNodeId);
+
+  const isNodeForeground = (d) => d.id === selectedNodeId || neighborIds.has(d.id);
+
+  const isEdgeForeground = (d) => {
+    const sourceId = typeof d.source === "object" ? d.source.id : d.source;
+    const targetId = typeof d.target === "object" ? d.target.id : d.target;
+    return sourceId === selectedNodeId || targetId === selectedNodeId;
+  };
+
+  // Update node depth classes
+  nodeSelection
+    .classed("foreground", isNodeForeground)
+    .classed("background", (d) => !isNodeForeground(d));
+
+  // Scale circles and text for depth effect
+  nodeSelection.select("circle")
+    .transition()
+    .duration(300)
+    .attr("r", (d) => isNodeForeground(d) ? 24 : 16);
+
+  nodeSelection.select("text")
+    .transition()
+    .duration(300)
+    .attr("dy", (d) => isNodeForeground(d) ? 42 : 30)
+    .style("font-size", (d) => isNodeForeground(d) ? "11px" : "9px");
+
+  // Update edge depth classes
+  linkSelection
+    .classed("foreground", isEdgeForeground)
+    .classed("background", (d) => !isEdgeForeground(d));
+
+  // Reorder nodes so foreground nodes render on top
+  nodeSelection.sort((a, b) => {
+    const aForeground = isNodeForeground(a);
+    const bForeground = isNodeForeground(b);
+    if (aForeground && !bForeground) return 1;
+    if (!aForeground && bForeground) return -1;
+    if (a.id === selectedNodeId) return 1;
+    if (b.id === selectedNodeId) return 1;
+    return 0;
+  });
+
+  // Update force simulation for micro-interactions
+  updateForceSimulation(neighborIds);
+}
+
+/**
+ * Update force simulation for micro-interactions.
+ */
+function updateForceSimulation(neighborIds) {
+  if (!simulation) return;
+
+  const container = document.querySelector("main");
+  const centerX = container.clientWidth / 2;
+  const centerY = container.clientHeight / 2;
+
+  // Phase 1: Brief spread
+  simulation.force("charge").strength(-500);
+  simulation.force("radial", null);
+
+  simulation
+    .alpha(0.3)
+    .alphaTarget(0.1)
+    .restart();
+
+  // Phase 2: Gather/disperse
+  setTimeout(() => {
+    simulation.force("link")
+      .distance((d) => {
+        const sourceId = typeof d.source === "object" ? d.source.id : d.source;
+        const targetId = typeof d.target === "object" ? d.target.id : d.target;
+        const isForeground = sourceId === selectedNodeId || targetId === selectedNodeId;
+        return isForeground ? 100 : 200;
+      });
+
+    simulation.force("charge")
+      .strength((d) => {
+        if (d.id === selectedNodeId) return -200;
+        if (neighborIds.has(d.id)) return -150;
+        return -600;
+      });
+
+    simulation.force("radial", d3.forceRadial((d) => {
+      if (d.id === selectedNodeId) return 0;
+      if (neighborIds.has(d.id)) return 120;
+      return 350;
+    }, centerX, centerY).strength((d) => {
+      if (d.id === selectedNodeId) return 0.8;
+      if (neighborIds.has(d.id)) return 0.15;
+      return 0.1;
+    }));
+
+    simulation
+      .alpha(0.4)
+      .alphaTarget(0)
+      .restart();
+  }, 150);
 }
 
 /**
@@ -352,12 +409,21 @@ function updateSelectedNodeVisual() {
     .classed("selected", (d) => d.id === selectedNodeId);
 }
 
+// =============================================================================
+// Inspector Panel
+// =============================================================================
+
 /**
- * Update the node details panel.
+ * Update the node details/inspector panel.
  */
 function updateNodeDetails(node) {
   const panel = document.getElementById("node-details");
-  if (!panel) return;
+  const nameEl = document.getElementById("inspector-name");
+  const kindEl = document.getElementById("inspector-kind");
+  const iconEl = document.getElementById("inspector-icon");
+  const inspector = document.getElementById("inspector");
+
+  if (!panel || !nameEl || !kindEl || !iconEl) return;
 
   // Clear existing content
   while (panel.firstChild) {
@@ -365,79 +431,151 @@ function updateNodeDetails(node) {
   }
 
   if (!node) {
-    appendTextElement(panel, "details-empty", "Select a node to view details");
+    nameEl.textContent = "—";
+    kindEl.textContent = "—";
+    kindEl.className = "inspector-badge";
+    iconEl.className = "inspector-icon";
+    inspector?.classList.add("hidden");
+
+    const empty = document.createElement("div");
+    empty.className = "inspector-empty";
+    const emptyText = document.createElement("p");
+    emptyText.textContent = "Select a node to view details";
+    empty.appendChild(emptyText);
+    panel.appendChild(empty);
     return;
   }
 
-  // Title
-  appendTextElement(panel, "details-title", node.id);
+  // Show inspector
+  inspector?.classList.remove("hidden");
 
-  // Kind and status
-  const kindSpan = document.createElement("span");
-  kindSpan.className = `details-kind kind-${node.kind}`;
-  kindSpan.textContent = node.kind;
-  panel.appendChild(kindSpan);
+  // Update header
+  nameEl.textContent = node.id;
+  kindEl.textContent = node.kind;
+  kindEl.className = `inspector-badge ${node.kind}`;
+  iconEl.className = `inspector-icon ${node.kind}`;
 
-  // Status
-  appendTextElement(panel, "details-status", `Status: ${node.status}`);
+  // Status section
+  const statusSection = createSection("Status");
+  const statusContent = document.createElement("div");
+  statusContent.className = "inspector-section-content";
 
-  // PID
+  const statusRow = createRow("State", node.status || "unknown");
+  statusContent.appendChild(statusRow);
+
   if (node.pid) {
-    appendTextElement(panel, "details-pid", `PID: ${node.pid}`);
+    const pidRow = createRow("PID", node.pid);
+    statusContent.appendChild(pidRow);
   }
+
+  statusSection.appendChild(statusContent);
+  panel.appendChild(statusSection);
 
   // Publishes section
   if (node.publishes && node.publishes.length > 0) {
-    const section = document.createElement("div");
-    section.className = "details-section";
-    appendTextElement(section, "details-section-title", "Publishes");
+    const pubSection = createSection("Publishes");
     const list = document.createElement("div");
-    list.className = "details-list";
+    list.className = "message-list";
+
     node.publishes.forEach((p) => {
-      appendTextElement(list, "details-item", p);
+      const item = document.createElement("div");
+      item.className = "message-item pub";
+      item.textContent = p;
+      list.appendChild(item);
     });
-    section.appendChild(list);
-    panel.appendChild(section);
+
+    pubSection.appendChild(list);
+    panel.appendChild(pubSection);
   }
 
   // Subscribes section
   if (node.subscribes && node.subscribes.length > 0) {
-    const section = document.createElement("div");
-    section.className = "details-section";
-    appendTextElement(section, "details-section-title", "Subscribes");
+    const subSection = createSection("Subscribes");
     const list = document.createElement("div");
-    list.className = "details-list";
+    list.className = "message-list";
+
     node.subscribes.forEach((s) => {
-      appendTextElement(list, "details-item", s);
+      const item = document.createElement("div");
+      item.className = "message-item sub";
+      item.textContent = s;
+      list.appendChild(item);
     });
-    section.appendChild(list);
-    panel.appendChild(section);
+
+    subSection.appendChild(list);
+    panel.appendChild(subSection);
   }
 
-  // Error if present
+  // Error section
   if (node.error) {
-    appendTextElement(panel, "details-error", node.error);
+    const errorSection = createSection("Error");
+    const errorContent = document.createElement("div");
+    errorContent.className = "inspector-section-content";
+    errorContent.style.color = "var(--color-disconnected)";
+    errorContent.textContent = node.error;
+    errorSection.appendChild(errorContent);
+    panel.appendChild(errorSection);
   }
 }
+
+/**
+ * Create an inspector section.
+ */
+function createSection(title) {
+  const section = document.createElement("div");
+  section.className = "inspector-section";
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "inspector-section-title";
+  titleEl.textContent = title;
+  section.appendChild(titleEl);
+
+  return section;
+}
+
+/**
+ * Create a key-value row.
+ */
+function createRow(label, value) {
+  const row = document.createElement("div");
+  row.className = "inspector-row";
+
+  const labelEl = document.createElement("span");
+  labelEl.className = "inspector-row-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("span");
+  valueEl.className = "inspector-row-value";
+  valueEl.textContent = value;
+
+  row.appendChild(labelEl);
+  row.appendChild(valueEl);
+
+  return row;
+}
+
+// =============================================================================
+// SSE Connection
+// =============================================================================
 
 /**
  * Connect to SSE endpoint with auto-reconnect.
  */
 function connectSSE() {
-  const statusEl = document.getElementById("connection-status");
+  const statusDot = document.getElementById("connection-dot");
+  const statusText = document.getElementById("connection-status");
 
   const eventSource = new EventSource("/events");
 
   eventSource.onopen = () => {
     console.log("[SSE] Connected");
-    statusEl.textContent = "Connected";
-    statusEl.className = "connected";
+    if (statusDot) statusDot.classList.add("connected");
+    if (statusText) statusText.textContent = "Connected";
   };
 
   eventSource.onerror = () => {
     console.log("[SSE] Connection error, reconnecting...");
-    statusEl.textContent = "Reconnecting...";
-    statusEl.className = "disconnected";
+    if (statusDot) statusDot.classList.remove("connected");
+    if (statusText) statusText.textContent = "Reconnecting";
   };
 
   // Handle full topology update
@@ -445,7 +583,6 @@ function connectSSE() {
     const state = JSON.parse(event.data);
     console.log("[SSE] topology:full", state);
 
-    // Preserve existing node positions
     const positionMap = new Map();
     nodes.forEach((n) => {
       if (n.x !== undefined) {
@@ -466,7 +603,6 @@ function connectSSE() {
     const node = JSON.parse(event.data);
     console.log("[SSE] node:added", node);
 
-    // Check if node already exists (shouldn't happen, but be safe)
     const existingIndex = nodes.findIndex((n) => n.id === node.id);
     if (existingIndex >= 0) {
       nodes[existingIndex] = { ...nodes[existingIndex], ...node };
@@ -483,7 +619,6 @@ function connectSSE() {
 
     const existingIndex = nodes.findIndex((n) => n.id === node.id);
     if (existingIndex >= 0) {
-      // Preserve position
       const { x, y, vx, vy, fx, fy } = nodes[existingIndex];
       nodes[existingIndex] = { ...node, x, y, vx, vy, fx, fy };
     } else {
@@ -500,54 +635,50 @@ function connectSSE() {
     updateGraph();
   });
 
-  // Handle message activity - animate edges
+  // Handle message activity
   eventSource.addEventListener("message:activity", (event) => {
     const { source, messageType } = JSON.parse(event.data);
     animateEdge(source, messageType);
   });
 }
 
-// Configuration - topology-api source endpoint
-// This should match the port configured for the topology-api source
+// =============================================================================
+// Refresh & Animation
+// =============================================================================
+
 const TOPOLOGY_API_URL = "http://localhost:8892";
 
 /**
- * Request a topology refresh via the topology-api source.
- * The source publishes system.request.topology, engine responds with
- * system.response.topology, which the topology-viewer sink receives.
+ * Request a topology refresh.
  */
 async function refreshTopology() {
   const refreshBtn = document.getElementById("refresh-btn");
   if (refreshBtn) {
-    refreshBtn.disabled = true;
-    refreshBtn.textContent = "Refreshing...";
+    refreshBtn.classList.add("loading");
   }
 
   try {
     const response = await fetch(`${TOPOLOGY_API_URL}/refresh`);
     if (!response.ok) {
-      console.error("[Refresh] Failed to request topology refresh:", response.statusText);
+      console.error("[Refresh] Failed:", response.statusText);
       return;
     }
 
     const result = await response.json();
     console.log("[Refresh] Request sent:", result);
-    // The actual topology update will come via SSE when the engine responds
   } catch (err) {
     console.error("[Refresh] Error:", err);
-    // If topology-api is not running, fall back to local state
     console.log("[Refresh] Falling back to local state");
     await refreshTopologyLocal();
   } finally {
     if (refreshBtn) {
-      refreshBtn.disabled = false;
-      refreshBtn.textContent = "Refresh";
+      refreshBtn.classList.remove("loading");
     }
   }
 }
 
 /**
- * Fall back to local graph state if topology-api is not available.
+ * Fall back to local state.
  */
 async function refreshTopologyLocal() {
   try {
@@ -560,7 +691,6 @@ async function refreshTopologyLocal() {
     const state = await response.json();
     console.log("[Refresh] Local topology", state);
 
-    // Preserve existing node positions
     const positionMap = new Map();
     nodes.forEach((n) => {
       if (n.x !== undefined) {
@@ -581,17 +711,13 @@ async function refreshTopologyLocal() {
 
 /**
  * Animate an edge to show message activity.
- * Highlights edges from the source node that match the message type.
  */
 function animateEdge(source, messageType) {
   if (!linkSelection) return;
 
-  // Find and animate edges from this source
   linkSelection
     .filter((d) => {
-      // Match edges from this source
       if (d.source.id !== source && d.source !== source) return false;
-      // Check if message type matches the edge's message type
       return d.messageType === messageType || matchesPattern(messageType, d.messageType);
     })
     .classed("active", true)
@@ -600,14 +726,14 @@ function animateEdge(source, messageType) {
     .attr("stroke-opacity", 1)
     .transition()
     .duration(500)
-    .attr("stroke-opacity", 0.6)
+    .attr("stroke-opacity", 0.5)
     .on("end", function () {
       d3.select(this).classed("active", false);
     });
 }
 
 /**
- * Check if a message type matches a pattern (client-side version).
+ * Check if a message type matches a pattern.
  */
 function matchesPattern(messageType, pattern) {
   if (pattern === "*") return true;
@@ -620,12 +746,14 @@ function matchesPattern(messageType, pattern) {
   return regex.test(messageType);
 }
 
-// Initialize on page load
+// =============================================================================
+// Initialize
+// =============================================================================
+
 document.addEventListener("DOMContentLoaded", () => {
   initGraph();
   connectSSE();
 
-  // Wire up refresh button
   const refreshBtn = document.getElementById("refresh-btn");
   if (refreshBtn) {
     refreshBtn.addEventListener("click", refreshTopology);

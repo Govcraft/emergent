@@ -3,49 +3,102 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Emergent Topology Viewer</title>
+  <title>Emergent — Topology</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
+  <!-- Ambient background effects -->
+  <div class="ambient-glow"></div>
+  <div class="grid-overlay"></div>
+
+  <!-- Minimal header bar -->
   <header>
-    <h1>Emergent Topology</h1>
-    <div class="status">
-      <span id="connection-status" class="disconnected">Disconnected</span>
-      <span id="node-count">0 nodes</span>
-      <button id="refresh-btn" class="refresh-btn" title="Refresh topology">Refresh</button>
+    <div class="brand">
+      <div class="brand-mark">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <circle cx="10" cy="10" r="3" fill="currentColor"/>
+          <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/>
+          <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="0.5" opacity="0.5"/>
+        </svg>
+      </div>
+      <span class="brand-name">Emergent</span>
+      <span class="brand-divider">/</span>
+      <span class="brand-context">Topology</span>
+    </div>
+
+    <div class="header-controls">
+      <div class="connection-indicator">
+        <span class="connection-dot" id="connection-dot"></span>
+        <span class="connection-text" id="connection-status">Connecting</span>
+      </div>
+      <div class="stat-pill" id="node-count">
+        <span class="stat-value">0</span>
+        <span class="stat-label">nodes</span>
+      </div>
+      <button id="refresh-btn" class="icon-btn" title="Refresh topology">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M2 8a6 6 0 0 1 10.472-4M14 8a6 6 0 0 1-10.472 4"/>
+          <path d="M12 2v4h-4M4 14v-4h4"/>
+        </svg>
+      </button>
     </div>
   </header>
 
+  <!-- Main visualization canvas -->
   <main>
     <svg id="graph"></svg>
+
+    <!-- Floating info when nothing selected -->
+    <div class="canvas-hint" id="canvas-hint">
+      <span>Click a node to inspect</span>
+    </div>
   </main>
 
-  <aside class="sidebar">
-    <div class="node-details-panel">
-      <h3>Node Details</h3>
-      <div id="node-details">
-        <span class="details-empty">Select a node to view details</span>
+  <!-- Node inspector panel - slides in from right -->
+  <aside class="inspector" id="inspector">
+    <div class="inspector-header">
+      <div class="inspector-icon" id="inspector-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <circle cx="8" cy="8" r="6"/>
+        </svg>
+      </div>
+      <div class="inspector-title">
+        <h2 id="inspector-name">—</h2>
+        <span class="inspector-badge" id="inspector-kind">—</span>
       </div>
     </div>
-    <div class="legend">
-      <h3>Legend</h3>
-      <div class="legend-item">
-        <span class="node-dot source"></span>
-        <span>Source</span>
-      </div>
-      <div class="legend-item">
-        <span class="node-dot handler"></span>
-        <span>Handler</span>
-      </div>
-      <div class="legend-item">
-        <span class="node-dot sink"></span>
-        <span>Sink</span>
+
+    <div class="inspector-body" id="node-details">
+      <div class="inspector-empty">
+        <p>Select a node to view details</p>
       </div>
     </div>
   </aside>
 
-  <div id="tooltip" class="tooltip"></div>
+  <!-- Floating legend - bottom left -->
+  <div class="legend">
+    <div class="legend-item">
+      <span class="legend-dot source"></span>
+      <span class="legend-label">Source</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot handler"></span>
+      <span class="legend-label">Handler</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot sink"></span>
+      <span class="legend-label">Sink</span>
+    </div>
+  </div>
+
+  <!-- Keyboard hint -->
+  <div class="keyboard-hint">
+    <kbd>Scroll</kbd> to zoom · <kbd>Drag</kbd> to pan
+  </div>
 
   <script src="/app.js"></script>
 </body>
