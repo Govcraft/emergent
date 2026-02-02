@@ -3,8 +3,7 @@
   "version": "0.1.0",
   "exports": "./mod.ts",
   "imports": {
-    "@msgpack/msgpack": "npm:@msgpack/msgpack@3.0.0",
-    "typeid-js": "npm:typeid-js@1.2.0"
+    "@msgpack/msgpack": "npm:@msgpack/msgpack@3.0.0"
   },
   "publish": {
     "include": ["mod.ts", "src/**/*.ts", "README.md", "LICENSE"],
