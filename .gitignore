@@ -21,6 +21,8 @@ Thumbs.db
 
 # Hidden directories - ignore all except explicitly allowed
 .**/
+# Allow GitHub Actions workflows
+!.github/
 # Worktrees directory for isolated development
 .worktrees/
 
