@@ -32,6 +32,9 @@ socket_path = "auto"
 # "json" - Human-readable, useful for debugging
 wire_format = "messagepack"
 
+# HTTP API port for topology queries (0 to disable)
+# api_port = 8891
+
 # =============================================================================
 # Event Store Settings
 # =============================================================================

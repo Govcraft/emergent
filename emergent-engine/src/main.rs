@@ -369,7 +369,7 @@ async fn main() -> Result<()> {
     let event_store = Arc::new(init_event_stores(&config)?);
 
     // Initialize process manager
-    let process_manager = ProcessManager::new(socket_path.clone());
+    let process_manager = ProcessManager::new(socket_path.clone(), config.engine.api_port);
 
     // Create IPC configuration with our socket path
     let ipc_config = create_ipc_config(&socket_path);
@@ -533,64 +533,70 @@ async fn main() -> Result<()> {
 
     // Start HTTP API server for direct topology queries
     // This allows handlers to query topology without going through pub/sub
-    let pm_for_http = process_manager.clone();
-    tokio::spawn(async move {
-        let app = Router::new().route(
-            "/api/topology",
-            get(move || {
-                let pm = pm_for_http.clone();
-                async move {
-                    // Build the engine primitive
-                    let engine_primitive = TopologyPrimitive {
-                        name: "emergent-engine".to_string(),
-                        kind: "source".to_string(),
-                        state: "running".to_string(),
-                        publishes: vec![
-                            "system.started.*".to_string(),
-                            "system.stopped.*".to_string(),
-                            "system.error.*".to_string(),
-                            "system.shutdown".to_string(),
-                        ],
-                        subscribes: vec![],
-                        pid: Some(std::process::id()),
-                        error: None,
-                    };
+    let api_port = config.engine.api_port;
+    if config.engine.api_enabled() {
+        let pm_for_http = process_manager.clone();
+        tokio::spawn(async move {
+            let app = Router::new().route(
+                "/api/topology",
+                get(move || {
+                    let pm = pm_for_http.clone();
+                    async move {
+                        // Build the engine primitive
+                        let engine_primitive = TopologyPrimitive {
+                            name: "emergent-engine".to_string(),
+                            kind: "source".to_string(),
+                            state: "running".to_string(),
+                            publishes: vec![
+                                "system.started.*".to_string(),
+                                "system.stopped.*".to_string(),
+                                "system.error.*".to_string(),
+                                "system.shutdown".to_string(),
+                            ],
+                            subscribes: vec![],
+                            pid: Some(std::process::id()),
+                            error: None,
+                        };
 
-                    // Get all registered primitives
-                    let all_primitives = pm.list_all().await;
+                        // Get all registered primitives
+                        let all_primitives = pm.list_all().await;
 
-                    let mut primitives: Vec<TopologyPrimitive> =
-                        Vec::with_capacity(all_primitives.len() + 1);
-                    primitives.push(engine_primitive);
-                    primitives.extend(all_primitives.into_iter().map(|p| TopologyPrimitive {
-                        name: p.name,
-                        kind: p.kind.to_string().to_lowercase(),
-                        state: p.state.to_string().to_lowercase(),
-                        publishes: p.publishes,
-                        subscribes: p.subscribes,
-                        pid: p.pid,
-                        error: p.error,
-                    }));
+                        let mut primitives: Vec<TopologyPrimitive> =
+                            Vec::with_capacity(all_primitives.len() + 1);
+                        primitives.push(engine_primitive);
+                        primitives.extend(all_primitives.into_iter().map(|p| TopologyPrimitive {
+                            name: p.name,
+                            kind: p.kind.to_string().to_lowercase(),
+                            state: p.state.to_string().to_lowercase(),
+                            publishes: p.publishes,
+                            subscribes: p.subscribes,
+                            pid: p.pid,
+                            error: p.error,
+                        }));
 
-                    info!("HTTP /api/topology: {} primitive(s)", primitives.len());
+                        info!("HTTP /api/topology: {} primitive(s)", primitives.len());
 
-                    Json(TopologyResponsePayload { primitives })
+                        Json(TopologyResponsePayload { primitives })
+                    }
+                }),
+            );
+
+            let bind_addr = format!("127.0.0.1:{api_port}");
+            match TcpListener::bind(&bind_addr).await {
+                Ok(listener) => {
+                    info!("HTTP API server listening on http://{}", bind_addr);
+                    if let Err(e) = axum::serve(listener, app).await {
+                        error!("HTTP API server error: {}", e);
+                    }
                 }
-            }),
-        );
-
-        match TcpListener::bind("127.0.0.1:8891").await {
-            Ok(listener) => {
-                info!("HTTP API server listening on http://127.0.0.1:8891");
-                if let Err(e) = axum::serve(listener, app).await {
-                    error!("HTTP API server error: {}", e);
+                Err(e) => {
+                    warn!("Failed to bind HTTP API server to {}: {}", bind_addr, e);
                 }
             }
-            Err(e) => {
-                error!("Failed to bind HTTP API server to 127.0.0.1:8891: {}", e);
-            }
-        }
-    });
+        });
+    } else {
+        info!("HTTP API server disabled (api_port = 0)");
+    }
 
     // Collect enabled primitives
     let enabled_sinks: Vec<_> = config.sinks.iter().filter(|s| s.enabled).collect();

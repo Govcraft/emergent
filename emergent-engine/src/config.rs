@@ -50,6 +50,10 @@ pub struct EngineConfig {
     /// Wire format for IPC communication.
     #[serde(default)]
     pub wire_format: WireFormat,
+
+    /// HTTP API port for topology queries. Set to 0 to disable.
+    #[serde(default = "default_api_port")]
+    pub api_port: u16,
 }
 
 fn default_engine_name() -> String {
@@ -60,12 +64,25 @@ fn default_socket_path() -> String {
     "auto".to_string()
 }
 
+const fn default_api_port() -> u16 {
+    8891
+}
+
+impl EngineConfig {
+    /// Returns whether the HTTP API server is enabled.
+    #[must_use]
+    pub fn api_enabled(&self) -> bool {
+        self.api_port != 0
+    }
+}
+
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             name: default_engine_name(),
             socket_path: default_socket_path(),
             wire_format: WireFormat::default(),
+            api_port: default_api_port(),
         }
     }
 }
@@ -555,6 +572,7 @@ name = "test"
 name = "emergent"
 socket_path = "auto"
 wire_format = "messagepack"
+api_port = 9000
 
 [event_store]
 json_log_dir = "./logs"
@@ -583,6 +601,7 @@ subscribes = ["timer.filtered"]
 "#;
 
         let config = EmergentConfig::parse(toml)?;
+        assert_eq!(config.engine.api_port, 9000);
         assert_eq!(config.sources.len(), 1);
         assert_eq!(config.handlers.len(), 1);
         assert_eq!(config.sinks.len(), 1);
@@ -708,7 +727,7 @@ wire_format = "messagepack"
             engine: EngineConfig {
                 name: "test-engine".to_string(),
                 socket_path: "/custom/path.sock".to_string(),
-                wire_format: WireFormat::default(),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -728,7 +747,7 @@ wire_format = "messagepack"
             engine: EngineConfig {
                 name: "my-engine".to_string(),
                 socket_path: "auto".to_string(),
-                wire_format: WireFormat::default(),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -744,7 +763,7 @@ wire_format = "messagepack"
             engine: EngineConfig {
                 name: "fallback-engine".to_string(),
                 socket_path: "auto".to_string(),
-                wire_format: WireFormat::default(),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -911,5 +930,43 @@ enabled = true
         let path = Path::new("nonexistent_xyz_12345");
         let result = resolve_command_path(path);
         assert_eq!(result, PathBuf::from("nonexistent_xyz_12345"));
+    }
+
+    #[test]
+    fn test_default_api_port() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[engine]
+name = "test"
+"#;
+        let config = EmergentConfig::parse(toml)?;
+        assert_eq!(config.engine.api_port, 8891);
+        assert!(config.engine.api_enabled());
+        Ok(())
+    }
+
+    #[test]
+    fn test_custom_api_port() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[engine]
+name = "test"
+api_port = 9000
+"#;
+        let config = EmergentConfig::parse(toml)?;
+        assert_eq!(config.engine.api_port, 9000);
+        assert!(config.engine.api_enabled());
+        Ok(())
+    }
+
+    #[test]
+    fn test_api_port_disabled() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[engine]
+name = "test"
+api_port = 0
+"#;
+        let config = EmergentConfig::parse(toml)?;
+        assert_eq!(config.engine.api_port, 0);
+        assert!(!config.engine.api_enabled());
+        Ok(())
     }
 }

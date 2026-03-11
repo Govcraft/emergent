@@ -157,6 +157,8 @@ pub struct PrimitiveActorConfig {
     pub env: HashMap<String, String>,
     /// Socket path for IPC connections.
     pub socket_path: PathBuf,
+    /// HTTP API port for topology queries.
+    pub api_port: u16,
 }
 
 /// Build and configure a primitive actor.
@@ -190,6 +192,7 @@ pub fn build_primitive_actor(
     let after_start_args = args;
     let after_start_env = env;
     let after_start_socket = socket_path;
+    let after_start_api_port = config.api_port;
 
     actor
         .after_start(move |actor| {
@@ -202,6 +205,7 @@ pub fn build_primitive_actor(
             let args = after_start_args.clone();
             let env = after_start_env.clone();
             let socket_path = after_start_socket.clone();
+            let api_port = after_start_api_port;
 
             async move {
                 // Build the command
@@ -216,6 +220,7 @@ pub fn build_primitive_actor(
                 // Add standard environment variables
                 cmd.env("EMERGENT_SOCKET", socket_path.to_string_lossy().as_ref());
                 cmd.env("EMERGENT_NAME", &name);
+                cmd.env("EMERGENT_API_PORT", api_port.to_string());
 
                 // Isolate child from terminal SIGINT - only engine handles Ctrl+C
                 // Children get their own process group so Ctrl+C only affects the engine

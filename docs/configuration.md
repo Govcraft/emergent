@@ -26,6 +26,7 @@ The `path` field for each primitive points to any executable: a compiled binary,
 name = "emergent"
 socket_path = "auto"
 wire_format = "messagepack"
+# api_port = 8891  # HTTP API port (0 to disable)
 
 # =============================================================================
 # Event Store Settings
@@ -81,6 +82,7 @@ subscribes = ["timer.filtered", "filter.processed", "system.started.*"]
 name = "emergent"              # Instance name (used in socket path)
 socket_path = "auto"           # Socket location
 wire_format = "messagepack"    # IPC wire format
+api_port = 8891                # HTTP API port (0 to disable)
 ```
 
 | Option | Default | Description |
@@ -88,6 +90,7 @@ wire_format = "messagepack"    # IPC wire format
 | `name` | `"emergent"` | Engine instance name |
 | `socket_path` | `"auto"` | `"auto"` for XDG-compliant path, or explicit path like `"/tmp/emergent.sock"` |
 | `wire_format` | `"messagepack"` | `"messagepack"` (binary) or `"json"` (human-readable) |
+| `api_port` | `8891` | HTTP API port for topology queries. Set to `0` to disable. |
 
 **Socket path resolution:**
 
@@ -198,6 +201,7 @@ The engine sets these environment variables for each primitive:
 |----------|-------------|
 | `EMERGENT_SOCKET` | Path to Unix socket for IPC |
 | `EMERGENT_NAME` | Primitive's configured name |
+| `EMERGENT_API_PORT` | HTTP API port for topology queries |
 
 Primitives use these to connect:
 

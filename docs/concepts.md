@@ -128,6 +128,7 @@ The SDK abstracts this entirely. You call `source.publish()` or `sink.subscribe(
 |----------|---------|
 | `EMERGENT_SOCKET` | Path to Unix socket |
 | `EMERGENT_NAME` | Primitive's configured name |
+| `EMERGENT_API_PORT` | HTTP API port for topology queries |
 
 ## System Events
 
@@ -144,7 +145,7 @@ Subscribe to `system.started.*` to monitor all primitive startups.
 
 ## Topology
 
-The engine exposes an HTTP API at `127.0.0.1:8891/api/topology` that returns the live state of all running primitives—their names, types, subscriptions, publications, PIDs, and status. This enables monitoring dashboards, health checks, and debugging tools without going through the pub/sub layer.
+The engine exposes an HTTP API for topology queries that returns the live state of all running primitives—their names, types, subscriptions, publications, PIDs, and status. By default it listens on `127.0.0.1:8891`; the port is configurable via `api_port` in the engine config (set to `0` to disable). This enables monitoring dashboards, health checks, and debugging tools without going through the pub/sub layer.
 
 For event-driven topology updates, primitives can publish `system.request.topology` and subscribe to `system.response.topology`. See the [Topology](topology.md) reference for details.
 

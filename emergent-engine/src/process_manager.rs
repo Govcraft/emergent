@@ -60,6 +60,8 @@ struct ActorEntry {
 pub struct ProcessManager {
     /// Socket path for clients to connect to.
     socket_path: PathBuf,
+    /// HTTP API port for topology queries.
+    api_port: u16,
     /// Actor handles by name.
     actors: Arc<RwLock<HashMap<String, ActorEntry>>>,
 }
@@ -67,9 +69,10 @@ pub struct ProcessManager {
 impl ProcessManager {
     /// Create a new process manager.
     #[must_use]
-    pub fn new(socket_path: PathBuf) -> Self {
+    pub fn new(socket_path: PathBuf, api_port: u16) -> Self {
         Self {
             socket_path,
+            api_port,
             actors: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -140,6 +143,7 @@ impl ProcessManager {
             args: args.to_vec(),
             env: env.clone(),
             socket_path: self.socket_path.clone(),
+            api_port: self.api_port,
         };
 
         // Build the actor (does not start it yet)
@@ -415,13 +419,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_manager_creation() {
-        let manager = ProcessManager::new(PathBuf::from("/tmp/test.sock"));
+        let manager = ProcessManager::new(PathBuf::from("/tmp/test.sock"), 8891);
         assert_eq!(manager.count().await, 0);
     }
 
     #[tokio::test]
     async fn test_list_empty() {
-        let manager = ProcessManager::new(PathBuf::from("/tmp/test.sock"));
+        let manager = ProcessManager::new(PathBuf::from("/tmp/test.sock"), 8891);
         let primitives = manager.list_all().await;
         assert!(primitives.is_empty());
     }

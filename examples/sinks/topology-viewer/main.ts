@@ -108,9 +108,10 @@ async function connectWithRetry(
 
       try {
         // Query current topology via engine HTTP API to populate initial state
+        const topoApiPort = Deno.env.get("EMERGENT_API_PORT") ?? "8891";
         try {
           console.log(`[${name}] Connected, querying current topology via HTTP API...`);
-          const resp = await fetch("http://127.0.0.1:8891/api/topology");
+          const resp = await fetch(`http://127.0.0.1:${topoApiPort}/api/topology`);
           const data = await resp.json() as { primitives: TopologyPrimitive[] };
           console.log(`[${name}] Got ${data.primitives.length} primitive(s)`);
 

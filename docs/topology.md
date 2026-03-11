@@ -4,7 +4,7 @@ The engine exposes the live topology of all running primitives through an HTTP A
 
 ## HTTP API
 
-The engine starts an HTTP server on `127.0.0.1:8891` automatically. No configuration is required.
+The engine starts an HTTP server on `127.0.0.1:8891` by default. The port is configurable via `api_port` in the `[engine]` section of your config file. Set `api_port = 0` to disable the HTTP API entirely.
 
 ### GET /api/topology
 
