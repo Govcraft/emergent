@@ -255,4 +255,4 @@ let stream = handler.subscribe(topics).await?;
 | `disconnect()` | Graceful disconnection |
 | `subscribed_types()` | Get current subscriptions |
 
-See also: [Sources](sources.md), [Sinks](sinks.md), [Rust SDK](../sdks/rust.md)
+See also: [Sources](sources.md), [Sinks](sinks.md), [Rust SDK](../sdks/rust.md), [TypeScript SDK](../sdks/typescript.md), [Python SDK](../sdks/python.md)

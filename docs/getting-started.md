@@ -411,7 +411,7 @@ emergent scaffold
 ```
 
 The wizard prompts for:
-1. **Language** - Rust (TypeScript and Python coming soon)
+1. **Language** - Rust, TypeScript, or Python
 2. **Primitive type** - Source, Handler, or Sink
 3. **Name** - Your primitive's name (snake_case)
 4. **Message types** - What to subscribe to and/or publish
@@ -562,7 +562,7 @@ Create a TypeScript Sink using Deno:
 ```typescript
 #!/usr/bin/env -S deno run --allow-env --allow-net=unix
 
-import { runSink } from "./sdks/ts/mod.ts";
+import { runSink } from "jsr:@govcraft/emergent";
 
 await runSink("ts_printer", ["my_timer.doubled"], async (msg) => {
   const { original, doubled } = msg.payloadAs<{ original: number; doubled: number }>();

@@ -179,4 +179,4 @@ for event in rx {
 | `disconnect()` | Graceful disconnection |
 | `name()` | Get this source's name |
 
-See also: [Handlers](handlers.md), [Sinks](sinks.md), [Rust SDK](../sdks/rust.md)
+See also: [Handlers](handlers.md), [Sinks](sinks.md), [Rust SDK](../sdks/rust.md), [TypeScript SDK](../sdks/typescript.md), [Python SDK](../sdks/python.md)

@@ -4,20 +4,12 @@ The `emergent-client` crate provides the Rust SDK for building Sources, Handlers
 
 ## Installation
 
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-emergent-client = { path = "../emergent/sdks/rust" }
-tokio = { version = "1", features = ["full"] }
-serde_json = "1"
-```
-
-Or with cargo:
-
 ```bash
 cargo add emergent-client tokio serde_json --features tokio/full
 ```
+
+- **crates.io**: [emergent-client](https://crates.io/crates/emergent-client)
+- **docs.rs**: [emergent-client](https://docs.rs/emergent-client)
 
 ## Core Types
 
@@ -349,6 +341,8 @@ let from_msgpack = EmergentMessage::from_msgpack(&msgpack_bytes)?;
 
 ## See Also
 
+- [TypeScript SDK](typescript.md) - JSR: [@govcraft/emergent](https://jsr.io/@govcraft/emergent)
+- [Python SDK](python.md) - PyPI: [emergent-client](https://pypi.org/project/emergent-client/)
 - [Sources](../primitives/sources.md) - Building data ingress
 - [Handlers](../primitives/handlers.md) - Building transformations
 - [Sinks](../primitives/sinks.md) - Building data egress

@@ -282,4 +282,4 @@ This connects, queries configured subscriptions, and returns the stream.
 | `discover()` | Query available message types |
 | `disconnect()` | Graceful disconnection |
 
-See also: [Sources](sources.md), [Handlers](handlers.md), [Rust SDK](../sdks/rust.md)
+See also: [Sources](sources.md), [Handlers](handlers.md), [Rust SDK](../sdks/rust.md), [TypeScript SDK](../sdks/typescript.md), [Python SDK](../sdks/python.md)
