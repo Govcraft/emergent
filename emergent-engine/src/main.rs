@@ -26,6 +26,12 @@ use emergent_engine::scaffold;
 #[command(version, about, long_about = None)]
 #[command(after_long_help = "\
 Examples:
+  # Initialize a new config file
+  emergent init
+
+  # Initialize with a custom engine name
+  emergent init --name my-pipeline
+
   # Start the engine with a config file
   emergent --config ./config/emergent.toml
 
@@ -46,11 +52,23 @@ Examples:
 ")]
 struct Args {
     /// Path to configuration file
-    #[arg(short, long, value_name = "FILE", global = true, help_heading = "Global Options")]
+    #[arg(
+        short,
+        long,
+        value_name = "FILE",
+        global = true,
+        help_heading = "Global Options"
+    )]
     config: Option<PathBuf>,
 
     /// Override the socket path from config
-    #[arg(short, long, value_name = "PATH", global = true, help_heading = "Global Options")]
+    #[arg(
+        short,
+        long,
+        value_name = "PATH",
+        global = true,
+        help_heading = "Global Options"
+    )]
     socket: Option<PathBuf>,
 
     /// Run in verbose mode (debug logging)
@@ -65,6 +83,8 @@ struct Args {
 /// Available subcommands
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Initialize a new emergent.toml configuration file
+    Init(emergent_engine::init::InitArgs),
     /// Generate a new primitive (source, handler, or sink)
     Scaffold(scaffold::cli::ScaffoldArgs),
     /// Manage marketplace primitives
@@ -213,8 +233,8 @@ fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
         if !p.exists() {
             anyhow::bail!(
                 "Configuration file not found: {}\n\n\
-                 To get started, create a config file or use scaffold:\n  \
-                 emergent scaffold\n  \
+                 To get started, create a config file:\n  \
+                 emergent init\n  \
                  emergent --config path/to/emergent.toml",
                 p.display()
             );
@@ -235,8 +255,8 @@ fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
                      Searched:\n  \
                      ./emergent.toml\n  \
                      {}\n\n\
-                     To get started, create a config file or use scaffold:\n  \
-                     emergent scaffold\n  \
+                     To get started, create a config file:\n  \
+                     emergent init\n  \
                      emergent --config path/to/emergent.toml",
                     xdg_config.display()
                 );
@@ -246,8 +266,8 @@ fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
                 "No configuration file found.\n\n\
                  Searched:\n  \
                  ./emergent.toml\n\n\
-                 To get started, create a config file or use scaffold:\n  \
-                 emergent scaffold\n  \
+                 To get started, create a config file:\n  \
+                 emergent init\n  \
                  emergent --config path/to/emergent.toml"
             );
         }
@@ -279,8 +299,11 @@ async fn check_and_cleanup_stale_socket(socket_path: &Path) -> Result<()> {
     }
 
     let connect_timeout = std::time::Duration::from_secs(2);
-    let connect_result =
-        tokio::time::timeout(connect_timeout, tokio::net::UnixStream::connect(socket_path)).await;
+    let connect_result = tokio::time::timeout(
+        connect_timeout,
+        tokio::net::UnixStream::connect(socket_path),
+    )
+    .await;
 
     match connect_result {
         Ok(Ok(_stream)) => {
@@ -336,6 +359,10 @@ async fn main() -> Result<()> {
     // Handle subcommands
     if let Some(command) = args.command {
         match command {
+            Command::Init(init_args) => {
+                emergent_engine::init::execute(init_args).await?;
+                return Ok(());
+            }
             Command::Scaffold(scaffold_args) => {
                 scaffold::run_scaffold(scaffold_args).await?;
                 return Ok(());
@@ -703,7 +730,10 @@ mod tests {
         assert!(socket_path.exists());
 
         check_and_cleanup_stale_socket(&socket_path).await?;
-        assert!(!socket_path.exists(), "stale socket should have been removed");
+        assert!(
+            !socket_path.exists(),
+            "stale socket should have been removed"
+        );
         Ok(())
     }
 

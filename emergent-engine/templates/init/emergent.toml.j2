@@ -1,0 +1,84 @@
+# Emergent Engine Configuration
+#
+# This configuration file defines the engine settings and the primitives
+# (sources, handlers, sinks) that make up your event-driven workflow.
+#
+# Usage:
+#   emergent --config ./emergent.toml
+#
+# For more information, see: https://github.com/GovCraft/emergent
+
+# =============================================================================
+# Engine Settings
+# =============================================================================
+
+[engine]
+# Name of this engine instance (used in socket path and logging)
+name = "{{ name }}"
+
+# Socket path for IPC connections
+# Use "auto" for XDG-compliant automatic path (recommended)
+# Or specify an explicit path like "/tmp/emergent.sock"
+socket_path = "auto"
+
+# Wire format for IPC communication
+# "messagepack" - Binary format, more efficient (default)
+# "json" - Human-readable, useful for debugging
+wire_format = "messagepack"
+
+# HTTP API port for topology queries (0 to disable)
+# api_port = 8891
+
+# =============================================================================
+# Event Store Settings
+# =============================================================================
+
+[event_store]
+# Directory for JSON log files (append-only, one file per day)
+json_log_dir = "./logs"
+
+# Path to SQLite database for structured event storage and replay
+sqlite_path = "./events.db"
+
+# How many days to retain events before cleanup
+retention_days = 30
+
+# =============================================================================
+# Sources
+# =============================================================================
+# Sources are ingress components that publish messages into the system.
+# They can only publish (fire-and-forget), not subscribe.
+#
+# [[sources]]
+# name = "my_source"
+# path = "./target/release/my_source"
+# args = []
+# enabled = true
+# publishes = ["my_source.output"]
+
+# =============================================================================
+# Handlers
+# =============================================================================
+# Handlers subscribe to messages, process them, and publish new messages.
+# They form the processing pipeline of your workflow.
+#
+# [[handlers]]
+# name = "my_handler"
+# path = "./target/release/my_handler"
+# args = []
+# enabled = true
+# subscribes = ["my_source.output"]
+# publishes = ["my_handler.processed"]
+
+# =============================================================================
+# Sinks
+# =============================================================================
+# Sinks are egress components that consume messages from the system.
+# They can only subscribe, not publish.
+#
+# [[sinks]]
+# name = "my_sink"
+# path = "./target/release/my_sink"
+# args = []
+# enabled = true
+# subscribes = ["my_handler.processed", "system.started.*", "system.stopped.*", "system.error.*"]

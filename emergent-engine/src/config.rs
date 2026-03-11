@@ -922,7 +922,10 @@ enabled = true
     fn test_resolve_command_path_bare_resolves() {
         // "true" is a standard Unix command that should be on PATH
         let result = resolve_command_path(Path::new("true"));
-        assert!(result.is_absolute(), "Expected absolute path, got: {result:?}");
+        assert!(
+            result.is_absolute(),
+            "Expected absolute path, got: {result:?}"
+        );
     }
 
     #[test]
