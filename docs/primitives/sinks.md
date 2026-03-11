@@ -48,11 +48,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```toml
 [[sinks]]
 name = "my_sink"
-path = "./target/release/my-sink"
+path = "/path/to/my-sink"
 args = ["--output", "/var/log/events.log"]
 enabled = true
 subscribes = ["event.processed", "system.started.*", "system.error.*"]
 ```
+
+The `path` can be any executable: a compiled Rust binary, a script run through an interpreter (`"deno"`, `"python3"`), or a script with a shebang line.
 
 | Field | Required | Description |
 |-------|----------|-------------|

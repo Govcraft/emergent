@@ -4,13 +4,13 @@
 
 ## Abstract
 
-Building distributed workflows requires coordinating processes that emit, transform, and consume events—typically involving message brokers, orchestrators, and complex infrastructure. Developers need a simpler path. Emergent reduces workflow engines to three primitives: Sources (publish events), Handlers (transform events), and Sinks (consume events). Unlike traditional engines requiring infrastructure setup, Emergent runs as a single binary managing components as child processes over Unix sockets. This guide shows you how to build your first pipeline, from running the example to writing your own components in Rust, TypeScript, or Python. **You can start processing events with zero infrastructure and learn patterns that scale from development to production.**
+Building distributed workflows requires coordinating processes that emit, transform, and consume events—typically involving message brokers, orchestrators, and complex infrastructure. Developers need a simpler path. Emergent reduces workflow engines to three primitives: Sources (publish events), Handlers (transform events), and Sinks (consume events). Unlike traditional engines requiring infrastructure setup, Emergent runs as a single pre-built binary managing components as child processes over Unix sockets. Download the binary, install the SDK for your language (Rust, TypeScript, or Python), and start building. **You can start processing events with zero infrastructure—no Rust toolchain required—and learn patterns that scale from development to production.**
 
 ---
 
 ## 1. Introduction: Three Primitives, Zero Infrastructure
 
-Most workflow engines force you to think about infrastructure before writing code. You install message brokers, configure databases, deploy orchestrators, then finally write your business logic. Emergent reverses this: you write async functions that publish or consume messages, then point a single binary at your configuration file. The engine handles process management, message routing, and graceful shutdown.
+Most workflow engines force you to think about infrastructure before writing code. You install message brokers, configure databases, deploy orchestrators, then finally write your business logic. Emergent reverses this: download a single binary, write async functions in any supported language (Rust, TypeScript, or Python) that publish or consume messages, then point the binary at your configuration file. The engine handles process management, message routing, and graceful shutdown.
 
 This approach works because Emergent constrains your options. Every component you write fits into one of three categories:
 
@@ -24,24 +24,100 @@ These three primitives define all possible workflows. A Source cannot receive me
 
 ---
 
-## 2. Run the Example Pipeline
+## 2. Install the Engine
 
-Before writing code, run the example pipeline to see Emergent in action. This pipeline demonstrates all three primitives working together.
+The Emergent engine is a single binary. You do not need Rust or any build tools to run it.
 
-First, clone and build the workspace:
+### Download a Pre-built Binary (Recommended)
+
+Download the latest release from [GitHub Releases](https://github.com/Govcraft/emergent/releases/latest) for your platform:
 
 ```bash
-git clone https://github.com/emergent/emergent
+# Set the version (check the releases page for the latest)
+VERSION=0.7.0
+
+# Linux (x86_64)
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+tar xzf emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+sudo mv emergent /usr/local/bin/
+
+# Linux (aarch64 / ARM64)
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
+tar xzf emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
+sudo mv emergent /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-apple-darwin.tar.gz
+tar xzf emergent-${VERSION}-aarch64-apple-darwin.tar.gz
+sudo mv emergent /usr/local/bin/
+
+# macOS (Intel)
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-apple-darwin.tar.gz
+tar xzf emergent-${VERSION}-x86_64-apple-darwin.tar.gz
+sudo mv emergent /usr/local/bin/
+```
+
+Verify the installation:
+
+```bash
+emergent --help
+```
+
+You can also install to `~/.local/bin/` instead of `/usr/local/bin/` if you prefer a user-local installation (make sure `~/.local/bin` is on your PATH).
+
+### Build from Source (Alternative)
+
+If you want to contribute to the engine or need a custom build, you can build from source with Rust:
+
+```bash
+git clone https://github.com/Govcraft/emergent
 cd emergent
 cargo build --release
 ```
 
-This builds the engine (`emergent`) and three example primitives: `timer` (Source), `filter` (Handler), and `console` (Sink). The configuration at `config/emergent.toml` describes how these connect.
+This produces the engine binary at `./target/release/emergent` along with the example primitives.
+
+### Install an SDK
+
+You write primitives (Sources, Handlers, Sinks) in any supported language. Install the SDK for your language of choice:
+
+**TypeScript (Deno)**:
+```bash
+deno add jsr:@govcraft/emergent
+```
+
+**Python**:
+```bash
+pip install emergent-client
+# or with uv:
+uv add emergent-client
+```
+
+**Rust**:
+```bash
+cargo add emergent-client tokio serde_json --features tokio/full
+```
+
+You only need the engine binary and one SDK to start building. The SDK handles IPC communication with the engine automatically.
+
+---
+
+## 3. Run the Example Pipeline
+
+Before writing code, run the example pipeline to see Emergent in action. This pipeline demonstrates all three primitives working together.
+
+The example pipeline requires the example primitives (timer, filter, console), which are built from source. Clone and build the repo:
+
+```bash
+git clone https://github.com/Govcraft/emergent
+cd emergent
+cargo build --release
+```
 
 Start the engine:
 
 ```bash
-./target/release/emergent --config ./config/emergent.toml
+emergent --config ./config/emergent.toml
 ```
 
 You should see output like this:
@@ -79,7 +155,7 @@ The engine stopped the timer (no new events), waited for the filter to drain (pr
 
 ---
 
-## 3. Understanding the Configuration
+## 4. Understanding the Configuration
 
 **The configuration file is your executable architecture diagram.** Everything about your workflow lives in one TOML file: which processes run, what they publish/subscribe to, how they connect. The engine enforces this contract at runtime.
 
@@ -120,6 +196,8 @@ publishes = ["timer.tick"]
 
 Each Source declares a name, executable path, arguments, and the message types it publishes. The engine validates that Sources only publish declared types. The `enabled` flag lets you disable components without removing them.
 
+The `path` field points to any executable. In this example it points to binaries built from the cloned repo. In your own projects, the path will point to your compiled binary, a script interpreter (like `"deno"` or `"python3"`), or any other executable. See the [Configuration Reference](configuration.md) for multi-language examples.
+
 ### Handlers
 
 ```toml
@@ -150,7 +228,7 @@ Sinks declare only subscriptions. They cannot publish. The wildcard `system.star
 
 ---
 
-## 4. The Three Primitives: Mental Model
+## 5. The Three Primitives: Mental Model
 
 Every Emergent component follows an async event loop:
 
@@ -215,7 +293,7 @@ A Sink runs an async loop that receives messages and produces side effects (writ
 
 ---
 
-## 5. Write Your First Source
+## 6. Write Your First Source
 
 Create a new Rust project for a simple Source that says "hello":
 
@@ -264,7 +342,7 @@ publishes = ["say.hello"]
 
 ---
 
-## 6. Write Your First Handler
+## 7. Write Your First Handler
 
 Create a Handler that receives "hello" and adds "world":
 
@@ -330,7 +408,7 @@ publishes = ["say.complete"]
 
 ---
 
-## 7. Write Your First Sink
+## 8. Write Your First Sink
 
 Create a Sink that prints the final message:
 
@@ -385,7 +463,7 @@ subscribes = ["say.complete"]
 Run the engine with your three-component pipeline:
 
 ```bash
-./target/release/emergent --config ./config/emergent.toml
+emergent --config ./config/emergent.toml
 ```
 
 You should see:
@@ -398,7 +476,7 @@ hello world
 
 ---
 
-## 8. Quick Start with Scaffold
+## 9. Quick Start with Scaffold
 
 The examples above teach the concepts, but for real projects you don't need to write boilerplate manually. The `emergent scaffold` command generates primitives from templates.
 
@@ -478,7 +556,7 @@ run_handler(
 
 ---
 
-## 9. Message Structure and Tracing
+## 10. Message Structure and Tracing
 
 Now that you've written all three primitives, let's examine the message structure that makes their communication possible.
 
@@ -551,7 +629,7 @@ let response = EmergentMessage::new("http.response")
 
 ---
 
-## 10. Polyglot Workflows
+## 11. Polyglot Workflows
 
 You can mix languages in a single workflow. The SDKs for Rust, TypeScript, and Python expose identical helper APIs.
 
@@ -672,7 +750,7 @@ Now your pipeline mixes Rust (timer), Python (enricher, webhook), and TypeScript
 
 ---
 
-## 11. Graceful Shutdown Explained
+## 12. Graceful Shutdown Explained
 
 When you stop the engine (Ctrl+C or SIGTERM), it executes a three-phase shutdown:
 
@@ -749,7 +827,7 @@ await run_source("my_timer", timer_logic)
 
 ---
 
-## 12. Next Steps
+## 13. Next Steps
 
 You now understand Emergent's core concepts: three primitives, message structure, configuration, and shutdown. Here are patterns to explore next.
 
@@ -869,7 +947,7 @@ Replay events by reading JSON logs and re-publishing them through a Source.
 
 ---
 
-## 13. Conclusion
+## 14. Conclusion
 
 You learned Emergent's three primitives (Source, Handler, Sink), ran an example pipeline, wrote your first components, and explored message tracing and shutdown behavior. The SDK helpers reduce each primitive to a single function call with your business logic—connection, signal handling, and graceful shutdown happen automatically.
 

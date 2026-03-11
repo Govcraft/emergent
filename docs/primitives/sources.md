@@ -44,11 +44,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```toml
 [[sources]]
 name = "my_source"
-path = "./target/release/my-source"
+path = "/path/to/my-source"
 args = ["--interval", "1000"]
 enabled = true
 publishes = ["my.event", "my.other_event"]
 ```
+
+The `path` can be any executable: a compiled Rust binary, a script run through an interpreter (`"deno"`, `"python3"`), or a script with a shebang line.
 
 | Field | Required | Description |
 |-------|----------|-------------|

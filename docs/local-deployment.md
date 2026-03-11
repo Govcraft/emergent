@@ -4,13 +4,45 @@ This guide covers deploying the Emergent engine as a systemd user service on Lin
 
 ## Installation
 
-### Build and Install the Binary
+### Download a Pre-built Binary (Recommended)
+
+Download the latest release from [GitHub Releases](https://github.com/Govcraft/emergent/releases/latest) for your platform:
 
 ```bash
-# Build the release binary
-cargo build --release -p emergent-engine
+# Set the version (check the releases page for the latest)
+VERSION=0.7.0
 
-# Install to user bin directory
+# Linux (x86_64)
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+tar xzf emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+
+# Linux (aarch64 / ARM64)
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
+tar xzf emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
+
+# macOS (Apple Silicon)
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-apple-darwin.tar.gz
+tar xzf emergent-${VERSION}-aarch64-apple-darwin.tar.gz
+
+# macOS (Intel)
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-apple-darwin.tar.gz
+tar xzf emergent-${VERSION}-x86_64-apple-darwin.tar.gz
+```
+
+Install to your user bin directory:
+
+```bash
+mkdir -p ~/.local/bin
+mv emergent ~/.local/bin/
+chmod +x ~/.local/bin/emergent
+```
+
+### Build from Source (Alternative)
+
+If you need a custom build or want to contribute:
+
+```bash
+cargo build --release -p emergent-engine
 mkdir -p ~/.local/bin
 cp ./target/release/emergent ~/.local/bin/
 chmod +x ~/.local/bin/emergent
@@ -28,10 +60,14 @@ mkdir -p ~/.local/share/emergent/logs
 
 ### Install Configuration
 
-Copy or create your configuration file:
+Create your configuration file. If you cloned the repo, you can copy the example config. Otherwise, create one from scratch (see the [Configuration Reference](configuration.md)):
 
 ```bash
+# If you cloned the repo:
 cp ./config/emergent.toml ~/.config/emergent/emergent.toml
+
+# Otherwise, create a new file:
+touch ~/.config/emergent/emergent.toml
 ```
 
 Update paths in the config to use absolute paths:
@@ -51,7 +87,7 @@ Create `~/.config/systemd/user/emergent.service`:
 ```ini
 [Unit]
 Description=Emergent Event-Driven Workflow Engine
-Documentation=https://github.com/emergent
+Documentation=https://github.com/Govcraft/emergent
 After=network.target
 
 [Service]
@@ -161,13 +197,26 @@ systemctl --user restart emergent
 
 ## Updating the Engine
 
-To install a new version:
+### From GitHub Releases (Recommended)
 
 ```bash
-# Build the new release
-cargo build --release -p emergent-engine
+# Download the new release (example for Linux x86_64)
+VERSION=0.7.0  # check https://github.com/Govcraft/emergent/releases/latest
+curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+tar xzf emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
 
 # Stop, install, start
+systemctl --user stop emergent
+mv emergent ~/.local/bin/emergent
+chmod +x ~/.local/bin/emergent
+systemctl --user start emergent
+```
+
+### From Source
+
+```bash
+cargo build --release -p emergent-engine
+
 systemctl --user stop emergent
 cp ./target/release/emergent ~/.local/bin/emergent
 systemctl --user start emergent

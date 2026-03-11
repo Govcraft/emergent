@@ -5,14 +5,17 @@ Emergent uses TOML configuration files to declare pipeline topology. The engine 
 ## File Location
 
 ```bash
-# Default location
-./config/emergent.toml
+# Specify the config file path when starting the engine
+emergent --config /path/to/config.toml
 
-# Or specify with --config
-./target/release/emergent --config /path/to/config.toml
+# Common locations
+emergent --config ./emergent.toml
+emergent --config ~/.config/emergent/emergent.toml
 ```
 
 ## Complete Example
+
+The `path` field for each primitive points to any executable: a compiled binary, an interpreter running your script, or a script with a shebang line. The engine spawns these as child processes.
 
 ```toml
 # =============================================================================
@@ -37,9 +40,10 @@ retention_days = 30
 # Sources (publish only)
 # =============================================================================
 
+# Rust binary (compiled from your own project)
 [[sources]]
 name = "timer"
-path = "./target/release/timer"
+path = "/home/user/my-project/target/release/timer"
 args = ["--interval", "5000"]
 enabled = true
 publishes = ["timer.tick"]
@@ -48,10 +52,11 @@ publishes = ["timer.tick"]
 # Handlers (subscribe and publish)
 # =============================================================================
 
+# TypeScript handler (via Deno)
 [[handlers]]
 name = "filter"
-path = "./target/release/filter"
-args = ["--filter-every", "5"]
+path = "deno"
+args = ["run", "--allow-env", "--allow-net=unix", "/home/user/my-project/filter.ts"]
 enabled = true
 subscribes = ["timer.tick"]
 publishes = ["timer.filtered", "filter.processed"]
@@ -60,9 +65,11 @@ publishes = ["timer.filtered", "filter.processed"]
 # Sinks (subscribe only)
 # =============================================================================
 
+# Python sink (via uv or python3)
 [[sinks]]
 name = "console"
-path = "./target/release/console"
+path = "python3"
+args = ["/home/user/my-project/console.py"]
 enabled = true
 subscribes = ["timer.filtered", "filter.processed", "system.started.*"]
 ```
@@ -111,7 +118,7 @@ The event store provides:
 ```toml
 [[sources]]
 name = "timer"
-path = "./target/release/timer"
+path = "/path/to/your/timer-binary"
 args = ["--interval", "5000"]
 enabled = true
 publishes = ["timer.tick"]
@@ -132,7 +139,7 @@ Sources can only publish—they cannot subscribe.
 ```toml
 [[handlers]]
 name = "filter"
-path = "./target/release/filter"
+path = "/path/to/your/filter-binary"
 args = ["--filter-every", "5"]
 enabled = true
 subscribes = ["timer.tick"]
@@ -155,7 +162,7 @@ Handlers can both subscribe and publish.
 ```toml
 [[sinks]]
 name = "console"
-path = "./target/release/console"
+path = "/path/to/your/console-binary"
 args = ["--format", "json"]
 enabled = true
 subscribes = ["timer.filtered", "system.started.*"]
@@ -201,12 +208,14 @@ let source = EmergentSource::connect(&name).await?;
 
 ## Multi-Language Primitives
 
+The engine spawns each primitive as a child process. The `path` field can point to a compiled binary or a language runtime that runs your script.
+
 ### Rust
 
 ```toml
 [[handlers]]
 name = "filter"
-path = "./target/release/filter"
+path = "/home/user/my-project/target/release/filter"
 ```
 
 ### TypeScript (Deno)
@@ -214,24 +223,31 @@ path = "./target/release/filter"
 ```toml
 [[sinks]]
 name = "console_color"
-path = "/path/to/deno"
+path = "deno"
 args = [
     "run",
     "--allow-env",
     "--allow-read",
     "--allow-write",
     "--allow-net=unix",
-    "./examples/sinks/console_color/main.ts"
+    "/home/user/my-project/console_color.ts"
 ]
 ```
 
-### Python (uv)
+### Python
 
 ```toml
+# Using python3 directly
 [[sources]]
 name = "webhook"
-path = "/usr/bin/uv"
-args = ["run", "--project", "./examples/sources/webhook", "python", "./main.py"]
+path = "python3"
+args = ["/home/user/my-project/webhook.py", "--port", "8008"]
+
+# Or using uv for dependency management
+[[sources]]
+name = "webhook"
+path = "uv"
+args = ["run", "--project", "/home/user/my-project", "python", "/home/user/my-project/webhook.py"]
 ```
 
 ## System Events
@@ -260,7 +276,7 @@ Set `enabled = false` to disable without removing:
 ```toml
 [[handlers]]
 name = "enricher"
-path = "./target/release/enricher"
+path = "/path/to/your/enricher"
 enabled = false  # Temporarily disabled
 subscribes = ["event.raw"]
 publishes = ["event.enriched"]

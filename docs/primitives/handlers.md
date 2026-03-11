@@ -47,12 +47,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```toml
 [[handlers]]
 name = "my_handler"
-path = "./target/release/my-handler"
+path = "/path/to/my-handler"
 args = ["--threshold", "50"]
 enabled = true
 subscribes = ["input.event", "other.input"]
 publishes = ["output.event", "error.event"]
 ```
+
+The `path` can be any executable: a compiled Rust binary, a script run through an interpreter (`"deno"`, `"python3"`), or a script with a shebang line.
 
 | Field | Required | Description |
 |-------|----------|-------------|

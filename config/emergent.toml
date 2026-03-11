@@ -3,9 +3,16 @@
 # This example configuration demonstrates the Timer -> Filter -> Log/Console
 # example pipeline included with Emergent.
 #
-# Usage:
+# Usage (pre-built binary):
+#   emergent --config ./config/emergent.toml
+#
+# Usage (from source):
 #   cargo build --release
 #   ./target/release/emergent --config ./config/emergent.toml
+#
+# Note: This config uses ./target/release/ paths for the example primitives,
+# which requires building from source. For your own projects, use absolute
+# paths to your executables or interpreter commands (e.g., "deno", "python3").
 
 # =============================================================================
 # Engine Settings
