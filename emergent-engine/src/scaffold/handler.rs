@@ -7,7 +7,7 @@ use acton_reactive::prelude::*;
 use minijinja::{Environment, context};
 
 use crate::scaffold::cli::build_template_context;
-use crate::scaffold::messages::{Language, TemplateRendered};
+use crate::scaffold::messages::{Language, PrimitiveType, TemplateRendered};
 use crate::scaffold::source::ScaffoldRequestMessage;
 use crate::scaffold::templates::TemplateRegistry;
 
@@ -41,6 +41,14 @@ pub struct AllTemplatesRendered {
     pub files: Vec<String>,
     /// The language used for code generation.
     pub language: Language,
+    /// Name of the primitive.
+    pub name: String,
+    /// Type of primitive scaffolded.
+    pub primitive_type: PrimitiveType,
+    /// Message types this primitive subscribes to.
+    pub subscribes: Vec<String>,
+    /// Message types this primitive publishes.
+    pub publishes: Vec<String>,
 }
 
 /// State for the template handler actor.
@@ -159,6 +167,10 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                 output_dir: request.output_dir,
                 files: rendered_files,
                 language: request.language,
+                name: request.name,
+                primitive_type: request.primitive_type,
+                subscribes: request.subscribes,
+                publishes: request.publishes,
             };
 
             broker.broadcast(complete).await;
