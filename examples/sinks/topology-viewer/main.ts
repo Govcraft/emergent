@@ -84,11 +84,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Subscriptions for system lifecycle events
+// Subscriptions for system lifecycle events and topology responses
 const SUBSCRIPTIONS = [
   "system.started.*",
   "system.stopped.*",
   "system.error.*",
+  "system.response.topology",
 ];
 
 // Connect to engine with retry logic
@@ -128,17 +129,25 @@ async function connectWithRetry(
 
         try {
           for await (const msg of stream) {
-            const payload = msg.payloadAs<SystemEventPayload>();
-
-            if (msg.messageType.startsWith("system.started.")) {
+            if (msg.messageType === "system.response.topology") {
+              // Handle full topology refresh from topology-query handler
+              const payload = msg.payloadAs<{ primitives: TopologyPrimitive[] }>();
+              console.log(`[${name}] Topology refresh: ${payload.primitives?.length ?? 0} primitive(s)`);
+              if (payload.primitives) {
+                graph.handleTopologyRefresh(payload.primitives);
+              }
+            } else if (msg.messageType.startsWith("system.started.")) {
+              const payload = msg.payloadAs<SystemEventPayload>();
               console.log(
                 `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`
               );
               graph.handleStarted(payload);
             } else if (msg.messageType.startsWith("system.stopped.")) {
+              const payload = msg.payloadAs<SystemEventPayload>();
               console.log(`[${name}] Stopped: ${payload.name}`);
               graph.handleStopped(payload);
             } else if (msg.messageType.startsWith("system.error.")) {
+              const payload = msg.payloadAs<SystemEventPayload>();
               console.log(`[${name}] Error: ${payload.name} - ${payload.error}`);
               graph.handleError(payload);
             }

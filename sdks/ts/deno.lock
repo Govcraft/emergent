@@ -2,16 +2,28 @@
   "version": "5",
   "specifiers": {
     "npm:@msgpack/msgpack@3": "3.0.0",
-    "npm:@msgpack/msgpack@3.0.0": "3.0.0"
+    "npm:@msgpack/msgpack@3.0.0": "3.0.0",
+    "npm:typeid-js@1.2.0": "1.2.0"
   },
   "npm": {
     "@msgpack/msgpack@3.0.0": {
       "integrity": "sha512-s/OZQ1QUtSYr9tgFZh4HSFLvTR2o81r0zfQj7pClC7oFUqZaAgkQ+vADV9JBioJLK9lJoAjBEhuPhVuOIJnbhg=="
+    },
+    "typeid-js@1.2.0": {
+      "integrity": "sha512-t76ZucAnvGC60ea/HjVsB0TSoB0cw9yjnfurUgtInXQWUI/VcrlZGpO23KN3iSe8yOGUgb1zr7W7uEzJ3hSljA==",
+      "dependencies": [
+        "uuid"
+      ]
+    },
+    "uuid@10.0.0": {
+      "integrity": "sha512-8XkAphELsDnEGrDxUOHB3RGvXz6TeuYSGEZBOjtTtPm2lwhGBjLgOzLHB63IUWfBpNucQjND6d3AOudO+H3RWQ==",
+      "bin": true
     }
   },
   "workspace": {
     "dependencies": [
-      "npm:@msgpack/msgpack@3.0.0"
+      "npm:@msgpack/msgpack@3.0.0",
+      "npm:typeid-js@1.2.0"
     ],
     "packageJson": {
       "dependencies": [

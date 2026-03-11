@@ -351,8 +351,7 @@ async fn get_topology_impl(
                         == Some(correlation_id.to_string())
                     {
                         // Extract primitives from payload
-                        let topo_response: TopologyResponse =
-                            serde_json::from_value(msg.payload)?;
+                        let topo_response: TopologyResponse = serde_json::from_value(msg.payload)?;
                         return Ok(TopologyState {
                             primitives: topo_response.primitives,
                         });

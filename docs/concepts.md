@@ -142,6 +142,12 @@ The engine publishes lifecycle events:
 
 Subscribe to `system.started.*` to monitor all primitive startups.
 
+## Topology
+
+The engine exposes an HTTP API at `127.0.0.1:8891/api/topology` that returns the live state of all running primitives—their names, types, subscriptions, publications, PIDs, and status. This enables monitoring dashboards, health checks, and debugging tools without going through the pub/sub layer.
+
+For event-driven topology updates, primitives can publish `system.request.topology` and subscribe to `system.response.topology`. See the [Topology](topology.md) reference for details.
+
 ## Design Philosophy
 
 Emergent is opinionated:

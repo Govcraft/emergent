@@ -635,6 +635,7 @@ function connectSSE() {
   // Handle message activity
   eventSource.addEventListener("message:activity", (event) => {
     const { source, messageType } = JSON.parse(event.data);
+    console.log("[SSE] message:activity", source, "→", messageType);
     animateEdge(source, messageType);
   });
 }

@@ -46,6 +46,7 @@ sha2 = "0.10.9"
 hex = "0.4.3"
 indicatif = "0.18.3"
 tempfile = "3.23.0"
+axum = "0.8.8"
 
 [dev-dependencies]
 tempfile = "3.23.0"
