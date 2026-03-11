@@ -8,8 +8,7 @@ import signal
 
 from aiohttp import web
 
-from emergent import EmergentSource
-from emergent._protocol import Format
+from emergent import EmergentSource, Format
 
 source: EmergentSource | None = None
 

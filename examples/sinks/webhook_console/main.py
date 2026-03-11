@@ -4,8 +4,7 @@
 import asyncio
 import os
 
-from emergent import EmergentSink
-from emergent._protocol import Format
+from emergent import EmergentSink, Format
 
 
 async def main() -> None:

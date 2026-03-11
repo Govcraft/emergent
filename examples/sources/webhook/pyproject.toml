@@ -8,5 +8,3 @@ dependencies = [
     "emergent-client",
 ]
 
-[tool.uv.sources]
-emergent-client = { path = "../../../sdks/py" }
