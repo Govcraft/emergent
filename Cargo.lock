@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "console"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "chrono",
  "clap",
@@ -706,7 +706,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "emergent-client"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "acton-reactive",
  "futures",
@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "emergent-engine"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "acton-reactive",
  "anyhow",
@@ -818,7 +818,7 @@ dependencies = [
 
 [[package]]
 name = "filter"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "clap",
  "emergent-client",
@@ -1462,7 +1462,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "log"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "chrono",
  "clap",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "timer"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "clap",
  "emergent-client",

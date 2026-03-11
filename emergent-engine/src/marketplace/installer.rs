@@ -1,5 +1,6 @@
 //! Binary download, verification, and installation.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -301,7 +302,7 @@ impl Installer {
         }
 
         let total_size = response.content_length().unwrap_or(0);
-        let pb = if total_size > 0 {
+        let pb = if total_size > 0 && std::io::stderr().is_terminal() {
             let bar = ProgressBar::new(total_size);
             bar.set_style(
                 ProgressStyle::default_bar()

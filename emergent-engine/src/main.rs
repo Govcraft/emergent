@@ -24,17 +24,37 @@ use emergent_engine::scaffold;
 #[derive(Parser, Debug)]
 #[command(name = "emergent")]
 #[command(version, about, long_about = None)]
+#[command(after_long_help = "\
+Examples:
+  # Start the engine with a config file
+  emergent --config ./config/emergent.toml
+
+  # Start with verbose logging
+  emergent --config ./config/emergent.toml --verbose
+
+  # Scaffold a new primitive (interactive wizard)
+  emergent scaffold
+
+  # Scaffold a Rust handler non-interactively
+  emergent scaffold -t handler -n my_filter -l rust -S timer.tick -p timer.filtered
+
+  # List available marketplace primitives
+  emergent marketplace list
+
+  # Install a marketplace primitive
+  emergent marketplace install http-source
+")]
 struct Args {
     /// Path to configuration file
-    #[arg(short, long, value_name = "FILE", global = true)]
+    #[arg(short, long, value_name = "FILE", global = true, help_heading = "Global Options")]
     config: Option<PathBuf>,
 
     /// Override the socket path from config
-    #[arg(short, long, value_name = "PATH", global = true)]
+    #[arg(short, long, value_name = "PATH", global = true, help_heading = "Global Options")]
     socket: Option<PathBuf>,
 
     /// Run in verbose mode (debug logging)
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, help_heading = "Global Options")]
     verbose: bool,
 
     /// Subcommand to run
@@ -189,24 +209,49 @@ fn init_event_stores(config: &EmergentConfig) -> Result<EventStoreWrapper> {
 
 /// Load configuration from the given path or default locations.
 fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
-    let config_path = path.unwrap_or_else(|| {
+    let config_path = if let Some(p) = path {
+        if !p.exists() {
+            anyhow::bail!(
+                "Configuration file not found: {}\n\n\
+                 To get started, create a config file or use scaffold:\n  \
+                 emergent scaffold\n  \
+                 emergent --config path/to/emergent.toml",
+                p.display()
+            );
+        }
+        p
+    } else {
         // Check for config in current directory first
         let local = PathBuf::from("emergent.toml");
         if local.exists() {
-            return local;
-        }
-
-        // Then check XDG config directory
-        if let Some(dirs) = directories::ProjectDirs::from("ai", "govcraft", "emergent") {
+            local
+        } else if let Some(dirs) = directories::ProjectDirs::from("ai", "govcraft", "emergent") {
             let xdg_config = dirs.config_dir().join("emergent.toml");
             if xdg_config.exists() {
-                return xdg_config;
+                xdg_config
+            } else {
+                anyhow::bail!(
+                    "No configuration file found.\n\n\
+                     Searched:\n  \
+                     ./emergent.toml\n  \
+                     {}\n\n\
+                     To get started, create a config file or use scaffold:\n  \
+                     emergent scaffold\n  \
+                     emergent --config path/to/emergent.toml",
+                    xdg_config.display()
+                );
             }
+        } else {
+            anyhow::bail!(
+                "No configuration file found.\n\n\
+                 Searched:\n  \
+                 ./emergent.toml\n\n\
+                 To get started, create a config file or use scaffold:\n  \
+                 emergent scaffold\n  \
+                 emergent --config path/to/emergent.toml"
+            );
         }
-
-        // Default to current directory
-        local
-    });
+    };
 
     info!("Loading configuration from {}", config_path.display());
     Ok(EmergentConfig::load(&config_path)?)

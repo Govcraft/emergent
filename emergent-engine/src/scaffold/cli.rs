@@ -12,43 +12,64 @@ use heck::{ToSnakeCase, ToUpperCamelCase};
 use crate::scaffold::messages::{Language, PrimitiveType, ScaffoldRequest, TemplateContext};
 
 /// Scaffold subcommand arguments.
+///
+/// Run without flags to use the interactive wizard, or pass all required
+/// flags (--type and --name) for non-interactive scripting.
 #[derive(Args, Debug, Clone)]
+#[command(after_long_help = "\
+Examples:
+  # Interactive wizard (prompts for all options)
+  emergent scaffold
+
+  # Scaffold a Rust source
+  emergent scaffold -t source -n my_timer -l rust -p timer.tick
+
+  # Scaffold a Python handler that transforms events
+  emergent scaffold -t handler -n my_filter -l python \\
+    -S timer.tick -p timer.filtered
+
+  # Scaffold a TypeScript sink
+  emergent scaffold -t sink -n my_console -l typescript -S timer.tick
+
+  # Preview without writing files
+  emergent scaffold -t source -n my_source --dry-run
+")]
 pub struct ScaffoldArgs {
-    /// Language for code generation.
+    /// Language for code generation [default: rust] [values: rust, typescript, python; aliases: rs, ts, py]
     #[arg(short, long, value_name = "LANG")]
     pub language: Option<String>,
 
-    /// Type of primitive to scaffold.
+    /// Type of primitive to scaffold [possible values: source, handler, sink]
     #[arg(short = 't', long, value_name = "TYPE")]
     pub primitive_type: Option<String>,
 
-    /// Name of the primitive (snake_case).
+    /// Name of the primitive (must be snake_case, e.g. my_timer)
     #[arg(short, long, value_name = "NAME")]
     pub name: Option<String>,
 
-    /// Message types to subscribe to (comma-separated).
+    /// Message types to subscribe to (comma-separated, e.g. timer.tick,api.request).
     /// Only for handlers and sinks.
     #[arg(short = 'S', long, value_name = "TYPES")]
     pub subscribes: Option<String>,
 
-    /// Message types to publish (comma-separated).
+    /// Message types to publish (comma-separated, e.g. timer.tick,api.response).
     /// Only for sources and handlers.
     #[arg(short, long, value_name = "TYPES")]
     pub publishes: Option<String>,
 
-    /// Output directory (default: ./<name>).
+    /// Output directory (default: ./<name>)
     #[arg(short, long, value_name = "DIR")]
     pub output: Option<PathBuf>,
 
-    /// Description for the primitive.
+    /// Description for the primitive
     #[arg(short, long, value_name = "DESC")]
     pub description: Option<String>,
 
-    /// Preview files without writing (dry run).
+    /// Preview files without writing (dry run)
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Output JSON for scripting.
+    /// Output JSON for scripting
     #[arg(long)]
     pub json: bool,
 }

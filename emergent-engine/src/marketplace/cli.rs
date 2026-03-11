@@ -12,6 +12,32 @@ use super::storage::MarketplaceStorage;
 
 /// Marketplace subcommand arguments.
 #[derive(Args, Debug, Clone)]
+#[command(after_long_help = "\
+Examples:
+  # List all available primitives
+  emergent marketplace list
+
+  # List only sources
+  emergent marketplace list --kind source
+
+  # Search for a primitive
+  emergent marketplace search slack
+
+  # Install a primitive
+  emergent marketplace install http-source
+
+  # Install a specific version
+  emergent marketplace install http-source --version 0.5.0
+
+  # Show details about a primitive
+  emergent marketplace info http-source
+
+  # Update all installed primitives
+  emergent marketplace update
+
+  # Remove a primitive
+  emergent marketplace remove http-source
+")]
 pub struct MarketplaceArgs {
     #[command(subcommand)]
     pub command: MarketplaceCommand,
@@ -22,7 +48,7 @@ pub struct MarketplaceArgs {
 pub enum MarketplaceCommand {
     /// List available or installed primitives
     List {
-        /// Filter by primitive kind
+        /// Filter by primitive kind [possible values: source, handler, sink]
         #[arg(short, long, value_name = "KIND")]
         kind: Option<String>,
 
@@ -35,7 +61,7 @@ pub enum MarketplaceCommand {
         json: bool,
 
         /// Columns to display (comma-separated)
-        #[arg(short, long, value_name = "COLS")]
+        #[arg(long, value_name = "COLS")]
         columns: Option<String>,
     },
 
@@ -45,7 +71,7 @@ pub enum MarketplaceCommand {
         name: String,
 
         /// Version to install (default: latest)
-        #[arg(short, long, value_name = "VERSION")]
+        #[arg(long, value_name = "VERSION")]
         version: Option<String>,
 
         /// Force reinstall if already installed
@@ -268,37 +294,37 @@ async fn handle_info(registry: &Registry, name: String, json: bool) -> Result<()
         let json_str = format_json(&manifest)?;
         println!("{json_str}");
     } else {
-        eprintln!("Name: {}", manifest.primitive.name);
-        eprintln!("Version: {}", manifest.primitive.version);
-        eprintln!("Kind: {}", manifest.primitive.kind);
-        eprintln!();
+        println!("Name: {}", manifest.primitive.name);
+        println!("Version: {}", manifest.primitive.version);
+        println!("Kind: {}", manifest.primitive.kind);
+        println!();
         if !manifest.messages.publishes.is_empty() {
-            eprintln!("Publishes:");
+            println!("Publishes:");
             for msg in &manifest.messages.publishes {
-                eprintln!("  - {msg}");
+                println!("  - {msg}");
             }
         }
         if !manifest.messages.subscribes.is_empty() {
-            eprintln!("Subscribes:");
+            println!("Subscribes:");
             for msg in &manifest.messages.subscribes {
-                eprintln!("  - {msg}");
+                println!("  - {msg}");
             }
         }
         if !manifest.args.is_empty() {
-            eprintln!();
-            eprintln!("Arguments:");
+            println!();
+            println!("Arguments:");
             for arg in &manifest.args {
                 let required = if arg.required { " (required)" } else { "" };
-                eprintln!("  --{}{}", arg.long, required);
+                println!("  --{}{}", arg.long, required);
                 if !arg.env.is_empty() {
-                    eprintln!("    env: {}", arg.env);
+                    println!("    env: {}", arg.env);
                 }
             }
         }
-        eprintln!();
-        eprintln!("Platforms:");
+        println!();
+        println!("Platforms:");
         for platform in manifest.binaries.targets.keys() {
-            eprintln!("  - {platform}");
+            println!("  - {platform}");
         }
     }
 
