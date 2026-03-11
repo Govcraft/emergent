@@ -10,7 +10,7 @@ use acton_reactive::prelude::*;
 use serde_json::json;
 
 use crate::scaffold::handler::{AllTemplatesRendered, TemplateRenderedMessage};
-use crate::scaffold::messages::ScaffoldComplete;
+use crate::scaffold::messages::{Language, ScaffoldComplete};
 
 /// State for the file writer sink actor.
 #[derive(Default, Clone, Debug)]
@@ -108,6 +108,7 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
         let dry_run = msg.dry_run;
         let json_output = msg.json_output;
         let files = msg.files.clone();
+        let language = msg.language;
 
         Reply::pending(async move {
             let result = ScaffoldComplete {
@@ -140,7 +141,16 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                 );
                 println!("\nNext steps:");
                 println!("  cd {}", output_dir.display());
-                println!("  cargo build");
+                match language {
+                    Language::Rust => println!("  cargo build"),
+                    Language::Python => {
+                        println!("  uv sync        # or: pip install -e .");
+                        println!("  python main.py");
+                    }
+                    Language::TypeScript => {
+                        println!("  deno run main.ts");
+                    }
+                }
             }
 
             broker.broadcast(ScaffoldCompleteMessage { result }).await;

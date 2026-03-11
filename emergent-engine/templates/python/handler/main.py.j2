@@ -16,9 +16,9 @@ Publishes:
 
 import asyncio
 import os
+import signal
 
-from emergent import EmergentHandler
-from emergent._protocol import Format
+from emergent import EmergentHandler, Format, create_message
 
 
 async def main() -> None:
@@ -26,13 +26,26 @@ async def main() -> None:
     name = os.environ.get("EMERGENT_NAME", "{{ name }}")
     subscribes = [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}]
 
-    async for msg, handler in EmergentHandler.process(name, subscribes, format_=Format.MSGPACK):
-        # TODO: Process the incoming message
-        await handler.publish("{{ publishes[0] if publishes else "handler.output" }}", {
-            "processed": True,
-            "original_type": msg.message_type,
-            "causation_id": msg.id,
-        })
+    async with await EmergentHandler.connect(name, format_=Format.MSGPACK) as handler:
+        async with await handler.subscribe(subscribes) as stream:
+            # Setup signal handlers
+            loop = asyncio.get_running_loop()
+            stop_event = asyncio.Event()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, stop_event.set)
+
+            async for msg in stream:
+                if stop_event.is_set():
+                    break
+                # TODO: Process the incoming message
+                await handler.publish(
+                    create_message("{{ publishes[0] if publishes else "handler.output" }}")
+                    .caused_by(msg.id)
+                    .payload({
+                        "processed": True,
+                        "original_type": msg.message_type,
+                    })
+                )
 
 
 if __name__ == "__main__":

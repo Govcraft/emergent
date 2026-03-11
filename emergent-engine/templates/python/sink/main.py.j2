@@ -12,8 +12,7 @@ Subscribes:
 import asyncio
 import os
 
-from emergent import EmergentSink
-from emergent._protocol import Format
+from emergent import EmergentSink, Format
 
 
 async def main() -> None:
@@ -23,7 +22,7 @@ async def main() -> None:
 
     async for msg in EmergentSink.messages(name, subscribes, format_=Format.MSGPACK):
         # TODO: Process the incoming message
-        print(f"[{msg.message_type}] {msg.payload}")
+        print(f"[{msg.message_type}] {msg.payload}", flush=True)
 
 
 if __name__ == "__main__":

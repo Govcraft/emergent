@@ -7,7 +7,7 @@ use acton_reactive::prelude::*;
 use minijinja::{Environment, context};
 
 use crate::scaffold::cli::build_template_context;
-use crate::scaffold::messages::TemplateRendered;
+use crate::scaffold::messages::{Language, TemplateRendered};
 use crate::scaffold::source::ScaffoldRequestMessage;
 use crate::scaffold::templates::TemplateRegistry;
 
@@ -39,6 +39,8 @@ pub struct AllTemplatesRendered {
     pub output_dir: std::path::PathBuf,
     /// List of files that were rendered.
     pub files: Vec<String>,
+    /// The language used for code generation.
+    pub language: Language,
 }
 
 /// State for the template handler actor.
@@ -156,6 +158,7 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                 json_output: request.json_output,
                 output_dir: request.output_dir,
                 files: rendered_files,
+                language: request.language,
             };
 
             broker.broadcast(complete).await;
