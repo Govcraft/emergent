@@ -6,7 +6,7 @@
 import { EmergentMessage, type EmergentMessageData } from "./types.ts";
 import { ValidationError } from "./errors.ts";
 
-import { typeid } from "npm:typeid-js@1.2.0";
+import { typeid } from "typeid-js";
 
 /**
  * Generate a unique message ID in TypeID format.

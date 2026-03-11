@@ -4,10 +4,20 @@ TypeScript/Deno SDK for the Emergent event-driven workflow platform.
 
 ## Installation
 
-Import directly from the local SDK path (Deno):
+```bash
+deno add jsr:@govcraft/emergent
+```
+
+Then import:
 
 ```typescript
-import { EmergentSink, EmergentSource, EmergentHandler } from "./sdks/ts/mod.ts";
+import { EmergentSink, EmergentSource, EmergentHandler } from "@govcraft/emergent";
+```
+
+Or import directly without installing:
+
+```typescript
+import { EmergentSink } from "jsr:@govcraft/emergent";
 ```
 
 ## Quick Start
@@ -15,7 +25,7 @@ import { EmergentSink, EmergentSource, EmergentHandler } from "./sdks/ts/mod.ts"
 ### Sink (Subscribe Only) - 3 Lines
 
 ```typescript
-import { EmergentSink } from "./sdks/ts/mod.ts";
+import { EmergentSink } from "jsr:@govcraft/emergent";
 
 for await (const msg of EmergentSink.messages("my_sink", ["timer.tick"])) {
   console.log(msg.payload);
@@ -25,7 +35,7 @@ for await (const msg of EmergentSink.messages("my_sink", ["timer.tick"])) {
 ### Source (Publish Only)
 
 ```typescript
-import { EmergentSource } from "./sdks/ts/mod.ts";
+import { EmergentSource } from "jsr:@govcraft/emergent";
 
 await using source = await EmergentSource.connect("my_source");
 await source.publish("sensor.reading", { value: 42.5, unit: "celsius" });
@@ -34,7 +44,7 @@ await source.publish("sensor.reading", { value: 42.5, unit: "celsius" });
 ### Handler (Subscribe + Publish)
 
 ```typescript
-import { EmergentHandler, createMessage } from "./sdks/ts/mod.ts";
+import { EmergentHandler, createMessage } from "jsr:@govcraft/emergent";
 
 await using handler = await EmergentHandler.connect("order_processor");
 const stream = await handler.subscribe(["order.created"]);
@@ -76,7 +86,7 @@ await source.publish(message);
 ## Message Building
 
 ```typescript
-import { createMessage } from "./sdks/ts/mod.ts";
+import { createMessage } from "jsr:@govcraft/emergent";
 
 // Simple message
 const msg = createMessage("timer.tick").payload({ count: 1 }).build();
@@ -133,7 +143,7 @@ handler.close();
 Simplified lifecycle management with signal handling:
 
 ```typescript
-import { runSource, runHandler, runSink } from "./sdks/ts/mod.ts";
+import { runSource, runHandler, runSink } from "jsr:@govcraft/emergent";
 
 // Source helper
 await runSource("my_source", async (source, shutdown) => {
@@ -164,7 +174,7 @@ import {
   SocketNotFoundError,
   ConnectionError,
   TimeoutError,
-} from "./sdks/ts/mod.ts";
+} from "jsr:@govcraft/emergent";
 
 try {
   const source = await EmergentSource.connect("my_source");

@@ -3,7 +3,7 @@
  * @module
  */
 
-import { encode, decode } from "npm:@msgpack/msgpack@3.0.0";
+import { encode, decode } from "@msgpack/msgpack";
 import { ProtocolError } from "./errors.ts";
 
 // ============================================================================
@@ -162,7 +162,7 @@ export function tryDecodeFrame(buffer: Uint8Array): DecodedFrame | null {
   };
 }
 
-import { typeid } from "npm:typeid-js@1.2.0";
+import { typeid } from "typeid-js";
 
 /**
  * Generate a unique correlation ID in TypeID format.
