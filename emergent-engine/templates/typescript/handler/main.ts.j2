@@ -15,21 +15,20 @@
 {% endfor %}
  */
 
-import { EmergentHandler } from "../../sdks/ts/mod.ts";
+import { runHandler, createMessage } from "@govcraft/emergent";
 
-const name = Deno.env.get("EMERGENT_NAME") || "{{ name }}";
-const subscribes = [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}];
-
-try {
-  for await (const { msg, handler } of EmergentHandler.process(name, subscribes)) {
+await runHandler(
+  "{{ name }}",
+  [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+  async (msg, handler) => {
     // TODO: Process the incoming message
-    await handler.publish("{{ publishes[0] if publishes else "handler.output" }}", {
-      processed: true,
-      originalType: msg.messageType,
-      causationId: msg.id,
-    });
+    await handler.publish(
+      createMessage("{{ publishes[0] if publishes else "handler.output" }}")
+        .causedBy(msg.id)
+        .payload({
+          processed: true,
+          originalType: msg.messageType,
+        })
+    );
   }
-} catch (err) {
-  console.error("[{{ name }}] Error:", err);
-  Deno.exit(1);
-}
+);

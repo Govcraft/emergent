@@ -10,38 +10,24 @@ Publishes:
 """
 
 import asyncio
-import os
-import signal
 
-from emergent import EmergentSource, Format
+from emergent import run_source, create_message
 
 
-async def main() -> None:
-    """Run the {{ name }} source."""
-    name = os.environ.get("EMERGENT_NAME", "{{ name }}")
-    source = await EmergentSource.connect(name, format_=Format.MSGPACK)
-
+async def source_logic(source, shutdown_event):
+    """Publish events until shutdown is requested."""
     sequence = 0
-    stop_event = asyncio.Event()
-
-    # Setup signal handlers
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, stop_event.set)
-
-    try:
-        while not stop_event.is_set():
-            try:
-                sequence += 1
-                await source.publish("{{ publishes[0] if publishes else "source.event" }}", {
-                    "sequence": sequence,
-                })
-                await asyncio.wait_for(stop_event.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-    finally:
-        await source.disconnect()
+    while not shutdown_event.is_set():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
+            break  # Shutdown requested
+        except asyncio.TimeoutError:
+            sequence += 1
+            await source.publish(
+                create_message("{{ publishes[0] if publishes else "source.event" }}")
+                .payload({"sequence": sequence})
+            )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_source("{{ name }}", source_logic))

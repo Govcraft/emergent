@@ -15,38 +15,28 @@ Publishes:
 """
 
 import asyncio
-import os
-import signal
 
-from emergent import EmergentHandler, Format, create_message
+from emergent import run_handler, create_message
 
 
-async def main() -> None:
-    """Run the {{ name }} handler."""
-    name = os.environ.get("EMERGENT_NAME", "{{ name }}")
-    subscribes = [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}]
-
-    async with await EmergentHandler.connect(name, format_=Format.MSGPACK) as handler:
-        async with await handler.subscribe(subscribes) as stream:
-            # Setup signal handlers
-            loop = asyncio.get_running_loop()
-            stop_event = asyncio.Event()
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, stop_event.set)
-
-            async for msg in stream:
-                if stop_event.is_set():
-                    break
-                # TODO: Process the incoming message
-                await handler.publish(
-                    create_message("{{ publishes[0] if publishes else "handler.output" }}")
-                    .caused_by(msg.id)
-                    .payload({
-                        "processed": True,
-                        "original_type": msg.message_type,
-                    })
-                )
+async def process_message(msg, handler):
+    """Process each incoming message."""
+    # TODO: Add your processing logic here
+    await handler.publish(
+        create_message("{{ publishes[0] if publishes else "handler.output" }}")
+        .caused_by(msg.id)
+        .payload({
+            "processed": True,
+            "original_type": msg.message_type,
+        })
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(
+        run_handler(
+            "{{ name }}",
+            [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+            process_message,
+        )
+    )

@@ -10,40 +10,25 @@
 {% endfor %}
  */
 
-import { EmergentSource } from "../../sdks/ts/mod.ts";
+import { runSource, createMessage } from "@govcraft/emergent";
 
-const name = Deno.env.get("EMERGENT_NAME") || "{{ name }}";
+await runSource("{{ name }}", async (source, shutdown) => {
+  let sequence = 0;
 
-async function main() {
-  const source = await EmergentSource.connect(name);
+  const intervalId = setInterval(async () => {
+    if (shutdown.aborted) return;
+    sequence++;
+    await source.publish(
+      createMessage("{{ publishes[0] if publishes else "source.event" }}")
+        .payload({ sequence, timestamp: Date.now() })
+    );
+  }, 1000);
 
-  try {
-    let sequence = 0;
-    const interval = setInterval(async () => {
-      sequence++;
-      await source.publish("{{ publishes[0] if publishes else "source.event" }}", {
-        sequence,
-        timestamp: Date.now(),
-      });
-    }, 1000);
-
-    // Wait for shutdown signal
-    await new Promise((resolve) => {
-      Deno.addSignalListener("SIGTERM", () => {
-        clearInterval(interval);
-        resolve(null);
-      });
-      Deno.addSignalListener("SIGINT", () => {
-        clearInterval(interval);
-        resolve(null);
-      });
+  // Wait for shutdown signal
+  await new Promise<void>((resolve) => {
+    shutdown.addEventListener("abort", () => {
+      clearInterval(intervalId);
+      resolve();
     });
-  } finally {
-    await source.disconnect();
-  }
-}
-
-main().catch((err) => {
-  console.error("[{{ name }}] Error:", err);
-  Deno.exit(1);
+  });
 });

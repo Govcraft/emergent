@@ -10,17 +10,13 @@
 {% endfor %}
  */
 
-import { EmergentSink } from "../../sdks/ts/mod.ts";
+import { runSink } from "@govcraft/emergent";
 
-const name = Deno.env.get("EMERGENT_NAME") || "{{ name }}";
-const subscribes = [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}];
-
-try {
-  for await (const msg of EmergentSink.messages(name, subscribes)) {
+await runSink(
+  "{{ name }}",
+  [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+  async (msg) => {
     // TODO: Process the incoming message
     console.log(`[${msg.messageType}]`, msg.payload);
   }
-} catch (err) {
-  console.error("[{{ name }}] Error:", err);
-  Deno.exit(1);
-}
+);

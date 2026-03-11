@@ -10,20 +10,21 @@ Subscribes:
 """
 
 import asyncio
-import os
 
-from emergent import EmergentSink, Format
+from emergent import run_sink
 
 
-async def main() -> None:
-    """Run the {{ name }} sink."""
-    name = os.environ.get("EMERGENT_NAME", "{{ name }}")
-    subscribes = [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}]
-
-    async for msg in EmergentSink.messages(name, subscribes, format_=Format.MSGPACK):
-        # TODO: Process the incoming message
-        print(f"[{msg.message_type}] {msg.payload}", flush=True)
+async def consume_message(msg):
+    """Process each incoming message."""
+    # TODO: Add your consumption logic here
+    print(f"[{msg.message_type}] {msg.payload}", flush=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(
+        run_sink(
+            "{{ name }}",
+            [{% for sub in subscribes %}"{{ sub }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+            consume_message,
+        )
+    )

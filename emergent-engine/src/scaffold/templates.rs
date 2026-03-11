@@ -327,30 +327,30 @@ mod tests {
     }
 
     #[test]
-    fn test_typescript_templates_contain_expected_content() {
+    fn test_typescript_templates_use_helpers() {
         let registry = TemplateRegistry::new();
 
         let source_main = registry.get(Language::TypeScript, PrimitiveType::Source, "main.ts");
-        assert!(source_main.is_some_and(|t| t.contains("EmergentSource")));
+        assert!(source_main.is_some_and(|t| t.contains("runSource")));
 
         let handler_main = registry.get(Language::TypeScript, PrimitiveType::Handler, "main.ts");
-        assert!(handler_main.is_some_and(|t| t.contains("EmergentHandler")));
+        assert!(handler_main.is_some_and(|t| t.contains("runHandler")));
 
         let sink_main = registry.get(Language::TypeScript, PrimitiveType::Sink, "main.ts");
-        assert!(sink_main.is_some_and(|t| t.contains("EmergentSink")));
+        assert!(sink_main.is_some_and(|t| t.contains("runSink")));
     }
 
     #[test]
-    fn test_python_templates_contain_expected_content() {
+    fn test_python_templates_use_helpers() {
         let registry = TemplateRegistry::new();
 
         let source_main = registry.get(Language::Python, PrimitiveType::Source, "main.py");
-        assert!(source_main.is_some_and(|t| t.contains("EmergentSource")));
+        assert!(source_main.is_some_and(|t| t.contains("run_source")));
 
         let handler_main = registry.get(Language::Python, PrimitiveType::Handler, "main.py");
-        assert!(handler_main.is_some_and(|t| t.contains("EmergentHandler")));
+        assert!(handler_main.is_some_and(|t| t.contains("run_handler")));
 
         let sink_main = registry.get(Language::Python, PrimitiveType::Sink, "main.py");
-        assert!(sink_main.is_some_and(|t| t.contains("EmergentSink")));
+        assert!(sink_main.is_some_and(|t| t.contains("run_sink")));
     }
 }
