@@ -1,6 +1,7 @@
 [package]
 name = "emergent-client"
 description = "Client library for Emergent event-based workflow platform"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
