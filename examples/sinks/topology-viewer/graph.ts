@@ -11,7 +11,7 @@ import type {
   NodeStatus,
   PrimitiveKind,
 } from "./types.ts";
-import type { SystemEventPayload, TopologyPrimitive } from "../../../sdks/ts/mod.ts";
+import type { SystemEventPayload, TopologyPrimitive } from "jsr:@govcraft/emergent";
 
 /**
  * Manages the topology graph state and SSE broadcasting.

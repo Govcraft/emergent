@@ -13,7 +13,7 @@
  *   deno run --allow-env --allow-read --allow-net main.ts
  */
 
-import { EmergentHandler } from "../../../sdks/ts/mod.ts";
+import { EmergentHandler } from "jsr:@govcraft/emergent";
 
 // Engine's HTTP API endpoint for topology queries
 const ENGINE_TOPOLOGY_URL = "http://127.0.0.1:8891/api/topology";

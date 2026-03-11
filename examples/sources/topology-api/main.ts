@@ -13,7 +13,7 @@
  *   GET /health  - Health check
  */
 
-import { EmergentSource, createMessage } from "../../../sdks/ts/mod.ts";
+import { EmergentSource, createMessage } from "jsr:@govcraft/emergent";
 import { typeid } from "npm:typeid-js@1.2.0";
 
 // Parse command line arguments

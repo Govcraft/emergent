@@ -1,8 +1,19 @@
-# Emergent TypeScript SDK
+# @govcraft/emergent
 
-TypeScript/Deno SDK for the Emergent event-driven workflow platform.
+TypeScript SDK for building event-driven workflows on the
+[Emergent](https://github.com/govcraft/emergent) engine. Connect to a running
+engine over Unix IPC and publish or consume messages through three typed
+primitives: **Source**, **Handler**, and **Sink**.
 
-## Installation
+```typescript
+import { EmergentSink } from "@govcraft/emergent";
+
+for await (const msg of EmergentSink.messages("my_sink", ["timer.tick"])) {
+  console.log(msg.payload);
+}
+```
+
+## Install
 
 ```bash
 deno add jsr:@govcraft/emergent
@@ -14,25 +25,54 @@ Then import:
 import { EmergentSink, EmergentSource, EmergentHandler } from "@govcraft/emergent";
 ```
 
-Or import directly without installing:
+Or import directly without a local install:
 
 ```typescript
 import { EmergentSink } from "jsr:@govcraft/emergent";
 ```
 
+## Three Primitives
+
+Every Emergent workflow is composed of Sources, Handlers, and Sinks. Each
+primitive has a single, well-defined role:
+
+| Primitive     | Subscribe | Publish | Role                                         |
+| ------------- | --------- | ------- | -------------------------------------------- |
+| **Source**    | --        | Yes     | Ingress -- bring data into the system        |
+| **Handler**   | Yes       | Yes     | Processing -- transform, enrich, or route    |
+| **Sink**      | Yes       | --      | Egress -- persist, display, or forward data  |
+
 ## Quick Start
 
-### Sink (Subscribe Only) - 3 Lines
+### Sink -- consume messages
+
+A Sink subscribes to message types and processes each one as it arrives.
+`EmergentSink.messages` is a convenience method that connects, subscribes, and
+yields messages in a single call:
 
 ```typescript
 import { EmergentSink } from "jsr:@govcraft/emergent";
 
 for await (const msg of EmergentSink.messages("my_sink", ["timer.tick"])) {
-  console.log(msg.payload);
+  const data = msg.payloadAs<{ sequence: number }>();
+  console.log(`Tick #${data.sequence}`);
 }
 ```
 
-### Source (Publish Only)
+For explicit lifecycle control, connect and subscribe separately:
+
+```typescript
+await using sink = await EmergentSink.connect("my_sink");
+const stream = await sink.subscribe(["timer.tick", "timer.filtered"]);
+
+for await (const msg of stream) {
+  console.log(msg.messageType, msg.payload);
+}
+```
+
+### Source -- publish messages
+
+A Source publishes messages into the engine. It cannot subscribe:
 
 ```typescript
 import { EmergentSource } from "jsr:@govcraft/emergent";
@@ -41,7 +81,10 @@ await using source = await EmergentSource.connect("my_source");
 await source.publish("sensor.reading", { value: 42.5, unit: "celsius" });
 ```
 
-### Handler (Subscribe + Publish)
+### Handler -- subscribe and publish
+
+A Handler subscribes to incoming messages and publishes new ones. Use
+`causedBy` to link output messages to the input that triggered them:
 
 ```typescript
 import { EmergentHandler, createMessage } from "jsr:@govcraft/emergent";
@@ -58,54 +101,55 @@ for await (const msg of stream) {
 }
 ```
 
-## Three Primitives
+## Publishing Messages
 
-| Primitive | Can Subscribe | Can Publish | Use Case |
-|-----------|--------------|-------------|----------|
-| **Source** | No | Yes | Ingress: HTTP endpoints, sensors, external APIs |
-| **Handler** | Yes | Yes | Processing: transform, enrich, route data |
-| **Sink** | Yes | No | Egress: database writers, notifications, external APIs |
-
-## Publish Overloads
-
-All three forms are equivalent:
+Every primitive that can publish supports three calling styles. All three
+produce the same result:
 
 ```typescript
-// Shorthand (type + payload)
+// Shorthand -- type string and payload object
 await source.publish("timer.tick", { count: 1 });
 
-// MessageBuilder (fluent API)
+// MessageBuilder -- fluent API with auto-build
 await source.publish(
   createMessage("timer.tick").payload({ count: 1 })
 );
 
-// Complete EmergentMessage
+// Full EmergentMessage object
 await source.publish(message);
 ```
 
-## Message Building
+## Building Messages
+
+`createMessage` returns a fluent builder for constructing immutable
+`EmergentMessage` instances:
 
 ```typescript
 import { createMessage } from "jsr:@govcraft/emergent";
 
-// Simple message
-const msg = createMessage("timer.tick").payload({ count: 1 }).build();
-
-// With causation tracking
-const reply = createMessage("order.confirmed")
-  .causedBy(originalMsg.id)
-  .payload({ confirmed: true })
-  .build();
-
-// With all options
 const msg = createMessage("sensor.reading")
   .payload({ value: 42.5, unit: "celsius" })
   .metadata({ sensor_id: "temp-01", location: "room-a" })
-  .source("sensor_service")
   .build();
 ```
 
-## Subscribe Patterns
+Link messages into traceable chains with `causedBy` and `correlatedWith`:
+
+```typescript
+const reply = createMessage("order.confirmed")
+  .causedBy(originalMsg.id)
+  .correlatedWith(requestId)
+  .payload({ confirmed: true })
+  .build();
+```
+
+The builder sets `id` (TypeID format) and `timestampMs` automatically. Call
+`.build()` explicitly when you need the message object, or pass the builder
+directly to `publish()`, which calls `.build()` for you.
+
+## Subscribing to Messages
+
+`subscribe` accepts an array or variadic arguments:
 
 ```typescript
 // Array form
@@ -113,24 +157,32 @@ const stream = await sink.subscribe(["timer.tick", "timer.filtered"]);
 
 // Variadic form
 const stream = await sink.subscribe("timer.tick", "timer.filtered");
+```
 
-// Iterate
+Iterate over the returned `MessageStream` with `for await...of`:
+
+```typescript
 for await (const msg of stream) {
   const data = msg.payloadAs<{ count: number }>();
   console.log(data.count);
 }
 ```
 
-## Resource Cleanup
-
-All primitives implement `Disposable` and `AsyncDisposable`:
+`MessageStream` implements `AsyncIterable` and `Disposable`, so you can use
+`using` for automatic cleanup:
 
 ```typescript
-// Automatic cleanup with await using
-await using sink = await EmergentSink.connect("my_sink");
+using stream = await sink.subscribe(["timer.tick"]);
+```
 
-// Automatic cleanup with using
-using source = await EmergentSource.connect("my_source");
+## Resource Cleanup
+
+All primitives implement `Disposable` and `AsyncDisposable`. Use `using` or
+`await using` for automatic cleanup, or call `close()` manually:
+
+```typescript
+// Automatic cleanup (recommended)
+await using sink = await EmergentSink.connect("my_sink");
 
 // Manual cleanup
 const handler = await EmergentHandler.connect("my_handler");
@@ -138,14 +190,19 @@ const handler = await EmergentHandler.connect("my_handler");
 handler.close();
 ```
 
+The SDK subscribes to `system.shutdown` internally. When the Emergent engine
+signals a graceful shutdown, active message streams close automatically.
+
 ## Helper Functions
 
-Simplified lifecycle management with signal handling:
+`runSource`, `runHandler`, and `runSink` eliminate connection and signal-handling
+boilerplate. Each helper connects, sets up SIGTERM/SIGINT handlers, runs your
+callback, and disconnects on completion:
 
 ```typescript
-import { runSource, runHandler, runSink } from "jsr:@govcraft/emergent";
+import { runSource, runHandler, runSink, createMessage } from "jsr:@govcraft/emergent";
 
-// Source helper
+// Source -- custom event loop with shutdown signal
 await runSource("my_source", async (source, shutdown) => {
   while (!shutdown.aborted) {
     await source.publish("tick", { time: Date.now() });
@@ -153,20 +210,26 @@ await runSource("my_source", async (source, shutdown) => {
   }
 });
 
-// Handler helper
+// Handler -- called once per message
 await runHandler("my_handler", ["raw.event"], async (msg, handler) => {
   await handler.publish(
     createMessage("processed").causedBy(msg.id).payload({ done: true })
   );
 });
 
-// Sink helper
+// Sink -- called once per message
 await runSink("my_sink", ["timer.tick"], async (msg) => {
   console.log(msg.payload);
 });
 ```
 
+The name argument is optional. When omitted, the helper reads from the
+`EMERGENT_NAME` environment variable.
+
 ## Error Handling
+
+All SDK errors extend `EmergentError` and include a machine-readable `code`
+property. Catch specific error types for precise control:
 
 ```typescript
 import {
@@ -191,22 +254,63 @@ try {
 
 ### Error Types
 
-| Error | Code | Extra Fields |
-|-------|------|-------------|
-| `ConnectionError` | `CONNECTION_FAILED` | |
-| `SocketNotFoundError` | `SOCKET_NOT_FOUND` | `socketPath` |
-| `TimeoutError` | `TIMEOUT` | `timeoutMs` |
-| `ProtocolError` | `PROTOCOL_ERROR` | |
-| `SubscriptionError` | `SUBSCRIPTION_FAILED` | `messageTypes` |
-| `PublishError` | `PUBLISH_FAILED` | `messageType` |
-| `DiscoveryError` | `DISCOVERY_FAILED` | |
-| `DisposedError` | `DISPOSED` | |
-| `ValidationError` | `VALIDATION_ERROR` | `field` |
+| Error                 | Code                  | Extra Fields     |
+| --------------------- | --------------------- | ---------------- |
+| `ConnectionError`     | `CONNECTION_FAILED`   |                  |
+| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socketPath`     |
+| `TimeoutError`        | `TIMEOUT`             | `timeoutMs`      |
+| `ProtocolError`       | `PROTOCOL_ERROR`      |                  |
+| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `messageTypes`   |
+| `PublishError`        | `PUBLISH_FAILED`      | `messageType`    |
+| `DiscoveryError`      | `DISCOVERY_FAILED`    |                  |
+| `DisposedError`       | `DISPOSED`            |                  |
+| `ValidationError`     | `VALIDATION_ERROR`    | `field`          |
+
+## Message Shape
+
+Every message flowing through Emergent follows the same envelope:
+
+| Field            | Type                          | Description                            |
+| ---------------- | ----------------------------- | -------------------------------------- |
+| `id`             | `string`                      | Unique TypeID (`msg_<uuidv7>`)         |
+| `messageType`    | `string`                      | Routing key (e.g., `"timer.tick"`)     |
+| `source`         | `string`                      | Name of the publishing primitive       |
+| `correlationId`  | `string \| undefined`         | Links related messages                 |
+| `causationId`    | `string \| undefined`         | ID of the triggering message           |
+| `timestampMs`    | `number`                      | Creation time (Unix ms)                |
+| `payload`        | `unknown`                     | User-defined data                      |
+| `metadata`       | `Record<string, unknown> \| undefined` | Optional tracing/debug data   |
+
+Use `msg.payloadAs<T>()` to access the payload with type safety.
+
+## System Events
+
+The Emergent engine broadcasts lifecycle events that your primitives can
+subscribe to:
+
+| Event Pattern              | Payload Type           | Fired When                    |
+| -------------------------- | ---------------------- | ----------------------------- |
+| `system.started.<name>`    | `SystemEventPayload`   | Primitive started             |
+| `system.stopped.<name>`    | `SystemEventPayload`   | Primitive stopped             |
+| `system.error.<name>`      | `SystemEventPayload`   | Primitive failed              |
+| `system.shutdown`          | `SystemShutdownPayload`| Engine shutting down          |
+
+Type guards are available for runtime checking:
+
+```typescript
+import { isSystemEventPayload, isErrorEvent } from "jsr:@govcraft/emergent";
+
+if (isSystemEventPayload(msg.payload)) {
+  if (isErrorEvent(msg.payload)) {
+    console.error(`${msg.payload.name} failed: ${msg.payload.error}`);
+  }
+}
+```
 
 ## Requirements
 
-- Deno 2.x+
-- Running Emergent engine with `EMERGENT_SOCKET` environment variable set
+- Deno 2.x or later
+- A running Emergent engine with the `EMERGENT_SOCKET` environment variable set
 - Deno permissions: `--allow-env --allow-read --allow-write --allow-net=unix`
 
 ## License
