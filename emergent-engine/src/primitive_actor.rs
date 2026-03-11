@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use tokio::process::Command;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Payload for system lifecycle events.
 #[derive(Debug, Clone, Serialize)]
@@ -255,10 +255,17 @@ pub fn build_primitive_actor(
                                     Ok(status) => {
                                         let exit_code = exit_code_from_status(&status);
                                         let clean = is_clean_exit(&status);
-                                        info!(
-                                            "{} exited with status {} (pid: {})",
-                                            monitor_info.name, exit_code, pid
-                                        );
+                                        if clean {
+                                            debug!(
+                                                "{} exited with status {} (pid: {})",
+                                                monitor_info.name, exit_code, pid
+                                            );
+                                        } else {
+                                            warn!(
+                                                "{} exited with status {} (pid: {})",
+                                                monitor_info.name, exit_code, pid
+                                            );
+                                        }
 
                                         // Notify actor of exit
                                         monitor_handle

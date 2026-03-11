@@ -357,10 +357,12 @@ impl ProcessManager {
         info!("All primitives stopped.");
     }
 
-    /// Stop primitives by stopping their actors.
+    /// Stop primitives by signaling children, then stopping actors.
     ///
     /// Used for sources that can't subscribe to broadcast messages.
-    /// Stopping the actor triggers before_stop which sends SIGTERM and broadcasts system.stopped.
+    /// Phase A: Send StopPrimitive to all actors (SIGTERM sent, actor stays alive)
+    /// Phase B: Sleep 2s for children to exit (monitor tasks broadcast system.stopped.*)
+    /// Phase C: handle.stop() for each actor (cleanup; before_stop sees child_pid=None, skips SIGTERM)
     async fn signal_and_wait(&self, kind: PrimitiveKind) {
         // Get handles for primitives of this kind
         let entries: Vec<(String, ActorHandle)> = {
@@ -372,12 +374,19 @@ impl ProcessManager {
                 .collect()
         };
 
-        // Stop each actor (triggers before_stop which sends SIGTERM)
-        for (name, handle) in entries {
-            info!("Stopping {}", name);
+        // Phase A: Send StopPrimitive to all actors (SIGTERM, actor stays alive)
+        for (name, handle) in &entries {
+            info!("Signaling {} to stop", name);
+            handle.send(StopPrimitive).await;
+        }
+
+        // Phase B: Wait for children to exit and monitor tasks to broadcast system.stopped.*
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Phase C: Stop the actors themselves (cleanup)
+        for (name, handle) in &entries {
+            info!("Stopping actor {}", name);
             let _ = handle.stop().await;
-            // Brief delay to allow child to receive SIGTERM and exit
-            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 
@@ -388,9 +397,15 @@ impl ProcessManager {
 
     /// Wait for primitives to handle shutdown message, then stop their actors.
     ///
-    /// Gives primitives time to process remaining messages before stopping.
+    /// Gives primitives time to process the system.shutdown broadcast and exit
+    /// gracefully before falling back to SIGTERM.
+    ///
+    /// Initial: Sleep 500ms (let system.shutdown propagate, children begin graceful exit)
+    /// Phase A: Send StopPrimitive to all actors (SIGTERM as fallback if child didn't exit)
+    /// Phase B: Sleep 2s for children to exit (monitor tasks broadcast system.stopped.*)
+    /// Phase C: handle.stop() for each actor (cleanup)
     async fn wait_for_kind_exit(&self, kind: PrimitiveKind) {
-        // Brief wait to allow primitives to receive and process shutdown message
+        // Initial: Let system.shutdown propagate and children begin graceful exit
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Get handles for primitives of this kind
@@ -403,12 +418,19 @@ impl ProcessManager {
                 .collect()
         };
 
-        // Stop each actor (triggers before_stop which sends SIGTERM and broadcasts system.stopped)
-        for (name, handle) in entries {
-            info!("Stopping {}", name);
+        // Phase A: Send StopPrimitive (SIGTERM fallback if child didn't exit from system.shutdown)
+        for (name, handle) in &entries {
+            info!("Signaling {} to stop", name);
+            handle.send(StopPrimitive).await;
+        }
+
+        // Phase B: Wait for children to exit and monitor tasks to broadcast system.stopped.*
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Phase C: Stop the actors themselves (cleanup)
+        for (name, handle) in &entries {
+            info!("Stopping actor {}", name);
             let _ = handle.stop().await;
-            // Brief delay to allow child to exit and system.stopped to be broadcast
-            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 }
