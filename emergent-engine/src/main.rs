@@ -12,10 +12,10 @@ use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use emergent_engine::scaffold;
@@ -264,6 +264,54 @@ fn create_ipc_config(socket_path: &std::path::Path) -> IpcConfig {
     ipc_config
 }
 
+/// Check for a stale socket file and clean it up if no listener is active.
+///
+/// After an unclean shutdown (kill -9, OOM, crash), the Unix socket file may
+/// remain on disk. This function detects whether the socket is stale by
+/// attempting a connection with a timeout:
+///
+/// - If the socket file does not exist, returns `Ok(())`.
+/// - If a connection succeeds, another engine instance is running -- returns an error.
+/// - If the connection fails or times out, the socket is stale and is removed.
+async fn check_and_cleanup_stale_socket(socket_path: &Path) -> Result<()> {
+    if !socket_path.exists() {
+        return Ok(());
+    }
+
+    let connect_timeout = std::time::Duration::from_secs(2);
+    let connect_result =
+        tokio::time::timeout(connect_timeout, tokio::net::UnixStream::connect(socket_path)).await;
+
+    match connect_result {
+        Ok(Ok(_stream)) => {
+            // Connection succeeded -- a live listener is responding
+            anyhow::bail!(
+                "Another engine instance is already running (socket: {})\n\n\
+                 If this is unexpected, stop the other instance first, or remove the \
+                 socket manually:\n  rm {}",
+                socket_path.display(),
+                socket_path.display()
+            );
+        }
+        Ok(Err(_)) | Err(_) => {
+            // Connection refused or timed out -- stale socket from a previous crash
+            warn!(
+                "Detected stale socket from a previous unclean shutdown: {}",
+                socket_path.display()
+            );
+            tokio::fs::remove_file(socket_path).await.with_context(|| {
+                format!(
+                    "Failed to remove stale socket file: {}",
+                    socket_path.display()
+                )
+            })?;
+            info!("Removed stale socket, proceeding with startup");
+        }
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -311,6 +359,11 @@ async fn main() -> Result<()> {
     // Resolve socket path
     let socket_path = config.socket_path();
     info!("Socket path: {}", socket_path.display());
+
+    // Check for stale socket from a previous unclean shutdown
+    check_and_cleanup_stale_socket(&socket_path)
+        .await
+        .context("Socket pre-flight check failed")?;
 
     // Initialize event stores
     let event_store = Arc::new(init_event_stores(&config)?);
@@ -615,4 +668,72 @@ async fn main() -> Result<()> {
     info!("Emergent Engine shutdown complete.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener as StdUnixListener;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn stale_socket_check_no_file_is_ok() -> Result<()> {
+        let dir = TempDir::new()?;
+        let socket_path = dir.path().join("nonexistent.sock");
+
+        check_and_cleanup_stale_socket(&socket_path).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_socket_check_removes_stale_file() -> Result<()> {
+        let dir = TempDir::new()?;
+        let socket_path = dir.path().join("stale.sock");
+
+        // Create a socket, then drop the listener so it becomes stale
+        {
+            let _listener = StdUnixListener::bind(&socket_path)?;
+        }
+        assert!(socket_path.exists());
+
+        check_and_cleanup_stale_socket(&socket_path).await?;
+        assert!(!socket_path.exists(), "stale socket should have been removed");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_socket_check_errors_when_listener_active() -> Result<()> {
+        let dir = TempDir::new()?;
+        let socket_path = dir.path().join("active.sock");
+
+        // Keep the listener alive so the socket is not stale
+        let _listener = StdUnixListener::bind(&socket_path)?;
+        assert!(socket_path.exists());
+
+        let result = check_and_cleanup_stale_socket(&socket_path).await;
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.err().context("expected error")?);
+        assert!(
+            err_msg.contains("Another engine instance is already running"),
+            "expected 'already running' error, got: {err_msg}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_socket_check_removes_non_socket_file() -> Result<()> {
+        let dir = TempDir::new()?;
+        let socket_path = dir.path().join("not-a-socket.sock");
+
+        // Create a regular file (not a socket) -- should be treated as stale
+        std::fs::write(&socket_path, "not a socket")?;
+        assert!(socket_path.exists());
+
+        check_and_cleanup_stale_socket(&socket_path).await?;
+        assert!(
+            !socket_path.exists(),
+            "non-socket file should have been removed"
+        );
+        Ok(())
+    }
 }
