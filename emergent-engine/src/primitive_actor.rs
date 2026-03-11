@@ -25,6 +25,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use tokio::process::Command;
 use tracing::{error, info, warn};
 
@@ -247,7 +248,8 @@ pub fn build_primitive_actor(
                             tokio::spawn(async move {
                                 match child.wait().await {
                                     Ok(status) => {
-                                        let exit_code = status.code().unwrap_or(-1);
+                                        let exit_code = exit_code_from_status(&status);
+                                        let clean = is_clean_exit(&status);
                                         info!(
                                             "{} exited with status {} (pid: {})",
                                             monitor_info.name, exit_code, pid
@@ -262,12 +264,12 @@ pub fn build_primitive_actor(
                                             .await;
 
                                         // Broadcast exit event
-                                        let event_type = if status.success() {
+                                        let event_type = if clean {
                                             "system.stopped"
                                         } else {
                                             "system.error"
                                         };
-                                        let error_msg = if status.success() {
+                                        let error_msg = if clean {
                                             None
                                         } else {
                                             Some(format!("Exited with status: {}", exit_code))
@@ -345,7 +347,7 @@ pub fn build_primitive_actor(
             if actor.model.child_pid == Some(msg.pid) {
                 actor.model.child_pid = None;
                 actor.model.info.pid = None;
-                if msg.status == 0 {
+                if is_clean_exit_code(msg.status) {
                     actor.model.info.state = PrimitiveState::Stopped;
                 } else {
                     actor.model.info.state = PrimitiveState::Failed;
@@ -392,6 +394,72 @@ pub fn build_primitive_actor(
         });
 
     actor
+}
+
+/// Check whether an exit status represents a clean shutdown.
+///
+/// Returns `true` for:
+/// - Exit code 0 (normal success)
+/// - Exit code 143 (process caught SIGTERM and exited with 128+15)
+/// - Killed by signal 15/SIGTERM (process did not catch the signal)
+///
+/// This prevents SIGTERM-killed processes from being logged as errors
+/// during engine-initiated graceful shutdown.
+#[must_use]
+fn is_clean_exit(status: &ExitStatus) -> bool {
+    if status.success() {
+        return true;
+    }
+
+    // Process caught SIGTERM and exited with conventional status 128+15=143
+    if status.code() == Some(143) {
+        return true;
+    }
+
+    // On Unix, process was killed directly by SIGTERM (didn't catch the signal)
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if status.signal() == Some(15) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Determine the exit code to report from an `ExitStatus`.
+///
+/// On Unix, if the process was killed by a signal (no exit code), the
+/// conventional representation 128+signal is returned. Falls back to -1
+/// if neither code nor signal is available.
+#[must_use]
+fn exit_code_from_status(status: &ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+
+    -1
+}
+
+/// Check whether an integer exit code represents a clean shutdown.
+///
+/// This is the integer-based counterpart to [`is_clean_exit`] for use
+/// in contexts where only the exit code integer is available (e.g.,
+/// the `ChildExited` message handler).
+///
+/// Returns `true` for exit codes 0 (success) and 143 (SIGTERM: 128+15).
+#[must_use]
+fn is_clean_exit_code(code: i32) -> bool {
+    code == 0 || code == 143
 }
 
 /// Create a system event message wrapped for IPC.
@@ -554,5 +622,86 @@ mod tests {
         assert!(json.contains("\"publishes\":[\"output.enriched\"]"));
         assert!(json.contains("\"subscribes\":[\"input.event\"]"));
         Ok(())
+    }
+
+    #[test]
+    fn test_is_clean_exit_code_zero() {
+        assert!(is_clean_exit_code(0));
+    }
+
+    #[test]
+    fn test_is_clean_exit_code_sigterm_143() {
+        assert!(is_clean_exit_code(143));
+    }
+
+    #[test]
+    fn test_is_clean_exit_code_other_nonzero_is_error() {
+        assert!(!is_clean_exit_code(1));
+        assert!(!is_clean_exit_code(2));
+        assert!(!is_clean_exit_code(127));
+        assert!(!is_clean_exit_code(137)); // SIGKILL: 128+9
+        assert!(!is_clean_exit_code(139)); // SIGSEGV: 128+11
+        assert!(!is_clean_exit_code(-1));
+    }
+
+    #[cfg(unix)]
+    mod unix_exit_status_tests {
+        use super::*;
+        use std::os::unix::process::ExitStatusExt;
+
+        #[test]
+        fn test_is_clean_exit_success() {
+            let status = ExitStatus::from_raw(0);
+            assert!(is_clean_exit(&status));
+        }
+
+        #[test]
+        fn test_is_clean_exit_sigterm_signal() {
+            // Process killed by SIGTERM (signal 15), raw wait status = signal << 0
+            // On Unix, raw status for signal N is just N (no high byte set)
+            let status = ExitStatus::from_raw(15);
+            assert!(is_clean_exit(&status));
+        }
+
+        #[test]
+        fn test_is_clean_exit_sigterm_exit_code_143() {
+            // Process caught SIGTERM and exited with 143 (128+15)
+            // On Unix, raw status for exit code N is N << 8
+            let status = ExitStatus::from_raw(143 << 8);
+            assert!(is_clean_exit(&status));
+        }
+
+        #[test]
+        fn test_is_clean_exit_sigkill_is_error() {
+            // SIGKILL (signal 9) is not a clean exit
+            let status = ExitStatus::from_raw(9);
+            assert!(!is_clean_exit(&status));
+        }
+
+        #[test]
+        fn test_is_clean_exit_nonzero_code_is_error() {
+            // Exit code 1 is not clean
+            let status = ExitStatus::from_raw(1 << 8);
+            assert!(!is_clean_exit(&status));
+        }
+
+        #[test]
+        fn test_exit_code_from_status_normal() {
+            let status = ExitStatus::from_raw(0);
+            assert_eq!(exit_code_from_status(&status), 0);
+        }
+
+        #[test]
+        fn test_exit_code_from_status_exit_code() {
+            let status = ExitStatus::from_raw(42 << 8);
+            assert_eq!(exit_code_from_status(&status), 42);
+        }
+
+        #[test]
+        fn test_exit_code_from_status_signal_gives_128_plus_signal() {
+            // Signal 15 (SIGTERM) => 128 + 15 = 143
+            let status = ExitStatus::from_raw(15);
+            assert_eq!(exit_code_from_status(&status), 143);
+        }
     }
 }
