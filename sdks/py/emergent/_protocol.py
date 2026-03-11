@@ -7,14 +7,13 @@ This module handles frame encoding/decoding for the binary IPC protocol.
 from __future__ import annotations
 
 import json
-import secrets
 import struct
-import time
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
 
 import msgpack
+from typeid import TypeID
 
 from .errors import ProtocolError
 
@@ -168,27 +167,24 @@ def try_decode_frame(buffer: bytes | bytearray) -> DecodedFrame | None:
 
 def generate_correlation_id(prefix: str = "req") -> str:
     """
-    Generate a unique correlation ID.
+    Generate a unique correlation ID in TypeID format.
 
-    Format: `{prefix}_{timestamp_hex}{random_hex}`
+    Format: `{prefix}_{base32_crockford_uuidv7}`
 
     Args:
-        prefix: Prefix for the ID (e.g., "req", "sub", "pub")
+        prefix: Prefix for the ID (e.g., "cor", "sub", "pub")
 
     Returns:
         A unique correlation ID string
     """
-    timestamp_hex = format(int(time.time() * 1000), "012x")
-    random_hex = secrets.token_hex(4)
-    return f"{prefix}_{timestamp_hex}{random_hex}"
+    return str(TypeID(prefix))
 
 
 def generate_message_id(prefix: str = "msg") -> str:
     """
-    Generate a unique message ID in MTI format.
+    Generate a unique message ID in TypeID format.
 
-    Format: `{prefix}_{timestamp_hex}{random_hex}`
-    This produces time-ordered, unique IDs similar to UUIDv7.
+    Format: `{prefix}_{base32_crockford_uuidv7}`
 
     Args:
         prefix: Prefix for the ID (default: "msg")
@@ -196,6 +192,4 @@ def generate_message_id(prefix: str = "msg") -> str:
     Returns:
         A unique message ID string
     """
-    timestamp_hex = format(int(time.time() * 1000), "012x")
-    random_hex = secrets.token_hex(8)
-    return f"{prefix}_{timestamp_hex}{random_hex}"
+    return str(TypeID(prefix))

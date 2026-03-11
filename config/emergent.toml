@@ -55,8 +55,8 @@ publishes = ["timer.tick"]
 # Python webhook source - HTTP listener that publishes on POST /webhook
 [[sources]]
 name = "webhook"
-path = "/usr/bin/uv"
-args = ["run", "--project", "./examples/sources/webhook", "python", "./examples/sources/webhook/main.py", "--port", "8080"]
+path = "uv"
+args = ["run", "--project", "./examples/sources/webhook", "python", "./examples/sources/webhook/main.py", "--port", "8008"]
 enabled = true
 publishes = ["webhook.received"]
 
@@ -109,7 +109,7 @@ subscribes = ["timer.filtered", "filter.processed", "system.started.*", "system.
 # Note: Update the path to match your deno installation (run: which deno)
 [[sinks]]
 name = "console_color"
-path = "/home/rodzilla/.deno/bin/deno"
+path = "deno"
 args = [
     "run",
     "--allow-env",
@@ -124,7 +124,7 @@ subscribes = ["timer.tick"]
 # Python sink for webhook events only - testing isolation
 [[sinks]]
 name = "webhook_console"
-path = "/usr/bin/uv"
+path = "uv"
 args = ["run", "--project", "./examples/sources/webhook", "python", "./examples/sinks/webhook_console/main.py"]
 enabled = true
 subscribes = ["webhook.received"]
@@ -133,14 +133,15 @@ subscribes = ["webhook.received"]
 # Serves HTTP on port 8080 with SSE updates for live topology changes
 [[sinks]]
 name = "topology-viewer"
-path = "/home/rodzilla/.deno/bin/deno"
+path = "deno"
 args = [
     "run",
     "--allow-env",
     "--allow-read",
+    "--allow-write",
     "--allow-net",
     "./examples/sinks/topology-viewer/main.ts",
-    "--port", "8080"
+    "--port", "8009"
 ]
 enabled = true
 subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]

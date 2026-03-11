@@ -16,9 +16,9 @@ dependencies = [
 
 [[package]]
 name = "acton-macro"
-version = "7.1.0"
+version = "7.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f92b2d520f61e857c54bdd33527deff788fb1475c8eb694d1748728393260eb"
+checksum = "4a4b6bc1f01b65a2f8a6c5d8b0928bf542d48f656e694821c7ca89e8889168a3"
 dependencies = [
  "quote",
  "syn",
@@ -26,9 +26,9 @@ dependencies = [
 
 [[package]]
 name = "acton-reactive"
-version = "7.1.0"
+version = "7.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e96b0946b750c9a266b3ffd4b8c272062733e5dd2fb62ec429bcd019d29a5bc"
+checksum = "09f6a177ab949780dca2d334cc6bb26413a1568aaafcd4e4041c8da6775b17e7"
 dependencies = [
  "acton-ern",
  "acton-macro",
@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "console"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "clap",
@@ -706,7 +706,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "emergent-client"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "acton-reactive",
  "futures",
@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "emergent-engine"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "acton-reactive",
  "anyhow",
@@ -751,6 +751,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "which",
  "zip",
 ]
 
@@ -817,7 +818,7 @@ dependencies = [
 
 [[package]]
 name = "filter"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -1461,7 +1462,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "log"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "clap",
@@ -2482,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "timer"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -2980,6 +2981,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36a29fc0408b113f68cf32637857ab740edfafdf460c326cd2afaa2d84cc05dc"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "which"
+version = "8.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81995fafaaaf6ae47a7d0cc83c67caf92aeb7e5331650ae6ff856f7c0c60c459"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

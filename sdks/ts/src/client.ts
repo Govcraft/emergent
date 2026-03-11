@@ -354,7 +354,7 @@ export class BaseClient {
   protected async getMySubscriptionsInternal(): Promise<string[]> {
     this.#ensureConnected();
 
-    const correlationId = generateCorrelationId("getsub");
+    const correlationId = generateCorrelationId("cor");
 
     // Subscribe to response type first
     const subCorrelationId = generateCorrelationId("sub");
@@ -414,7 +414,7 @@ export class BaseClient {
   protected async getTopologyInternal(): Promise<TopologyState> {
     this.#ensureConnected();
 
-    const correlationId = generateCorrelationId("gettopo");
+    const correlationId = generateCorrelationId("cor");
 
     // Subscribe to response type first
     const subCorrelationId = generateCorrelationId("sub");

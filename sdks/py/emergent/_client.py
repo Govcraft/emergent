@@ -355,7 +355,7 @@ class BaseClient:
         """
         self._ensure_connected()
 
-        correlation_id = generate_correlation_id("getsub")
+        correlation_id = generate_correlation_id("cor")
 
         # Subscribe to response type first
         sub_correlation_id = generate_correlation_id("sub")
@@ -419,7 +419,7 @@ class BaseClient:
         """
         self._ensure_connected()
 
-        correlation_id = generate_correlation_id("gettopo")
+        correlation_id = generate_correlation_id("cor")
 
         # Subscribe to response type first
         sub_correlation_id = generate_correlation_id("sub")

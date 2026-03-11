@@ -84,12 +84,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Subscriptions for system lifecycle events and topology responses
+// Subscriptions for system lifecycle events
 const SUBSCRIPTIONS = [
   "system.started.*",
   "system.stopped.*",
   "system.error.*",
-  "system.response.topology",
 ];
 
 // Connect to engine with retry logic
@@ -108,16 +107,15 @@ async function connectWithRetry(
       const sink = await EmergentSink.connect(name);
 
       try {
-        // Try to query current topology to populate initial state
-        // This may fail if the GetTopology IPC routing isn't working
+        // Query current topology via engine HTTP API to populate initial state
         try {
-          console.log(`[${name}] Connected, querying current topology...`);
-          const topology = await sink.getTopology();
-          console.log(`[${name}] Got ${topology.primitives.length} primitive(s)`);
+          console.log(`[${name}] Connected, querying current topology via HTTP API...`);
+          const resp = await fetch("http://127.0.0.1:8891/api/topology");
+          const data = await resp.json() as { primitives: TopologyPrimitive[] };
+          console.log(`[${name}] Got ${data.primitives.length} primitive(s)`);
 
-          // Populate graph with existing primitives
-          for (const prim of topology.primitives) {
-            graph.handleTopologyPrimitive(prim as TopologyPrimitive);
+          for (const prim of data.primitives) {
+            graph.handleTopologyPrimitive(prim);
           }
         } catch (topoErr) {
           console.log(`[${name}] Could not query topology (will rely on events): ${topoErr instanceof Error ? topoErr.message : topoErr}`);
@@ -129,14 +127,7 @@ async function connectWithRetry(
 
         try {
           for await (const msg of stream) {
-            if (msg.messageType === "system.response.topology") {
-              // Handle full topology refresh from topology-query handler
-              const payload = msg.payloadAs<{ primitives: TopologyPrimitive[] }>();
-              console.log(`[${name}] Topology refresh: ${payload.primitives?.length ?? 0} primitive(s)`);
-              if (payload.primitives) {
-                graph.handleTopologyRefresh(payload.primitives);
-              }
-            } else if (msg.messageType.startsWith("system.started.")) {
+            if (msg.messageType.startsWith("system.started.")) {
               const payload = msg.payloadAs<SystemEventPayload>();
               console.log(
                 `[${name}] Started: ${payload.name} (${payload.kind}) pid=${payload.pid}`

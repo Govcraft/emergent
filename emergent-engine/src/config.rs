@@ -232,6 +232,39 @@ fn expand_tilde(path: &Path, home_dir: Option<&Path>) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Resolve a bare command name via PATH lookup (impure function).
+///
+/// - If the path contains a `/`, it's absolute or relative — return unchanged.
+/// - If the path already exists as a file, return unchanged.
+/// - Otherwise, attempt `which::which()` to find it on PATH.
+///   Returns the resolved absolute path on success, or the original path on failure.
+fn resolve_command_path(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+
+    // Contains a separator — it's absolute or relative, leave it alone
+    if path_str.contains('/') {
+        return path.to_path_buf();
+    }
+
+    // Already exists as a file at this path
+    if path.exists() {
+        return path.to_path_buf();
+    }
+
+    // Bare command name — try PATH lookup
+    match which::which(path) {
+        Ok(resolved) => {
+            tracing::debug!(
+                command = %path_str,
+                resolved = %resolved.display(),
+                "Resolved bare command via PATH"
+            );
+            resolved
+        }
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 /// Common interface for all primitive configurations.
 ///
 /// This trait abstracts over `SourceConfig`, `HandlerConfig`, and `SinkConfig`
@@ -350,6 +383,7 @@ impl EmergentConfig {
         let content = std::fs::read_to_string(path)?;
         let mut config: EmergentConfig = toml::from_str(&content)?;
         config.expand_paths();
+        config.resolve_path_commands();
         config.validate()?;
         Ok(config)
     }
@@ -361,6 +395,7 @@ impl EmergentConfig {
     pub fn parse(content: &str) -> Result<Self, ConfigError> {
         let mut config: EmergentConfig = toml::from_str(content)?;
         config.expand_paths();
+        config.resolve_path_commands();
         config.validate()?;
         Ok(config)
     }
@@ -399,6 +434,24 @@ impl EmergentConfig {
         }
         for sink in &mut self.sinks {
             sink.path = expand_tilde(&sink.path, home_ref);
+        }
+    }
+
+    /// Resolve bare command names in all primitive paths via PATH lookup.
+    ///
+    /// For each source, handler, and sink, if the path is a bare command name
+    /// (no `/` separator), attempts to resolve it to an absolute path using
+    /// the system PATH. This allows configs to use `path = "uv"` instead of
+    /// `path = "/usr/bin/uv"`.
+    pub fn resolve_path_commands(&mut self) {
+        for source in &mut self.sources {
+            source.path = resolve_command_path(&source.path);
+        }
+        for handler in &mut self.handlers {
+            handler.path = resolve_command_path(&handler.path);
+        }
+        for sink in &mut self.sinks {
+            sink.path = resolve_command_path(&sink.path);
         }
     }
 
@@ -830,5 +883,33 @@ enabled = true
         // This should parse without error (path exists)
         let result = EmergentConfig::parse(toml);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_command_path_absolute_unchanged() {
+        let path = Path::new("/usr/bin/something");
+        let result = resolve_command_path(path);
+        assert_eq!(result, PathBuf::from("/usr/bin/something"));
+    }
+
+    #[test]
+    fn test_resolve_command_path_relative_unchanged() {
+        let path = Path::new("./target/release/timer");
+        let result = resolve_command_path(path);
+        assert_eq!(result, PathBuf::from("./target/release/timer"));
+    }
+
+    #[test]
+    fn test_resolve_command_path_bare_resolves() {
+        // "true" is a standard Unix command that should be on PATH
+        let result = resolve_command_path(Path::new("true"));
+        assert!(result.is_absolute(), "Expected absolute path, got: {result:?}");
+    }
+
+    #[test]
+    fn test_resolve_command_path_bare_not_found() {
+        let path = Path::new("nonexistent_xyz_12345");
+        let result = resolve_command_path(path);
+        assert_eq!(result, PathBuf::from("nonexistent_xyz_12345"));
     }
 }
