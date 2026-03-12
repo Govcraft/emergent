@@ -62,6 +62,12 @@ Source ──publish──> Handler ──transform──> Sink
 - **Simple IPC protocol**: MessagePack over Unix sockets—no distributed systems setup
 - **TOML configuration**: Declare your pipeline topology in one readable file
 
+## Topology Viewer
+
+The built-in topology viewer shows your running pipeline — nodes, subscriptions, and process state — in real time.
+
+![Emergent Topology Viewer](docs/images/topology-viewer.png)
+
 ## Quick Start
 
 ```bash
