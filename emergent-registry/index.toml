@@ -65,3 +65,12 @@ kind = "source"
 description = "Execute shell commands and emit output as events"
 publishes = ["exec.output", "exec.error", "exec.exit"]
 tags = ["exec", "shell", "command"]
+
+[[primitives]]
+name = "exec-handler"
+version = "0.1.0"
+kind = "handler"
+description = "Subscribe to events, pipe payloads through an executable, publish results"
+subscribes = ["*"]
+publishes = ["exec.output", "exec.error"]
+tags = ["exec", "shell", "command", "transform"]
