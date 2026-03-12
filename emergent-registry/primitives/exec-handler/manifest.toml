@@ -1,0 +1,35 @@
+# Exec Handler Primitive Manifest
+
+[primitive]
+name = "exec-handler"
+version = "0.1.0"
+kind = "handler"
+description = "Subscribe to events, pipe payloads through an executable, publish results"
+homepage = "https://github.com/govcraft/emergent-primitives"
+license = "MIT"
+
+[messages]
+subscribes = ["*"]
+publishes = ["exec.output", "exec.error"]
+
+# CLI Arguments
+[[args]]
+name = "publish-as"
+long = "publish-as"
+short = "p"
+required = false
+description = "Message type for successful output (default: exec.output)"
+
+[[args]]
+name = "error-as"
+long = "error-as"
+short = "e"
+required = false
+description = "Message type for error output (default: exec.error)"
+
+[[args]]
+name = "timeout"
+long = "timeout"
+short = "t"
+required = false
+description = "Per-execution timeout in milliseconds (default: 30000)"

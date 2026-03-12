@@ -727,6 +727,20 @@ impl EmergentHandler {
         discover_impl(&mut reader, &mut writer).await
     }
 
+    /// Get the configured subscription types for this primitive.
+    ///
+    /// Queries the engine's config service to get the message types
+    /// this handler should subscribe to based on the engine configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn get_my_subscriptions(&self) -> Result<Vec<String>> {
+        let stream = connect_to_engine(&self.name).await?;
+        let (mut reader, mut writer) = stream.into_split();
+        get_my_subscriptions_impl(&mut reader, &mut writer, &self.name).await
+    }
+
     /// Get the name of this handler.
     #[must_use]
     pub fn name(&self) -> &str {

@@ -787,6 +787,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "exec-handler"
+version = "0.8.0"
+dependencies = [
+ "clap",
+ "emergent-client",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

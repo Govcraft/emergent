@@ -209,10 +209,7 @@ fn format_config_snippet(
     let output_dir_str = output_dir.display().to_string();
 
     let (path, args) = match language {
-        Language::Rust => (
-            format!("./target/release/{name}"),
-            String::from("[]"),
-        ),
+        Language::Rust => (format!("./target/release/{name}"), String::from("[]")),
         Language::Python => (
             String::from("uv"),
             format!(
@@ -320,7 +317,9 @@ mod tests {
         // Wrap in a document context so TOML parser can handle the array-of-tables
         let doc = format!("[engine]\nname = \"test\"\n\n{snippet}");
         let result: Result<crate::config::EmergentConfig, _> = toml::from_str(&doc);
-        assert!(result.is_ok(), "Snippet should produce valid TOML: {snippet}");
+        assert!(
+            result.is_ok(),
+            "Snippet should produce valid TOML: {snippet}"
+        );
     }
 }
-

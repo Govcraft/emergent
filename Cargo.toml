@@ -5,6 +5,7 @@ members = [
     "sdks/rust",
     "examples/sources/timer",
     "examples/handlers/filter",
+    "examples/handlers/exec",
     "examples/sinks/log",
     "examples/sinks/console",
 ]
