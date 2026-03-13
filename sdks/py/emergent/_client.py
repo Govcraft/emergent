@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -46,6 +47,8 @@ from .types import (
     TopologyState,
     WireMessage,
 )
+
+logger = logging.getLogger("emergent")
 
 # Default timeout for requests in seconds
 DEFAULT_TIMEOUT = 30.0
@@ -178,14 +181,30 @@ class BaseClient:
 
         path = socket_path if socket_path is not None else get_socket_path()
 
+        logger.info(
+            "connecting to engine primitive=%s kind=%s path=%s",
+            self.name,
+            self.primitive_kind,
+            path,
+        )
+
         # Check if socket exists
         if not await socket_exists(path):
+            logger.error("engine socket not found path=%s", path)
             raise SocketNotFoundError(path)
 
         try:
             self._reader, self._writer = await asyncio.open_unix_connection(path)
             self._read_task = asyncio.create_task(self._read_loop())
+            logger.info(
+                "connected to engine primitive=%s kind=%s",
+                self.name,
+                self.primitive_kind,
+            )
         except OSError as err:
+            logger.error(
+                "failed to connect to engine primitive=%s error=%s", self.name, err
+            )
             raise ConnectionError(f"Failed to connect to {path}: {err}") from err
 
     async def _subscribe(self, message_types: list[str]) -> MessageStream:
@@ -217,6 +236,12 @@ class BaseClient:
         if "system.shutdown" not in all_types:
             all_types.append("system.shutdown")
 
+        logger.info(
+            "subscribing to message types primitive=%s types=%s",
+            self.name,
+            message_types,
+        )
+
         response = await self._send_request(
             MessageType.SUBSCRIBE,
             IpcSubscribeRequest(
@@ -227,6 +252,11 @@ class BaseClient:
         )
 
         if not response.success:
+            logger.error(
+                "subscription failed primitive=%s error=%s",
+                self.name,
+                response.error,
+            )
             stream.close()
             raise ConnectionError(response.error or "Subscription failed")
 
@@ -234,6 +264,8 @@ class BaseClient:
         for t in message_types:
             if t != "system.shutdown":
                 self._subscribed_types.add(t)
+
+        logger.info("subscribed to message types primitive=%s", self.name)
 
         return stream
 
@@ -245,6 +277,12 @@ class BaseClient:
             message_types: List of message types to unsubscribe from
         """
         self._ensure_connected()
+
+        logger.debug(
+            "unsubscribing from message types primitive=%s types=%s",
+            self.name,
+            message_types,
+        )
 
         correlation_id = generate_correlation_id("unsub")
 
@@ -259,11 +297,20 @@ class BaseClient:
 
         if not response.success:
             # Log but don't fail - unsubscribe is best-effort
-            pass
+            logger.warning(
+                "unsubscribe failed primitive=%s types=%s error=%s",
+                self.name,
+                message_types,
+                response.error,
+            )
 
         # Remove from tracked types
         for t in message_types:
             self._subscribed_types.discard(t)
+
+        logger.debug(
+            "unsubscribed from message types primitive=%s", self.name
+        )
 
     async def _publish(self, message: EmergentMessage) -> None:
         """
@@ -292,8 +339,29 @@ class BaseClient:
         )
 
         frame = encode_frame(MessageType.REQUEST, envelope.model_dump(), self.format)
-        self._writer.write(frame)  # type: ignore[union-attr]
-        await self._writer.drain()  # type: ignore[union-attr]
+
+        logger.debug(
+            "publishing message primitive=%s message_type=%s message_id=%s",
+            self.name,
+            wire_dict.get("message_type"),
+            wire_dict.get("id"),
+        )
+
+        try:
+            self._writer.write(frame)  # type: ignore[union-attr]
+            await self._writer.drain()  # type: ignore[union-attr]
+        except Exception as e:
+            logger.error(
+                "failed to publish message primitive=%s error=%s", self.name, e
+            )
+            raise
+
+        logger.debug(
+            "published message primitive=%s message_type=%s message_id=%s",
+            self.name,
+            wire_dict.get("message_type"),
+            wire_dict.get("id"),
+        )
 
     async def _discover(self) -> DiscoveryInfo:
         """
@@ -306,6 +374,8 @@ class BaseClient:
             ConnectionError: If discovery fails
         """
         self._ensure_connected()
+
+        logger.debug("sending discovery request primitive=%s", self.name)
 
         correlation_id = generate_correlation_id("disc")
 
@@ -324,9 +394,19 @@ class BaseClient:
         )
 
         if not response.success:
+            logger.error(
+                "discovery failed primitive=%s error=%s", self.name, response.error
+            )
             raise ConnectionError(response.error or "Discovery failed")
 
         disc_resp = IpcDiscoverResponse.model_validate(response.payload)
+
+        logger.debug(
+            "discovery complete primitive=%s message_types=%d primitives=%d",
+            self.name,
+            len(disc_resp.message_types),
+            len(disc_resp.primitives),
+        )
 
         return DiscoveryInfo(
             message_types=tuple(disc_resp.message_types),
@@ -354,6 +434,10 @@ class BaseClient:
             TimeoutError: If the request times out
         """
         self._ensure_connected()
+
+        logger.debug(
+            "querying configured subscriptions primitive=%s", self.name
+        )
 
         correlation_id = generate_correlation_id("cor")
 
@@ -401,7 +485,13 @@ class BaseClient:
         await self._publish(request)
 
         # Wait for response
-        return await future
+        result = await future
+        logger.info(
+            "received configured subscriptions primitive=%s types=%s",
+            self.name,
+            result,
+        )
+        return result
 
     async def _get_topology(self) -> TopologyState:
         """
@@ -418,6 +508,8 @@ class BaseClient:
             TimeoutError: If the request times out
         """
         self._ensure_connected()
+
+        logger.debug("querying topology primitive=%s", self.name)
 
         correlation_id = generate_correlation_id("cor")
 
@@ -465,7 +557,13 @@ class BaseClient:
         await self._publish(request)
 
         # Wait for response
-        return await future
+        result = await future
+        logger.debug(
+            "received topology primitive=%s primitive_count=%d",
+            self.name,
+            len(result.primitives),
+        )
+        return result
 
     def close(self) -> None:
         """
@@ -473,6 +571,12 @@ class BaseClient:
 
         This is a synchronous close that cancels pending operations.
         """
+        logger.info(
+            "disconnecting from engine primitive=%s kind=%s",
+            self.name,
+            self.primitive_kind,
+        )
+
         if self._disposed:
             return
 
@@ -518,6 +622,8 @@ class BaseClient:
         self._pending_subscriptions_requests.clear()
 
         self._subscribed_types.clear()
+
+        logger.info("disconnected from engine primitive=%s", self.name)
 
         self._disposed = True
 
@@ -583,17 +689,24 @@ class BaseClient:
 
     async def _read_loop(self) -> None:
         """Background task to receive and dispatch frames."""
+        logger.debug("read loop started primitive=%s", self.name)
         try:
             while self._reader is not None and not self._disposed:
                 data = await self._reader.read(65536)
                 if not data:
+                    logger.info(
+                        "connection closed (EOF) primitive=%s", self.name
+                    )
                     break  # EOF
 
                 self._read_buffer.extend(data)
                 self._process_frames()
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except Exception as e:
+            logger.error(
+                "read loop error primitive=%s error=%s", self.name, e
+            )
             if self._message_stream is not None:
                 self._message_stream.close_with_error()
 
@@ -610,7 +723,12 @@ class BaseClient:
 
                 # Handle the frame
                 self._handle_frame(result.msg_type, result.payload)
-            except ProtocolError:
+            except ProtocolError as e:
+                logger.error(
+                    "protocol error while processing frame primitive=%s error=%s",
+                    self.name,
+                    e,
+                )
                 # Reset buffer on protocol error
                 self._read_buffer.clear()
                 break
@@ -635,11 +753,21 @@ class BaseClient:
                 if isinstance(shutdown_payload, dict):
                     shutdown_kind = shutdown_payload.get("kind", "").lower()
 
+                    logger.info(
+                        "received shutdown signal primitive=%s kind=%s",
+                        self.name,
+                        shutdown_kind,
+                    )
+
                     # Close stream if shutdown is for this primitive's kind
                     if (
                         shutdown_kind == self.primitive_kind.lower()
                         and self._message_stream is not None
                     ):
+                        logger.info(
+                            "shutting down (engine requested) primitive=%s",
+                            self.name,
+                        )
                         self._message_stream.close()
                         self._message_stream = None
                 # Don't forward system.shutdown to user - it's internal
@@ -702,6 +830,11 @@ class BaseClient:
                 return  # Don't forward to message stream
 
             if self._message_stream is not None:
+                logger.debug(
+                    "received message primitive=%s message_type=%s",
+                    self.name,
+                    notification.message_type,
+                )
                 # The notification.payload IS the serialized EmergentMessage
                 wire_message = WireMessage.model_validate(notification.payload)
                 message = EmergentMessage.from_wire(wire_message)

@@ -39,6 +39,7 @@ import {
   tryDecodeFrame,
 } from "./protocol.ts";
 import { MessageStream } from "./stream.ts";
+import { createLogger, type Logger } from "./logger.ts";
 
 // ============================================================================
 // Platform Utilities
@@ -117,6 +118,7 @@ export class BaseClient {
   protected readonly primitiveKind: PrimitiveKind;
   protected disposed = false;
 
+  #logger: Logger;
   #readLoopRunning = false;
   #readBuffer: Uint8Array = new Uint8Array(0);
   #pendingRequests: Map<string, PendingRequest> = new Map();
@@ -130,6 +132,7 @@ export class BaseClient {
     this.name = name;
     this.primitiveKind = kind;
     this.#timeoutMs = options?.timeout ?? DEFAULT_TIMEOUT_MS;
+    this.#logger = createLogger(name);
   }
 
   /**
@@ -161,8 +164,11 @@ export class BaseClient {
 
     const path = socketPath ?? getSocketPath();
 
+    this.#logger.info("connecting to engine", { kind: this.primitiveKind, path });
+
     // Check if socket exists
     if (!(await socketExists(path))) {
+      this.#logger.error("engine socket not found", { path });
       throw new SocketNotFoundError(path);
     }
 
@@ -172,14 +178,15 @@ export class BaseClient {
         transport: "unix",
       });
       this.#startReadLoop();
+      this.#logger.info("connected to engine", { kind: this.primitiveKind });
     } catch (err) {
       if (err instanceof SocketNotFoundError) {
         throw err;
       }
+      const msg = err instanceof Error ? err.message : String(err);
+      this.#logger.error("failed to connect to engine", { error: msg });
       throw new ConnectionError(
-        `Failed to connect to ${path}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `Failed to connect to ${path}: ${msg}`,
       );
     }
   }
@@ -197,6 +204,8 @@ export class BaseClient {
     messageTypes: string[],
   ): Promise<MessageStream> {
     this.#ensureConnected();
+
+    this.#logger.info("subscribing to message types", { types: messageTypes });
 
     const correlationId = generateCorrelationId("sub");
 
@@ -225,16 +234,21 @@ export class BaseClient {
     );
 
     if (!response.success) {
+      this.#logger.error("subscription failed", { types: messageTypes, error: response.error });
       stream.close();
       throw new ConnectionError(response.error ?? "Subscription failed");
     }
 
     // Track subscribed types (exclude internal system.shutdown)
+    const subscribed: string[] = [];
     for (const type of messageTypes) {
       if (type !== "system.shutdown") {
         this.#subscribedTypes.add(type);
+        subscribed.push(type);
       }
     }
+
+    this.#logger.info("subscribed to message types", { types: subscribed });
 
     return stream;
   }
@@ -245,6 +259,8 @@ export class BaseClient {
    */
   protected async unsubscribeInternal(messageTypes: string[]): Promise<void> {
     this.#ensureConnected();
+
+    this.#logger.debug("unsubscribing from message types", { types: messageTypes });
 
     const correlationId = generateCorrelationId("unsub");
 
@@ -259,7 +275,7 @@ export class BaseClient {
 
     if (!response.success) {
       // Log but don't fail - unsubscribe is best-effort
-      console.warn("Unsubscribe warning:", response.error);
+      this.#logger.warn("unsubscribe failed", { types: messageTypes, error: response.error });
     }
 
     // Remove from tracked types
@@ -274,6 +290,8 @@ export class BaseClient {
    */
   protected async publishInternal(message: EmergentMessage): Promise<void> {
     this.#ensureConnected();
+
+    this.#logger.debug("publishing message", { messageType: message.messageType, messageId: message.id });
 
     // Convert to wire format and set source
     const wireMessage: WireMessage = {
@@ -300,7 +318,14 @@ export class BaseClient {
     };
 
     const frame = encodeFrame(MSG_TYPE_REQUEST, envelope);
-    await this.conn!.write(frame);
+    try {
+      await this.conn!.write(frame);
+      this.#logger.debug("published message", { messageType: message.messageType, messageId: message.id });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.#logger.error("failed to publish message", { messageType: message.messageType, messageId: message.id, error: errorMsg });
+      throw err;
+    }
   }
 
   /**
@@ -309,6 +334,8 @@ export class BaseClient {
    */
   protected async discoverInternal(): Promise<DiscoveryInfo> {
     this.#ensureConnected();
+
+    this.#logger.debug("sending discovery request");
 
     const correlationId = generateCorrelationId("disc");
 
@@ -327,10 +354,16 @@ export class BaseClient {
     );
 
     if (!response.success) {
+      this.#logger.error("discovery failed", { error: response.error });
       throw new ConnectionError(response.error ?? "Discovery failed");
     }
 
     const discoverResponse = response.payload as IpcDiscoverResponse;
+
+    this.#logger.debug("discovery complete", {
+      messageTypes: discoverResponse.message_types.length,
+      primitives: discoverResponse.primitives.length,
+    });
 
     return {
       messageTypes: Object.freeze([...discoverResponse.message_types]),
@@ -353,6 +386,8 @@ export class BaseClient {
    */
   protected async getMySubscriptionsInternal(): Promise<string[]> {
     this.#ensureConnected();
+
+    this.#logger.debug("querying configured subscriptions from engine");
 
     const correlationId = generateCorrelationId("cor");
 
@@ -400,7 +435,9 @@ export class BaseClient {
     await this.publishInternal(requestMessage);
 
     // Wait for response
-    return resultPromise;
+    const result = await resultPromise;
+    this.#logger.info("received configured subscriptions", { types: result });
+    return result;
   }
 
   /**
@@ -413,6 +450,8 @@ export class BaseClient {
    */
   protected async getTopologyInternal(): Promise<TopologyState> {
     this.#ensureConnected();
+
+    this.#logger.debug("querying topology from engine");
 
     const correlationId = generateCorrelationId("cor");
 
@@ -460,7 +499,9 @@ export class BaseClient {
     await this.publishInternal(requestMessage);
 
     // Wait for response
-    return resultPromise;
+    const result = await resultPromise;
+    this.#logger.debug("received topology", { primitiveCount: result.primitives.length });
+    return result;
   }
 
   /**
@@ -468,6 +509,8 @@ export class BaseClient {
    */
   close(): void {
     if (this.disposed) return;
+
+    this.#logger.info("disconnecting from engine", { kind: this.primitiveKind });
 
     this.#readLoopRunning = false;
 
@@ -509,6 +552,8 @@ export class BaseClient {
     this.#pendingSubscriptionsRequests.clear();
 
     this.#subscribedTypes.clear();
+
+    this.#logger.info("disconnected from engine");
 
     this.disposed = true;
   }
@@ -556,11 +601,11 @@ export class BaseClient {
       this.conn!.write(frame).catch((err) => {
         this.#pendingRequests.delete(correlationId);
         clearTimeout(timer);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        this.#logger.error("failed to send request", { error: errorMsg });
         reject(
           new ConnectionError(
-            `Failed to send: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
+            `Failed to send: ${errorMsg}`,
           ),
         );
       });
@@ -574,7 +619,7 @@ export class BaseClient {
     // Start async read loop
     this.#runReadLoop().catch((err) => {
       if (this.#readLoopRunning) {
-        console.error("Read loop error:", err);
+        this.#logger.error("read loop error", { error: String(err) });
         this.#messageStream?.closeWithError();
       }
     });
@@ -583,11 +628,14 @@ export class BaseClient {
   async #runReadLoop(): Promise<void> {
     const buffer = new Uint8Array(65536);
 
+    this.#logger.debug("read loop started");
+
     try {
       while (this.#readLoopRunning && this.conn) {
         const n = await this.conn.read(buffer);
         if (n === null) {
           // EOF - connection closed
+          this.#logger.info("connection closed (EOF)");
           break;
         }
 
@@ -621,7 +669,7 @@ export class BaseClient {
         this.#handleFrame(result.msgType, result.payload);
       } catch (err) {
         if (err instanceof ProtocolError) {
-          console.error("Protocol error:", err.message);
+          this.#logger.error("protocol error while processing frame", { error: err.message });
           // Reset buffer on protocol error
           this.#readBuffer = new Uint8Array(0);
           break;
@@ -653,8 +701,11 @@ export class BaseClient {
           const shutdownPayload = notification.payload as { kind?: string };
           const shutdownKind = shutdownPayload?.kind?.toLowerCase();
 
+          this.#logger.info("received shutdown signal", { kind: shutdownKind });
+
           // Close stream if shutdown is for this primitive's kind
           if (shutdownKind === this.primitiveKind.toLowerCase()) {
+            this.#logger.info("shutting down (engine requested)");
             // Graceful shutdown - close the stream
             if (this.#messageStream) {
               this.#messageStream.close();
@@ -705,6 +756,8 @@ export class BaseClient {
 
           // Convert from wire format (snake_case) to EmergentMessage class
           const message = EmergentMessage.fromWire(wireMessage);
+
+          this.#logger.debug("received message", { messageType: message.messageType, source: message.source });
 
           this.#messageStream.push(message);
         }
