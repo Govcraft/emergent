@@ -111,17 +111,19 @@ async fn execute_command(
             command: command_str.clone(),
         })?;
 
-    // Write payload JSON to stdin, then close it
+    // Write payload JSON to stdin, then close it.
+    // Ignore broken pipe errors — the command may not read stdin.
     let payload_bytes = serde_json::to_vec(payload).unwrap_or_default();
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(&payload_bytes).await.map_err(|e| {
-            ExecError::StdinFailed {
-                error: e.to_string(),
-                command: command_str.clone(),
-            }
-        })?;
-        // stdin is dropped here, closing the pipe
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(&payload_bytes).await
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(ExecError::StdinFailed {
+            error: e.to_string(),
+            command: command_str.clone(),
+        });
     }
+    // stdin is dropped above, closing the pipe
 
     // Wait for the process with timeout
     let output = tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
@@ -323,8 +325,8 @@ mod tests {
     #[tokio::test]
     async fn test_empty_stdout_produces_empty_output() {
         let payload = json!({"input": "hello"});
-        // `cat /dev/null` consumes stdin and produces no stdout, exits 0
-        let command = vec!["cat".to_string(), "/dev/null".to_string()];
+        // `true` produces no output and exits 0
+        let command = vec!["true".to_string()];
 
         let result = execute_command(&payload, &command, 5000).await;
         let result = result.unwrap_or_else(|_| panic!("expected success"));
