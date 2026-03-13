@@ -50,6 +50,7 @@ The [marketplace](https://github.com/Govcraft/emergent-primitives) ships pre-bui
 | `http-source` | Source | Generic HTTP webhook receiver |
 | `exec-source` | Source | Execute shell commands and emit output as events |
 | `exec-handler` | Handler | Pipe event payloads through any executable and publish results |
+| `websocket-handler` | Handler | Bidirectional WebSocket bridge for real-time connections |
 | `exec-sink` | Sink | Pipe event payloads through any executable (fire-and-forget) |
 | `topology-viewer` | Sink | Real-time D3.js workflow visualization |
 
