@@ -221,6 +221,8 @@ pub fn build_primitive_actor(
                 cmd.env("EMERGENT_SOCKET", socket_path.to_string_lossy().as_ref());
                 cmd.env("EMERGENT_NAME", &name);
                 cmd.env("EMERGENT_API_PORT", api_port.to_string());
+                cmd.env("EMERGENT_PUBLISHES", spawn_info.publishes.join(","));
+                cmd.env("EMERGENT_SUBSCRIBES", spawn_info.subscribes.join(","));
 
                 // Isolate child from terminal SIGINT - only engine handles Ctrl+C
                 // Children get their own process group so Ctrl+C only affects the engine
