@@ -114,7 +114,7 @@ async fn discover_impl(
     debug!("sending discovery request");
 
     let request = IpcDiscoverRequest::new();
-    let payload = rmp_serde::to_vec(&request)?;
+    let payload = rmp_serde::to_vec_named(&request)?;
 
     write_frame(writer, MSG_TYPE_DISCOVER, Format::MessagePack, &payload)
         .await
@@ -172,7 +172,7 @@ async fn subscribe_impl(
     info!(types = ?types, "subscribing to message types");
 
     let request = IpcSubscribeRequest::new(types.iter().map(|s| (*s).to_string()).collect());
-    let payload = rmp_serde::to_vec(&request)?;
+    let payload = rmp_serde::to_vec_named(&request)?;
 
     write_frame(writer, MSG_TYPE_SUBSCRIBE, Format::MessagePack, &payload)
         .await
@@ -217,7 +217,7 @@ async fn unsubscribe_impl(
     } else {
         IpcUnsubscribeRequest::new(types.iter().map(|s| (*s).to_string()).collect())
     };
-    let payload = rmp_serde::to_vec(&request)?;
+    let payload = rmp_serde::to_vec_named(&request)?;
 
     write_frame(writer, MSG_TYPE_UNSUBSCRIBE, Format::MessagePack, &payload)
         .await
@@ -260,7 +260,7 @@ async fn publish_impl(writer: &mut OwnedWriteHalf, message: EmergentMessage) -> 
         serde_json::to_value(&ipc_message)?,
     );
 
-    let payload = rmp_serde::to_vec(&envelope)?;
+    let payload = rmp_serde::to_vec_named(&envelope)?;
     write_frame(writer, MSG_TYPE_REQUEST, Format::MessagePack, &payload)
         .await
         .map_err(ClientError::from)?;
@@ -534,7 +534,7 @@ impl EmergentSource {
         let mut writer = self.writer.lock().await;
 
         let request = IpcUnsubscribeRequest::unsubscribe_all();
-        let payload = rmp_serde::to_vec(&request)?;
+        let payload = rmp_serde::to_vec_named(&request)?;
 
         // Send the unsubscribe request
         if write_frame(
