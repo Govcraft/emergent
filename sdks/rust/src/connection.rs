@@ -64,23 +64,56 @@ fn resolve_socket_path(_name: &str) -> Result<PathBuf> {
 
 /// Initialize a default tracing subscriber if one hasn't been set.
 ///
-/// Silent by default — set `EMERGENT_LOG` or `RUST_LOG` to enable console output
-/// (e.g., `EMERGENT_LOG=info`). No-op if the primitive already installed a subscriber.
-fn init_tracing() {
+/// Logs to `~/.local/share/emergent/<name>/primitive.log` by default.
+/// Set `EMERGENT_LOG=stderr` to log to stderr instead (for debugging).
+/// No-op if the primitive already installed a subscriber.
+fn init_tracing(name: &str) {
     use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_from_env("EMERGENT_LOG")
         .or_else(|_| EnvFilter::try_from_default_env())
-        .unwrap_or_else(|_| EnvFilter::new("off"));
+        .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .try_init();
+    // Check if user explicitly wants stderr output
+    let wants_stderr = std::env::var("EMERGENT_LOG")
+        .map(|v| v.eq_ignore_ascii_case("stderr"))
+        .unwrap_or(false);
+
+    if wants_stderr {
+        let stderr_filter = EnvFilter::new("info");
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(stderr_filter)
+            .try_init();
+    } else {
+        // Log to file in XDG data directory, keyed by primitive name
+        let log_dir =
+            directories::ProjectDirs::from("ai", "govcraft", "emergent")
+                .map(|dirs| dirs.data_dir().join(name))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&log_dir);
+
+        if let Ok(log_file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("primitive.log"))
+        {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::sync::Mutex::new(log_file))
+                .with_ansi(false)
+                .try_init();
+        } else {
+            // If we can't open the file, fall back to silent
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(EnvFilter::new("off"))
+                .try_init();
+        }
+    }
 }
 
 /// Connect to the engine socket with health checks.
 async fn connect_to_engine(name: &str) -> Result<UnixStream> {
-    init_tracing();
+    init_tracing(name);
     let socket_path = resolve_socket_path(name)?;
     debug!(path = %socket_path.display(), "resolved socket path");
 

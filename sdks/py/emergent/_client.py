@@ -51,25 +51,40 @@ from .types import (
 logger = logging.getLogger("emergent")
 
 
-def _init_logging() -> None:
-    """Configure a default handler for the emergent logger if none exists.
+def _init_logging(name: str = "emergent") -> None:
+    """Configure logging for the emergent client.
 
-    Reads EMERGENT_LOG or RUST_LOG env var for the level (default: INFO).
-    No-op if the application already attached a handler.
+    Logs to ``~/.local/share/emergent/<name>/primitive.log`` by default so
+    the console stays clean for child-process output.  Set
+    ``EMERGENT_LOG=stderr`` to log to stderr instead (for debugging).
+
+    Reads ``EMERGENT_LOG`` or ``RUST_LOG`` env var for the level
+    (default: INFO).  No-op if the application already attached a handler.
     """
     if logger.handlers:
         return
 
-    level_name = os.environ.get("EMERGENT_LOG", os.environ.get("RUST_LOG", "INFO")).upper()
+    env_val = os.environ.get("EMERGENT_LOG", os.environ.get("RUST_LOG", "INFO")).upper()
+    wants_stderr = env_val == "STDERR"
+    level_name = "INFO" if wants_stderr else env_val
     level = getattr(logging, level_name, logging.INFO)
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if wants_stderr:
+        handler: logging.Handler = logging.StreamHandler()
+    else:
+        log_dir = os.path.join(
+            os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
+            "emergent",
+            name,
+        )
+        os.makedirs(log_dir, exist_ok=True)
+        handler = logging.FileHandler(os.path.join(log_dir, "primitive.log"))
+
+    handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(level)
-
-
-_init_logging()
 
 # Default timeout for requests in seconds
 DEFAULT_TIMEOUT = 30.0
@@ -194,6 +209,8 @@ class BaseClient:
             SocketNotFoundError: If the socket file doesn't exist
             ConnectionError: If connection fails
         """
+        _init_logging(self.name)
+
         if self._disposed:
             raise DisposedError(self.__class__.__name__)
 
