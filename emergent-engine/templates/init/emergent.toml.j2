@@ -30,20 +30,17 @@ wire_format = "messagepack"
 # api_port = 8891
 
 # =============================================================================
-# Event Store Settings
+# Event Store
 # =============================================================================
-
-[event_store]
-# Directory for JSON log files (append-only, one file per day)
-# Use "auto" for XDG-compliant path: ~/.local/share/emergent/{{ name }}/logs
-json_log_dir = "auto"
-
-# Path to SQLite database for structured event storage and replay
-# Use "auto" for XDG-compliant path: ~/.local/share/emergent/{{ name }}/events.db
-sqlite_path = "auto"
-
-# How many days to retain events before cleanup
-retention_days = 30
+# Events are stored at ~/.local/share/emergent/{{ name }}/
+#   logs/       - JSON log files (append-only, one file per day)
+#   events.db   - SQLite database for structured queries and replay
+#
+# To override, uncomment the [event_store] section below:
+# [event_store]
+# json_log_dir = "/custom/path/to/logs"
+# sqlite_path = "/custom/path/to/events.db"
+# retention_days = 30
 
 # =============================================================================
 # Sources
