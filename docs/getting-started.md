@@ -83,9 +83,9 @@ The marketplace ships pre-built primitives you can use without writing any code.
 emergent marketplace list
 
 # Install primitives
-emergent marketplace install http-source
-emergent marketplace install console-sink
+emergent marketplace install exec-source
 emergent marketplace install exec-handler
+emergent marketplace install exec-sink
 ```
 
 Installed primitives are placed in `~/.local/share/emergent/bin/` and can be referenced directly in your configuration.
@@ -123,7 +123,7 @@ Install two primitives from the marketplace:
 
 ```bash
 emergent marketplace install exec-source
-emergent marketplace install console-sink
+emergent marketplace install exec-sink
 ```
 
 Create a configuration file:
@@ -132,7 +132,7 @@ Create a configuration file:
 emergent init --name my-pipeline
 ```
 
-Edit `emergent.toml` to define a simple pipeline that runs a command every 5 seconds and prints the output:
+Edit `emergent.toml` to define a simple pipeline that runs a command every 5 seconds and pretty-prints the output:
 
 ```toml
 [engine]
@@ -147,8 +147,8 @@ publishes = ["exec.output"]
 
 [[sinks]]
 name = "printer"
-path = "~/.local/share/emergent/bin/console-sink"
-args = ["--subscribe", "exec.output", "--timestamp"]
+path = "~/.local/share/emergent/bin/exec-sink"
+args = ["-s", "exec.output", "--", "jq", "."]
 subscribes = ["exec.output"]
 ```
 
@@ -158,12 +158,14 @@ Start the engine:
 emergent --config ./emergent.toml
 ```
 
-You should see the current date printed every 5 seconds:
+You should see the current date printed every 5 seconds, pretty-printed by `jq`:
 
-```
-[17:23:50.000] exec.output: {"stdout": "Thu Mar 13 17:23:50 UTC 2025", "exit_code": 0}
-[17:23:55.000] exec.output: {"stdout": "Thu Mar 13 17:23:55 UTC 2025", "exit_code": 0}
-[17:24:00.000] exec.output: {"stdout": "Thu Mar 13 17:24:00 UTC 2025", "exit_code": 0}
+```json
+{
+  "command": "date",
+  "stdout": "Thu Mar 13 17:23:50 UTC 2025",
+  "exit_code": 0
+}
 ```
 
 Stop the engine with Ctrl+C. You will see graceful shutdown:

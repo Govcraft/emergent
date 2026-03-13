@@ -17,9 +17,9 @@ sudo mv emergent /usr/local/bin/
 # Create a config file
 emergent init
 
-# Install a pre-built primitive from the marketplace
-emergent marketplace install http-source
-emergent marketplace install console-sink
+# Install pre-built primitives from the marketplace
+emergent marketplace install exec-source
+emergent marketplace install exec-sink
 
 # Run the pipeline
 emergent --config ./emergent.toml
@@ -49,9 +49,8 @@ The [marketplace](https://github.com/Govcraft/emergent-primitives) ships pre-bui
 |-----------|------|-------------|
 | `http-source` | Source | Generic HTTP webhook receiver |
 | `exec-source` | Source | Execute shell commands and emit output as events |
-| `exec-handler` | Handler | Pipe event payloads through any executable |
-| `console-sink` | Sink | Output message payloads to stdout |
-| `http-sink` | Sink | Make outbound HTTP requests |
+| `exec-handler` | Handler | Pipe event payloads through any executable and publish results |
+| `exec-sink` | Sink | Pipe event payloads through any executable (fire-and-forget) |
 | `topology-viewer` | Sink | Real-time D3.js workflow visualization |
 
 ```bash
@@ -67,7 +66,7 @@ emergent marketplace info exec-handler
 
 ## Zero-Code Pipeline Example
 
-Receive HTTP webhooks, pipe them through a shell command, and print the results—no code required:
+Receive HTTP webhooks, pipe them through a shell command, and pretty-print the results—no code required:
 
 ```toml
 [engine]
@@ -83,14 +82,14 @@ publishes = ["http.request"]
 [[handlers]]
 name = "process"
 path = "~/.local/share/emergent/bin/exec-handler"
-args = ["--publish-as", "processed.result"]
+args = ["-s", "http.request", "--publish-as", "processed.result", "--", "jq", ".body"]
 subscribes = ["http.request"]
 publishes = ["processed.result"]
 
 [[sinks]]
 name = "output"
-path = "~/.local/share/emergent/bin/console-sink"
-args = ["--subscribe", "processed.result", "--pretty"]
+path = "~/.local/share/emergent/bin/exec-sink"
+args = ["-s", "processed.result", "--", "jq", "."]
 subscribes = ["processed.result"]
 ```
 
