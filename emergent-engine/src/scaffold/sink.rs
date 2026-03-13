@@ -152,7 +152,7 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                         println!("     uv sync        # or: pip install -e .");
                     }
                     Language::TypeScript => {
-                        println!("     # no build step required for Deno");
+                        println!("     deno install    # pre-resolve dependencies and generate lockfile");
                     }
                 }
 
@@ -191,6 +191,17 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
     })
 }
 
+/// Resolve an interpreter command to its absolute path via PATH lookup.
+///
+/// If found, returns the absolute path (e.g., "/usr/bin/deno").
+/// If not found, falls back to the bare command name.
+fn resolve_interpreter_path(command: &str) -> String {
+    match which::which(command) {
+        Ok(path) => path.display().to_string(),
+        Err(_) => String::from(command),
+    }
+}
+
 /// Format a TOML config snippet for adding the scaffolded primitive to emergent.toml.
 fn format_config_snippet(
     name: &str,
@@ -211,15 +222,15 @@ fn format_config_snippet(
     let (path, args) = match language {
         Language::Rust => (format!("./target/release/{name}"), String::from("[]")),
         Language::Python => (
-            String::from("uv"),
+            resolve_interpreter_path("uv"),
             format!(
                 "[\"run\", \"--project\", \"{output_dir_str}\", \"python\", \"{output_dir_str}/main.py\"]"
             ),
         ),
         Language::TypeScript => (
-            String::from("deno"),
+            resolve_interpreter_path("deno"),
             format!(
-                "[\"run\", \"--allow-env\", \"--allow-read\", \"--allow-write\", \"--allow-net=unix\", \"{output_dir_str}/main.ts\"]"
+                "[\"run\", \"--allow-env\", \"--allow-read\", \"--allow-net=unix\", \"{output_dir_str}/main.ts\"]"
             ),
         ),
     };
@@ -280,7 +291,8 @@ mod tests {
         );
         assert!(snippet.contains("[[handlers]]"));
         assert!(snippet.contains("name = \"my_filter\""));
-        assert!(snippet.contains("path = \"uv\""));
+        // path is resolved via which; may be absolute or bare "uv"
+        assert!(snippet.contains("path = \"") && snippet.contains("uv\""));
         assert!(snippet.contains("./my_filter/main.py"));
         assert!(snippet.contains("subscribes = [\"timer.tick\"]"));
         assert!(snippet.contains("publishes = [\"timer.filtered\"]"));
@@ -298,8 +310,10 @@ mod tests {
         );
         assert!(snippet.contains("[[sinks]]"));
         assert!(snippet.contains("name = \"my_console\""));
-        assert!(snippet.contains("path = \"deno\""));
+        // path is resolved via which; may be absolute or bare "deno"
+        assert!(snippet.contains("path = \"") && snippet.contains("deno\""));
         assert!(snippet.contains("./my_console/main.ts"));
+        assert!(!snippet.contains("--allow-write"), "should not request unnecessary --allow-write");
         assert!(snippet.contains("subscribes = [\"timer.tick\", \"system.started.*\"]"));
         assert!(!snippet.contains("publishes"));
     }
