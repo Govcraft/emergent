@@ -12,6 +12,8 @@ use crate::subscribe::IntoSubscription;
 use crate::types::{CorrelationId, PrimitiveName};
 use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
+use tracing::{debug, error, info, warn};
+
 use acton_reactive::ipc::protocol::{
     Format, MAX_FRAME_SIZE, MSG_TYPE_DISCOVER, MSG_TYPE_PUSH, MSG_TYPE_REQUEST, MSG_TYPE_RESPONSE,
     MSG_TYPE_SUBSCRIBE, MSG_TYPE_UNSUBSCRIBE, read_frame, write_frame,
@@ -63,22 +65,28 @@ fn resolve_socket_path(_name: &str) -> Result<PathBuf> {
 /// Connect to the engine socket with health checks.
 async fn connect_to_engine(name: &str) -> Result<UnixStream> {
     let socket_path = resolve_socket_path(name)?;
+    debug!(path = %socket_path.display(), "resolved socket path");
+
+    info!(primitive.name = %name, path = %socket_path.display(), "connecting to engine");
 
     if !socket_exists(&socket_path) {
+        error!(path = %socket_path.display(), "engine socket not found");
         return Err(ClientError::SocketNotFound(
             socket_path.display().to_string(),
         ));
     }
 
     if !socket_is_alive(&socket_path).await {
+        error!(path = %socket_path.display(), "engine socket not responding");
         return Err(ClientError::ConnectionFailed(
             "Engine socket exists but is not responding".to_string(),
         ));
     }
 
-    UnixStream::connect(&socket_path)
-        .await
-        .map_err(|e| ClientError::ConnectionFailed(e.to_string()))
+    UnixStream::connect(&socket_path).await.map_err(|e| {
+        error!(error = %e, "failed to connect to engine");
+        ClientError::ConnectionFailed(e.to_string())
+    })
 }
 
 /// Send a discover request and get available message types.
@@ -86,6 +94,8 @@ async fn discover_impl(
     reader: &mut OwnedReadHalf,
     writer: &mut OwnedWriteHalf,
 ) -> Result<DiscoveryInfo> {
+    debug!("sending discovery request");
+
     let request = IpcDiscoverRequest::new();
     let payload = rmp_serde::to_vec(&request)?;
 
@@ -114,7 +124,7 @@ async fn discover_impl(
         ));
     }
 
-    Ok(DiscoveryInfo {
+    let info = DiscoveryInfo {
         message_types: response.message_types.unwrap_or_default(),
         primitives: response
             .actors
@@ -125,7 +135,15 @@ async fn discover_impl(
                 kind: "unknown".to_string(),
             })
             .collect(),
-    })
+    };
+
+    debug!(
+        message_type_count = info.message_types.len(),
+        primitive_count = info.primitives.len(),
+        "discovery complete"
+    );
+
+    Ok(info)
 }
 
 /// Subscribe to message types.
@@ -134,6 +152,8 @@ async fn subscribe_impl(
     writer: &mut OwnedWriteHalf,
     types: &[&str],
 ) -> Result<Vec<String>> {
+    info!(types = ?types, "subscribing to message types");
+
     let request = IpcSubscribeRequest::new(types.iter().map(|s| (*s).to_string()).collect());
     let payload = rmp_serde::to_vec(&request)?;
 
@@ -162,6 +182,8 @@ async fn subscribe_impl(
         ));
     }
 
+    info!(subscribed_count = response.subscribed_types.len(), "subscribed to message types");
+
     Ok(response.subscribed_types)
 }
 
@@ -171,6 +193,8 @@ async fn unsubscribe_impl(
     writer: &mut OwnedWriteHalf,
     types: &[&str],
 ) -> Result<()> {
+    debug!(types = ?types, "unsubscribing from message types");
+
     let request = if types.is_empty() {
         IpcUnsubscribeRequest::unsubscribe_all()
     } else {
@@ -196,11 +220,13 @@ async fn unsubscribe_impl(
     let response: IpcSubscriptionResponse = rmp_serde::from_slice(&payload)?;
 
     if !response.success {
-        return Err(ClientError::SubscriptionFailed(
+        let err = ClientError::SubscriptionFailed(
             response
                 .error
                 .unwrap_or_else(|| "Unknown error".to_string()),
-        ));
+        );
+        warn!(error = %err, "unsubscribe failed");
+        return Err(err);
     }
 
     Ok(())
@@ -208,6 +234,8 @@ async fn unsubscribe_impl(
 
 /// Publish a message (fire-and-forget).
 async fn publish_impl(writer: &mut OwnedWriteHalf, message: EmergentMessage) -> Result<()> {
+    debug!(message_type = %message.message_type, message_id = %message.id, "publishing message");
+
     let ipc_message = IpcEmergentMessage { inner: message };
     let envelope = IpcEnvelope::new(
         "message_broker",
@@ -269,6 +297,8 @@ async fn get_my_subscriptions_impl(
     writer: &mut OwnedWriteHalf,
     name: &str,
 ) -> Result<Vec<String>> {
+    debug!("querying configured subscriptions");
+
     // Generate correlation ID for matching response
     let correlation_id = CorrelationId::new();
 
@@ -284,7 +314,7 @@ async fn get_my_subscriptions_impl(
     publish_impl(writer, request).await?;
 
     // Wait for response with matching correlation_id
-    timeout(DEFAULT_TIMEOUT, async {
+    let subs: Result<Vec<String>> = timeout(DEFAULT_TIMEOUT, async {
         loop {
             let (msg_type, _, payload) = read_frame(reader, MAX_FRAME_SIZE)
                 .await
@@ -309,7 +339,11 @@ async fn get_my_subscriptions_impl(
         }
     })
     .await
-    .map_err(|_| ClientError::Timeout)?
+    .map_err(|_| ClientError::Timeout)?;
+
+    let subs = subs?;
+    info!(types = ?subs, "received configured subscriptions");
+    Ok(subs)
 }
 
 /// Get current topology from the engine via pub/sub.
@@ -320,6 +354,8 @@ async fn get_topology_impl(
     writer: &mut OwnedWriteHalf,
     name: &str,
 ) -> Result<TopologyState> {
+    debug!("querying topology");
+
     // Generate correlation ID for matching response
     let correlation_id = CorrelationId::new();
 
@@ -335,7 +371,7 @@ async fn get_topology_impl(
     publish_impl(writer, request).await?;
 
     // Wait for response with matching correlation_id
-    timeout(DEFAULT_TIMEOUT, async {
+    let state: Result<TopologyState> = timeout(DEFAULT_TIMEOUT, async {
         loop {
             let (msg_type, _, payload) = read_frame(reader, MAX_FRAME_SIZE)
                 .await
@@ -361,7 +397,11 @@ async fn get_topology_impl(
         }
     })
     .await
-    .map_err(|_| ClientError::Timeout)?
+    .map_err(|_| ClientError::Timeout)?;
+
+    let state = state?;
+    debug!(primitive_count = state.primitives.len(), "received topology");
+    Ok(state)
 }
 
 // ============================================================================
@@ -409,6 +449,8 @@ impl EmergentSource {
         let stream = connect_to_engine(name).await?;
         let (reader, writer) = stream.into_split();
 
+        info!(primitive.name = %name, primitive.kind = "source", "connected to engine");
+
         Ok(Self {
             name: name.to_string(),
             writer: Arc::new(Mutex::new(writer)),
@@ -419,14 +461,11 @@ impl EmergentSource {
     /// Publish a message to the engine (fire-and-forget).
     ///
     /// The message will be routed to any Handlers or Sinks subscribed to its type.
-    /// If the IPC socket write fails, the source will attempt to reconnect once
-    /// and retry the publish before returning an error.
     ///
     /// # Errors
     ///
-    /// Returns an error if the message cannot be sent after one reconnection attempt.
+    /// Returns an error if the message cannot be sent.
     pub async fn publish(&self, mut message: EmergentMessage) -> Result<()> {
-        // Set the source if not already set
         if message.source.is_default() {
             message.source = PrimitiveName::new(&self.name).map_err(|e| {
                 ClientError::ConnectionFailed(format!(
@@ -436,27 +475,11 @@ impl EmergentSource {
             })?;
         }
 
-        // Try publish on current connection
-        {
-            let mut writer = self.writer.lock().await;
-            if publish_impl(&mut writer, message.clone()).await.is_ok() {
-                return Ok(());
-            }
-        }
-
-        // First attempt failed — reconnect and retry once
-        self.reconnect().await?;
         let mut writer = self.writer.lock().await;
-        publish_impl(&mut writer, message).await
-    }
-
-    /// Reconnect to the engine, replacing the underlying socket.
-    async fn reconnect(&self) -> Result<()> {
-        let stream = connect_to_engine(&self.name).await?;
-        let (reader, writer) = stream.into_split();
-        *self.writer.lock().await = writer;
-        *self.reader.lock().await = reader;
-        Ok(())
+        publish_impl(&mut writer, message).await.map_err(|e| {
+            error!(primitive.name = %self.name, error = %e, "failed to publish message");
+            e
+        })
     }
 
     /// Discover available message types and primitives.
@@ -485,6 +508,8 @@ impl EmergentSource {
     ///
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
+        info!(primitive.name = %self.name, "disconnecting from engine");
+
         // Send unsubscribe-all as a "goodbye" signal on the original connection.
         // We use the original connection (not a new one) so the server knows
         // THIS specific connection is closing.
@@ -515,6 +540,8 @@ impl EmergentSource {
         // Explicitly shutdown the writer for clean socket close
         use tokio::io::AsyncWriteExt;
         let _ = writer.shutdown().await;
+
+        info!(primitive.name = %self.name, "disconnected from engine");
 
         Ok(())
     }
@@ -568,6 +595,8 @@ impl EmergentHandler {
     pub async fn connect(name: &str) -> Result<Self> {
         let stream = connect_to_engine(name).await?;
         let (_reader, writer) = stream.into_split();
+
+        info!(primitive.name = %name, primitive.kind = "handler", "connected to engine");
 
         Ok(Self {
             name: name.to_string(),
@@ -625,6 +654,7 @@ impl EmergentHandler {
 
         // Create channel for message stream
         let (tx, rx) = mpsc::channel(256);
+        let log_name = self.name.clone();
 
         // Spawn task to read push notifications
         // IMPORTANT: We must keep the writer alive even though we don't use it.
@@ -632,6 +662,7 @@ impl EmergentHandler {
         tokio::spawn(async move {
             // Keep writer alive by moving it into the task (but don't use it)
             let _writer = writer;
+            debug!(primitive.name = %log_name, "read loop started");
 
             loop {
                 match read_frame(&mut reader, MAX_FRAME_SIZE).await {
@@ -642,15 +673,27 @@ impl EmergentHandler {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
-                                        if let Some(kind) = notification
+                                        let shutdown_kind = notification
                                             .payload
                                             .get("kind")
                                             .and_then(|v| v.as_str())
-                                            && kind == "handler"
-                                        {
-                                            // Graceful shutdown - close the stream
+                                            .unwrap_or("unknown");
+                                        info!(
+                                            primitive.name = %log_name,
+                                            shutdown_kind = %shutdown_kind,
+                                            "received shutdown signal"
+                                        );
+                                        if shutdown_kind == "handler" {
+                                            info!(
+                                                primitive.name = %log_name,
+                                                "shutting down (engine requested)"
+                                            );
                                             break;
                                         }
+                                        debug!(
+                                            primitive.name = %log_name,
+                                            "ignoring shutdown for different primitive kind"
+                                        );
                                         continue; // Don't forward system.shutdown to user
                                     }
 
@@ -659,8 +702,18 @@ impl EmergentHandler {
                                     if let Ok(msg) = serde_json::from_value::<EmergentMessage>(
                                         notification.payload.clone(),
                                     ) {
+                                        debug!(
+                                            primitive.name = %log_name,
+                                            message_type = %msg.message_type,
+                                            message_id = %msg.id,
+                                            "received message"
+                                        );
                                         if tx.send(msg).await.is_err() {
-                                            break; // Receiver dropped
+                                            warn!(
+                                                primitive.name = %log_name,
+                                                "message stream send failed, receiver dropped"
+                                            );
+                                            break;
                                         }
                                     } else {
                                         // Fallback: create EmergentMessage from push notification fields
@@ -672,20 +725,38 @@ impl EmergentHandler {
                                                     .unwrap_or("unknown"),
                                             )
                                             .with_payload(notification.payload);
+                                        debug!(
+                                            primitive.name = %log_name,
+                                            message_type = %msg.message_type,
+                                            message_id = %msg.id,
+                                            "received message"
+                                        );
                                         if tx.send(msg).await.is_err() {
+                                            warn!(
+                                                primitive.name = %log_name,
+                                                "message stream send failed, receiver dropped"
+                                            );
                                             break;
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to parse push notification: {}", e);
+                                    warn!(
+                                        primitive.name = %log_name,
+                                        error = %e,
+                                        "failed to parse push notification"
+                                    );
                                 }
                             }
                         }
                         // Ignore non-PUSH frames (heartbeats, etc.)
                     }
                     Err(e) => {
-                        tracing::debug!("Connection closed: {}", e);
+                        info!(
+                            primitive.name = %log_name,
+                            error = %e,
+                            "connection closed"
+                        );
                         break;
                     }
                 }
@@ -734,7 +805,10 @@ impl EmergentHandler {
         }
 
         let mut writer = self.writer.lock().await;
-        publish_impl(&mut writer, message).await
+        publish_impl(&mut writer, message).await.map_err(|e| {
+            error!(primitive.name = %self.name, error = %e, "failed to publish message");
+            e
+        })
     }
 
     /// Discover available message types and primitives.
@@ -782,8 +856,10 @@ impl EmergentHandler {
     ///
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
+        info!(primitive.name = %self.name, "disconnecting from engine");
         // Unsubscribe from all message types
         self.unsubscribe(&[]).await?;
+        info!(primitive.name = %self.name, "disconnected from engine");
         Ok(())
     }
 }
@@ -826,6 +902,8 @@ impl EmergentSink {
     pub async fn connect(name: &str) -> Result<Self> {
         // Verify connection is possible (but don't hold it)
         let _ = connect_to_engine(name).await?;
+
+        info!(primitive.name = %name, primitive.kind = "sink", "connected to engine");
 
         Ok(Self {
             name: name.to_string(),
@@ -916,6 +994,7 @@ impl EmergentSink {
 
         // Create channel for message stream
         let (tx, rx) = mpsc::channel(256);
+        let log_name = self.name.clone();
 
         // Spawn task to read push notifications
         // IMPORTANT: We must keep the writer alive even though we don't use it.
@@ -923,6 +1002,7 @@ impl EmergentSink {
         tokio::spawn(async move {
             // Keep writer alive by moving it into the task (but don't use it)
             let _writer = writer;
+            debug!(primitive.name = %log_name, "read loop started");
 
             loop {
                 match read_frame(&mut reader, MAX_FRAME_SIZE).await {
@@ -933,15 +1013,27 @@ impl EmergentSink {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
-                                        if let Some(kind) = notification
+                                        let shutdown_kind = notification
                                             .payload
                                             .get("kind")
                                             .and_then(|v| v.as_str())
-                                            && kind == "sink"
-                                        {
-                                            // Graceful shutdown - close the stream
+                                            .unwrap_or("unknown");
+                                        info!(
+                                            primitive.name = %log_name,
+                                            shutdown_kind = %shutdown_kind,
+                                            "received shutdown signal"
+                                        );
+                                        if shutdown_kind == "sink" {
+                                            info!(
+                                                primitive.name = %log_name,
+                                                "shutting down (engine requested)"
+                                            );
                                             break;
                                         }
+                                        debug!(
+                                            primitive.name = %log_name,
+                                            "ignoring shutdown for different primitive kind"
+                                        );
                                         continue; // Don't forward system.shutdown to user
                                     }
 
@@ -950,8 +1042,18 @@ impl EmergentSink {
                                     if let Ok(msg) = serde_json::from_value::<EmergentMessage>(
                                         notification.payload.clone(),
                                     ) {
+                                        debug!(
+                                            primitive.name = %log_name,
+                                            message_type = %msg.message_type,
+                                            message_id = %msg.id,
+                                            "received message"
+                                        );
                                         if tx.send(msg).await.is_err() {
-                                            break; // Receiver dropped
+                                            warn!(
+                                                primitive.name = %log_name,
+                                                "message stream send failed, receiver dropped"
+                                            );
+                                            break;
                                         }
                                     } else {
                                         // Fallback: create EmergentMessage from push notification fields
@@ -963,20 +1065,38 @@ impl EmergentSink {
                                                     .unwrap_or("unknown"),
                                             )
                                             .with_payload(notification.payload);
+                                        debug!(
+                                            primitive.name = %log_name,
+                                            message_type = %msg.message_type,
+                                            message_id = %msg.id,
+                                            "received message"
+                                        );
                                         if tx.send(msg).await.is_err() {
+                                            warn!(
+                                                primitive.name = %log_name,
+                                                "message stream send failed, receiver dropped"
+                                            );
                                             break;
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to parse push notification: {}", e);
+                                    warn!(
+                                        primitive.name = %log_name,
+                                        error = %e,
+                                        "failed to parse push notification"
+                                    );
                                 }
                             }
                         }
                         // Ignore non-PUSH frames (heartbeats, etc.)
                     }
                     Err(e) => {
-                        tracing::debug!("Connection closed: {}", e);
+                        info!(
+                            primitive.name = %log_name,
+                            error = %e,
+                            "connection closed"
+                        );
                         break;
                     }
                 }
@@ -1066,8 +1186,10 @@ impl EmergentSink {
     ///
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
+        info!(primitive.name = %self.name, "disconnecting from engine");
         // Unsubscribe from all message types
         self.unsubscribe(&[]).await?;
+        info!(primitive.name = %self.name, "disconnected from engine");
         Ok(())
     }
 }
