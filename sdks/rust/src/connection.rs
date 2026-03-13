@@ -419,10 +419,12 @@ impl EmergentSource {
     /// Publish a message to the engine (fire-and-forget).
     ///
     /// The message will be routed to any Handlers or Sinks subscribed to its type.
+    /// If the IPC socket write fails, the source will attempt to reconnect once
+    /// and retry the publish before returning an error.
     ///
     /// # Errors
     ///
-    /// Returns an error if the message cannot be sent.
+    /// Returns an error if the message cannot be sent after one reconnection attempt.
     pub async fn publish(&self, mut message: EmergentMessage) -> Result<()> {
         // Set the source if not already set
         if message.source.is_default() {
@@ -434,8 +436,27 @@ impl EmergentSource {
             })?;
         }
 
+        // Try publish on current connection
+        {
+            let mut writer = self.writer.lock().await;
+            if publish_impl(&mut writer, message.clone()).await.is_ok() {
+                return Ok(());
+            }
+        }
+
+        // First attempt failed — reconnect and retry once
+        self.reconnect().await?;
         let mut writer = self.writer.lock().await;
         publish_impl(&mut writer, message).await
+    }
+
+    /// Reconnect to the engine, replacing the underlying socket.
+    async fn reconnect(&self) -> Result<()> {
+        let stream = connect_to_engine(&self.name).await?;
+        let (reader, writer) = stream.into_split();
+        *self.writer.lock().await = writer;
+        *self.reader.lock().await = reader;
+        Ok(())
     }
 
     /// Discover available message types and primitives.
