@@ -62,8 +62,25 @@ fn resolve_socket_path(_name: &str) -> Result<PathBuf> {
     Ok(config.socket_path())
 }
 
+/// Initialize a default tracing subscriber if one hasn't been set.
+///
+/// Uses `RUST_LOG` or `EMERGENT_LOG` env var for filtering (default: `info`).
+/// No-op if the primitive (or another library) already installed a subscriber.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_env("EMERGENT_LOG")
+        .or_else(|_| EnvFilter::try_from_default_env())
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .try_init();
+}
+
 /// Connect to the engine socket with health checks.
 async fn connect_to_engine(name: &str) -> Result<UnixStream> {
+    init_tracing();
     let socket_path = resolve_socket_path(name)?;
     debug!(path = %socket_path.display(), "resolved socket path");
 

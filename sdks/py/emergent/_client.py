@@ -50,6 +50,27 @@ from .types import (
 
 logger = logging.getLogger("emergent")
 
+
+def _init_logging() -> None:
+    """Configure a default handler for the emergent logger if none exists.
+
+    Reads EMERGENT_LOG or RUST_LOG env var for the level (default: INFO).
+    No-op if the application already attached a handler.
+    """
+    if logger.handlers:
+        return
+
+    level_name = os.environ.get("EMERGENT_LOG", os.environ.get("RUST_LOG", "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(level)
+
+
+_init_logging()
+
 # Default timeout for requests in seconds
 DEFAULT_TIMEOUT = 30.0
 
