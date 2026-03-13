@@ -49,13 +49,9 @@ The [marketplace](https://github.com/Govcraft/emergent-primitives) ships pre-bui
 |-----------|------|-------------|
 | `http-source` | Source | Generic HTTP webhook receiver |
 | `exec-source` | Source | Execute shell commands and emit output as events |
-| `github-source` | Source | Receive GitHub webhooks for PRs, issues, and pushes |
-| `slack-source` | Source | Monitor Slack channels for messages, reactions, and threads |
 | `exec-handler` | Handler | Pipe event payloads through any executable |
 | `console-sink` | Sink | Output message payloads to stdout |
 | `http-sink` | Sink | Make outbound HTTP requests |
-| `github-sink` | Sink | Create GitHub comments, labels, and status checks |
-| `slack-sink` | Sink | Post messages to Slack channels |
 | `topology-viewer` | Sink | Real-time D3.js workflow visualization |
 
 ```bash
@@ -63,7 +59,7 @@ The [marketplace](https://github.com/Govcraft/emergent-primitives) ships pre-bui
 emergent marketplace list
 
 # Install a primitive
-emergent marketplace install slack-source
+emergent marketplace install http-source
 
 # See what a primitive does
 emergent marketplace info exec-handler
@@ -71,7 +67,7 @@ emergent marketplace info exec-handler
 
 ## Zero-Code Pipeline Example
 
-Receive HTTP webhooks, pipe them through a shell command, and post results to Slack—no code required:
+Receive HTTP webhooks, pipe them through a shell command, and print the results—no code required:
 
 ```toml
 [engine]
@@ -92,9 +88,9 @@ subscribes = ["http.request"]
 publishes = ["processed.result"]
 
 [[sinks]]
-name = "notify"
-path = "~/.local/share/emergent/bin/slack-sink"
-args = ["--token", "xoxb-your-token", "--default-channel", "C0123456"]
+name = "output"
+path = "~/.local/share/emergent/bin/console-sink"
+args = ["--subscribe", "processed.result", "--pretty"]
 subscribes = ["processed.result"]
 ```
 
