@@ -64,14 +64,14 @@ fn resolve_socket_path(_name: &str) -> Result<PathBuf> {
 
 /// Initialize a default tracing subscriber if one hasn't been set.
 ///
-/// Uses `RUST_LOG` or `EMERGENT_LOG` env var for filtering (default: `info`).
-/// No-op if the primitive (or another library) already installed a subscriber.
+/// Silent by default — set `EMERGENT_LOG` or `RUST_LOG` to enable console output
+/// (e.g., `EMERGENT_LOG=info`). No-op if the primitive already installed a subscriber.
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_from_env("EMERGENT_LOG")
         .or_else(|_| EnvFilter::try_from_default_env())
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+        .unwrap_or_else(|_| EnvFilter::new("off"));
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)

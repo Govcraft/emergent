@@ -344,20 +344,13 @@ async fn main() -> Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
 
-    // Initialize tracing
-    let log_level = if args.verbose {
-        "debug,acton_reactive::common::ipc::subscription_manager=debug"
-    } else {
-        "info,acton_reactive=off"
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
-        )
-        .init();
-
-    // Handle subcommands
+    // Handle subcommands first (they don't need full tracing setup)
     if let Some(command) = args.command {
+        // Subcommands use stderr logging at info level
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("info,acton_reactive=off"))
+            .init();
+
         match command {
             Command::Init(init_args) => {
                 emergent_engine::init::execute(init_args).await?;
@@ -374,8 +367,39 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Load configuration
+    // Load configuration (before tracing init so we know the engine name)
     let mut config = load_config(args.config).context("Failed to load configuration")?;
+
+    // Initialize tracing
+    // --verbose: log to stderr (human-readable)
+    // default: log to file at ~/.local/share/emergent/<engine-name>/emergent.log
+    let log_level = "info,acton_reactive=off";
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+
+    if args.verbose {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        let log_dir = directories::ProjectDirs::from("ai", "govcraft", "emergent")
+            .map(|dirs| dirs.data_dir().join(&config.engine.name))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("emergent.log"))
+            .unwrap_or_else(|_| {
+                std::fs::File::open("/dev/null")
+                    .unwrap_or_else(|_| panic!("cannot open /dev/null"))
+            });
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(std::sync::Mutex::new(log_file))
+            .with_ansi(false)
+            .init();
+    }
 
     // Override socket path if specified
     if let Some(socket) = args.socket {
