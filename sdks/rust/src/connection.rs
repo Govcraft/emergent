@@ -333,12 +333,12 @@ async fn get_my_subscriptions_impl(
     // Wait for response with matching correlation_id
     let subs: Result<Vec<String>> = timeout(DEFAULT_TIMEOUT, async {
         loop {
-            let (msg_type, _, payload) = read_frame(reader, MAX_FRAME_SIZE)
+            let (msg_type, format, payload) = read_frame(reader, MAX_FRAME_SIZE)
                 .await
                 .map_err(ClientError::from)?;
 
             if msg_type == MSG_TYPE_PUSH {
-                let notification: IpcPushNotification = rmp_serde::from_slice(&payload)?;
+                let notification: IpcPushNotification = format.deserialize(&payload)?;
                 if notification.message_type == "system.response.subscriptions" {
                     // Parse the EmergentMessage from payload
                     let msg: EmergentMessage = serde_json::from_value(notification.payload)?;
@@ -390,12 +390,12 @@ async fn get_topology_impl(
     // Wait for response with matching correlation_id
     let state: Result<TopologyState> = timeout(DEFAULT_TIMEOUT, async {
         loop {
-            let (msg_type, _, payload) = read_frame(reader, MAX_FRAME_SIZE)
+            let (msg_type, format, payload) = read_frame(reader, MAX_FRAME_SIZE)
                 .await
                 .map_err(ClientError::from)?;
 
             if msg_type == MSG_TYPE_PUSH {
-                let notification: IpcPushNotification = rmp_serde::from_slice(&payload)?;
+                let notification: IpcPushNotification = format.deserialize(&payload)?;
                 if notification.message_type == "system.response.topology" {
                     // Parse the EmergentMessage from payload
                     let msg: EmergentMessage = serde_json::from_value(notification.payload)?;
@@ -683,10 +683,10 @@ impl EmergentHandler {
 
             loop {
                 match read_frame(&mut reader, MAX_FRAME_SIZE).await {
-                    Ok((msg_type, _format, payload)) => {
+                    Ok((msg_type, format, payload)) => {
                         if msg_type == MSG_TYPE_PUSH {
-                            // Deserialize push notification (server sends MessagePack by default)
-                            match rmp_serde::from_slice::<IpcPushNotification>(&payload) {
+                            // Deserialize push notification using the format from the frame header
+                            match format.deserialize::<IpcPushNotification>(&payload) {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
@@ -1023,10 +1023,10 @@ impl EmergentSink {
 
             loop {
                 match read_frame(&mut reader, MAX_FRAME_SIZE).await {
-                    Ok((msg_type, _format, payload)) => {
+                    Ok((msg_type, format, payload)) => {
                         if msg_type == MSG_TYPE_PUSH {
-                            // Deserialize push notification (server sends MessagePack by default)
-                            match rmp_serde::from_slice::<IpcPushNotification>(&payload) {
+                            // Deserialize push notification using the format from the frame header
+                            match format.deserialize::<IpcPushNotification>(&payload) {
                                 Ok(notification) => {
                                     // Check for shutdown signal
                                     if notification.message_type == "system.shutdown" {
