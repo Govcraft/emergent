@@ -293,192 +293,9 @@ A Sink runs an async loop that receives messages and produces side effects (writ
 
 ---
 
-## 6. Write Your First Source
+## 6. Quick Start with Scaffold
 
-Create a new Rust project for a simple Source that says "hello":
-
-```bash
-cargo new --bin greeter
-cd greeter
-cargo add emergent-client tokio serde_json --features tokio/full
-```
-
-Edit `src/main.rs`:
-
-```rust
-use emergent_client::helpers::run_source;
-use emergent_client::EmergentMessage;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_source(Some("greeter"), |source, _shutdown| async move {
-        let msg = EmergentMessage::new("say.hello")
-            .with_payload(json!({"greeting": "hello"}));
-        source.publish(msg).await.map_err(|e| e.to_string())?;
-        Ok(())
-    }).await?;
-    Ok(())
-}
-```
-
-This Source publishes one message and exits. The `run_source` helper handles connection, signal handling, and cleanup—your code just publishes.
-
-Build and configure:
-
-```bash
-cargo build --release
-```
-
-```toml
-[[sources]]
-name = "greeter"
-path = "/path/to/greeter/target/release/greeter"
-enabled = true
-publishes = ["say.hello"]
-```
-
-**That's it. Seven lines of business logic to publish a message.**
-
----
-
-## 7. Write Your First Handler
-
-Create a Handler that receives "hello" and adds "world":
-
-```bash
-cargo new --bin combiner
-cd combiner
-cargo add emergent-client tokio serde serde_json --features tokio/full
-```
-
-Edit `src/main.rs`:
-
-```rust
-use emergent_client::helpers::run_handler;
-use emergent_client::EmergentMessage;
-use serde::Deserialize;
-use serde_json::json;
-
-#[derive(Deserialize)]
-struct HelloPayload {
-    greeting: String,
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_handler(
-        Some("combiner"),
-        &["say.hello"],
-        |msg, handler| async move {
-            let input: HelloPayload = msg.payload_as().map_err(|e| e.to_string())?;
-            let message = format!("{} world", input.greeting);
-
-            let output = EmergentMessage::new("say.complete")
-                .with_causation_from_message(msg.id())
-                .with_payload(json!({"message": message}));
-
-            handler.publish(output).await.map_err(|e| e.to_string())
-        }
-    ).await?;
-    Ok(())
-}
-```
-
-The Handler receives "hello", appends "world", and publishes the result. The `run_handler` helper manages the message loop—your function is called once for each incoming message.
-
-The `.with_causation_from_message(msg.id())` call links output to input, creating a traceable event chain. We'll explore this in Section 8.
-
-Build and configure:
-
-```bash
-cargo build --release
-```
-
-```toml
-[[handlers]]
-name = "combiner"
-path = "/path/to/combiner/target/release/combiner"
-enabled = true
-subscribes = ["say.hello"]
-publishes = ["say.complete"]
-```
-
-**Handlers transform events. Input goes in, transformed output comes out.**
-
----
-
-## 8. Write Your First Sink
-
-Create a Sink that prints the final message:
-
-```bash
-cargo new --bin printer
-cd printer
-cargo add emergent-client tokio serde --features tokio/full
-```
-
-Edit `src/main.rs`:
-
-```rust
-use emergent_client::helpers::run_sink;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct CompletePayload {
-    message: String,
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_sink(
-        Some("printer"),
-        &["say.complete"],
-        |msg| async move {
-            let data: CompletePayload = msg.payload_as().map_err(|e| e.to_string())?;
-            println!("{}", data.message);
-            Ok(())
-        }
-    ).await?;
-    Ok(())
-}
-```
-
-The Sink receives messages and produces side effects—in this case, printing to the console. Unlike Handlers, Sinks never publish.
-
-Build and configure:
-
-```bash
-cargo build --release
-```
-
-```toml
-[[sinks]]
-name = "printer"
-path = "/path/to/printer/target/release/printer"
-enabled = true
-subscribes = ["say.complete"]
-```
-
-Run the engine with your three-component pipeline:
-
-```bash
-emergent --config ./config/emergent.toml
-```
-
-You should see:
-
-```
-hello world
-```
-
-**You built a complete event-driven pipeline.** Three independent programs communicate through the engine: Source publishes "hello", Handler transforms it to "hello world", Sink prints the result. Each component is simple, testable, and replaceable.
-
----
-
-## 9. Quick Start with Scaffold
-
-The examples above teach the concepts, but for real projects you don't need to write boilerplate manually. The `emergent scaffold` command generates primitives from templates.
+You don't need to write boilerplate manually. The `emergent scaffold` command generates primitives from templates in any supported language.
 
 ### Interactive Wizard
 
@@ -523,7 +340,7 @@ my_filter/
     └── main.rs
 ```
 
-The generated code uses the same helper functions you learned:
+The generated code uses the same helper functions you'll see in the deep-dive sections:
 
 ```rust
 // Generated handler uses run_handler
@@ -552,84 +369,11 @@ run_handler(
 | `--dry-run` | Preview files without writing |
 | `--json` | JSON output for scripting |
 
-**Use the hello world examples to learn the concepts. Use scaffold to bootstrap real projects.**
+**Use scaffold to bootstrap real projects fast. The deep-dive sections below explain the concepts behind the generated code.**
 
 ---
 
-## 10. Message Structure and Tracing
-
-Now that you've written all three primitives, let's examine the message structure that makes their communication possible.
-
-Every message in Emergent shares the same structure:
-
-```rust
-EmergentMessage {
-    id: MessageId,              // Time-sortable unique ID (UUIDv7 format)
-    message_type: String,       // "say.hello", "say.complete"
-    source: String,             // "greeter", "combiner"
-    timestamp_ms: u64,          // Unix epoch milliseconds
-    payload: Value,             // Your data
-    metadata: Option<Value>,    // Optional key-value pairs
-    correlation_id: Option<MessageId>,  // Request-response pairing
-    causation_id: Option<MessageId>,    // Event chain tracking
-}
-```
-
-### Message IDs
-
-Message IDs are time-sortable UUIDs (UUIDv7 format)—you can sort by ID to get chronological order. The engine generates IDs automatically when you call `EmergentMessage::new()`.
-
-### Message Types
-
-Message types use dotted notation: `domain.event`. Conventions:
-
-- `say.hello` - domain event from the greeter
-- `say.complete` - derived event after transformation
-- `system.started.greeter` - system event for greeter startup
-- `system.shutdown` - broadcast signal for graceful shutdown
-
-Wildcards work in subscriptions: `subscribe(&["system.*"])` matches all system events.
-
-### Causation vs Correlation
-
-**Causation ID** answers "what caused this message?" Use it to trace event chains:
-
-```
-say.hello (msg_01a2)
-  └─> say.complete (msg_01a3, caused by msg_01a2)
-        └─> notification.sent (msg_01a4, caused by msg_01a3)
-```
-
-**Correlation ID** answers "what request does this belong to?" Use it for request-response patterns:
-
-```
-http.request (msg_01a2, correlation: msg_01a2)
-  ├─> db.query (msg_01a3, correlation: msg_01a2)
-  └─> http.response (msg_01a4, correlation: msg_01a2)
-```
-
-Set causation in Handlers to track transformations:
-
-```rust
-let output = EmergentMessage::new("processed.event")
-    .with_causation_id(input_msg.id())
-    .with_payload(result);
-```
-
-Set correlation for request-response workflows:
-
-```rust
-let request_id = msg.id();
-let response = EmergentMessage::new("http.response")
-    .with_correlation_id(request_id)
-    .with_payload(data);
-```
-
-**Causation chains and correlation IDs make distributed workflows traceable. You can reconstruct the entire flow from logs.**
-
----
-
-## 11. Polyglot Workflows
+## 7. Polyglot Workflows
 
 You can mix languages in a single workflow. The SDKs for Rust, TypeScript, and Python expose identical helper APIs.
 
@@ -747,6 +491,264 @@ Now your pipeline mixes Rust (timer), Python (enricher, webhook), and TypeScript
 | Production Sources | Rust | Reliability, resource efficiency |
 
 **Language choice becomes a per-component decision. Use Python for data science, TypeScript for web integrations, Rust for performance-critical transformations.**
+
+---
+
+## 8. Write Your First Source (Rust Deep Dive)
+
+This section walks through building primitives from scratch in Rust. If you used `emergent scaffold` in Section 6, the generated code follows these same patterns.
+
+Create a new Rust project for a simple Source that says "hello":
+
+```bash
+cargo new --bin greeter
+cd greeter
+cargo add emergent-client tokio serde_json --features tokio/full
+```
+
+Edit `src/main.rs`:
+
+```rust
+use emergent_client::helpers::run_source;
+use emergent_client::EmergentMessage;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run_source(Some("greeter"), |source, _shutdown| async move {
+        let msg = EmergentMessage::new("say.hello")
+            .with_payload(json!({"greeting": "hello"}));
+        source.publish(msg).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }).await?;
+    Ok(())
+}
+```
+
+This Source publishes one message and exits. The `run_source` helper handles connection, signal handling, and cleanup—your code just publishes.
+
+Build and configure:
+
+```bash
+cargo build --release
+```
+
+```toml
+[[sources]]
+name = "greeter"
+path = "/path/to/greeter/target/release/greeter"
+enabled = true
+publishes = ["say.hello"]
+```
+
+**That's it. Seven lines of business logic to publish a message.**
+
+---
+
+## 9. Write Your First Handler (Rust Deep Dive)
+
+Create a Handler that receives "hello" and adds "world":
+
+```bash
+cargo new --bin combiner
+cd combiner
+cargo add emergent-client tokio serde serde_json --features tokio/full
+```
+
+Edit `src/main.rs`:
+
+```rust
+use emergent_client::helpers::run_handler;
+use emergent_client::EmergentMessage;
+use serde::Deserialize;
+use serde_json::json;
+
+#[derive(Deserialize)]
+struct HelloPayload {
+    greeting: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run_handler(
+        Some("combiner"),
+        &["say.hello"],
+        |msg, handler| async move {
+            let input: HelloPayload = msg.payload_as().map_err(|e| e.to_string())?;
+            let message = format!("{} world", input.greeting);
+
+            let output = EmergentMessage::new("say.complete")
+                .with_causation_from_message(msg.id())
+                .with_payload(json!({"message": message}));
+
+            handler.publish(output).await.map_err(|e| e.to_string())
+        }
+    ).await?;
+    Ok(())
+}
+```
+
+The Handler receives "hello", appends "world", and publishes the result. The `run_handler` helper manages the message loop—your function is called once for each incoming message.
+
+The `.with_causation_from_message(msg.id())` call links output to input, creating a traceable event chain. We'll explore this in Section 11.
+
+Build and configure:
+
+```bash
+cargo build --release
+```
+
+```toml
+[[handlers]]
+name = "combiner"
+path = "/path/to/combiner/target/release/combiner"
+enabled = true
+subscribes = ["say.hello"]
+publishes = ["say.complete"]
+```
+
+**Handlers transform events. Input goes in, transformed output comes out.**
+
+---
+
+## 10. Write Your First Sink (Rust Deep Dive)
+
+Create a Sink that prints the final message:
+
+```bash
+cargo new --bin printer
+cd printer
+cargo add emergent-client tokio serde --features tokio/full
+```
+
+Edit `src/main.rs`:
+
+```rust
+use emergent_client::helpers::run_sink;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct CompletePayload {
+    message: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run_sink(
+        Some("printer"),
+        &["say.complete"],
+        |msg| async move {
+            let data: CompletePayload = msg.payload_as().map_err(|e| e.to_string())?;
+            println!("{}", data.message);
+            Ok(())
+        }
+    ).await?;
+    Ok(())
+}
+```
+
+The Sink receives messages and produces side effects—in this case, printing to the console. Unlike Handlers, Sinks never publish.
+
+Build and configure:
+
+```bash
+cargo build --release
+```
+
+```toml
+[[sinks]]
+name = "printer"
+path = "/path/to/printer/target/release/printer"
+enabled = true
+subscribes = ["say.complete"]
+```
+
+Run the engine with your three-component pipeline:
+
+```bash
+emergent --config ./config/emergent.toml
+```
+
+You should see:
+
+```
+hello world
+```
+
+**You built a complete event-driven pipeline.** Three independent programs communicate through the engine: Source publishes "hello", Handler transforms it to "hello world", Sink prints the result. Each component is simple, testable, and replaceable.
+
+---
+
+## 11. Message Structure and Tracing
+
+Now that you've seen all three primitives, let's examine the message structure that makes their communication possible.
+
+Every message in Emergent shares the same structure:
+
+```rust
+EmergentMessage {
+    id: MessageId,              // Time-sortable unique ID (UUIDv7 format)
+    message_type: String,       // "say.hello", "say.complete"
+    source: String,             // "greeter", "combiner"
+    timestamp_ms: u64,          // Unix epoch milliseconds
+    payload: Value,             // Your data
+    metadata: Option<Value>,    // Optional key-value pairs
+    correlation_id: Option<MessageId>,  // Request-response pairing
+    causation_id: Option<MessageId>,    // Event chain tracking
+}
+```
+
+### Message IDs
+
+Message IDs are time-sortable UUIDs (UUIDv7 format)—you can sort by ID to get chronological order. The engine generates IDs automatically when you call `EmergentMessage::new()`.
+
+### Message Types
+
+Message types use dotted notation: `domain.event`. Conventions:
+
+- `say.hello` - domain event from the greeter
+- `say.complete` - derived event after transformation
+- `system.started.greeter` - system event for greeter startup
+- `system.shutdown` - broadcast signal for graceful shutdown
+
+Wildcards work in subscriptions: `subscribe(&["system.*"])` matches all system events.
+
+### Causation vs Correlation
+
+**Causation ID** answers "what caused this message?" Use it to trace event chains:
+
+```
+say.hello (msg_01a2)
+  └─> say.complete (msg_01a3, caused by msg_01a2)
+        └─> notification.sent (msg_01a4, caused by msg_01a3)
+```
+
+**Correlation ID** answers "what request does this belong to?" Use it for request-response patterns:
+
+```
+http.request (msg_01a2, correlation: msg_01a2)
+  ├─> db.query (msg_01a3, correlation: msg_01a2)
+  └─> http.response (msg_01a4, correlation: msg_01a2)
+```
+
+Set causation in Handlers to track transformations:
+
+```rust
+let output = EmergentMessage::new("processed.event")
+    .with_causation_id(input_msg.id())
+    .with_payload(result);
+```
+
+Set correlation for request-response workflows:
+
+```rust
+let request_id = msg.id();
+let response = EmergentMessage::new("http.response")
+    .with_correlation_id(request_id)
+    .with_payload(data);
+```
+
+**Causation chains and correlation IDs make distributed workflows traceable. You can reconstruct the entire flow from logs.**
 
 ---
 
