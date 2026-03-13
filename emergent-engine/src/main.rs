@@ -617,7 +617,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to bind HTTP API server to {}: {}", bind_addr, e);
+                    warn!("Failed to bind HTTP API server to {}: {}. Set api_port to a different value in [engine] config, or set api_port = 0 to disable the HTTP API.", bind_addr, e);
                 }
             }
         });
