@@ -323,8 +323,8 @@ mod tests {
     #[tokio::test]
     async fn test_empty_stdout_produces_empty_output() {
         let payload = json!({"input": "hello"});
-        // `true` produces no output and exits 0
-        let command = vec!["true".to_string()];
+        // `cat /dev/null` consumes stdin and produces no stdout, exits 0
+        let command = vec!["cat".to_string(), "/dev/null".to_string()];
 
         let result = execute_command(&payload, &command, 5000).await;
         let result = result.unwrap_or_else(|_| panic!("expected success"));
