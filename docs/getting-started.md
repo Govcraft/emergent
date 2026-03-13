@@ -4,15 +4,15 @@
 
 ## Abstract
 
-Building distributed workflows requires coordinating processes that emit, transform, and consume events—typically involving message brokers, orchestrators, and complex infrastructure. Developers need a simpler path. Emergent reduces workflow engines to three primitives: Sources (publish events), Handlers (transform events), and Sinks (consume events). Unlike traditional engines requiring infrastructure setup, Emergent runs as a single pre-built binary managing components as child processes over Unix sockets. Download the binary, install the SDK for your language (Rust, TypeScript, or Python), and start building. **You can start processing events with zero infrastructure—no Rust toolchain required—and learn patterns that scale from development to production.**
+Building distributed workflows requires coordinating processes that emit, transform, and consume events—typically involving message brokers, orchestrators, and complex infrastructure. Developers need a simpler path. Emergent reduces workflow engines to three primitives: Sources (publish events), Handlers (transform events), and Sinks (consume events). Unlike traditional engines requiring infrastructure setup, Emergent runs as a single pre-built binary managing components as child processes over Unix sockets. Download the binary, install pre-built marketplace primitives, and start processing events—no code required. When you need custom logic, write primitives in Rust, TypeScript, or Python. **You can go from zero to a working pipeline in minutes, then extend it with custom code in the language of your choice.**
 
 ---
 
 ## 1. Introduction: Three Primitives, Zero Infrastructure
 
-Most workflow engines force you to think about infrastructure before writing code. You install message brokers, configure databases, deploy orchestrators, then finally write your business logic. Emergent reverses this: download a single binary, write async functions in any supported language (Rust, TypeScript, or Python) that publish or consume messages, then point the binary at your configuration file. The engine handles process management, message routing, and graceful shutdown.
+Most workflow engines force you to think about infrastructure before writing code. You install message brokers, configure databases, deploy orchestrators, then finally write your business logic. Emergent reverses this: download a single binary, install pre-built primitives from the marketplace, write a TOML config, and start processing events. When you need custom logic, write primitives in any supported language (Rust, TypeScript, or Python). The engine handles process management, message routing, and graceful shutdown.
 
-This approach works because Emergent constrains your options. Every component you write fits into one of three categories:
+This approach works because Emergent constrains your options. Every component fits into one of three categories:
 
 - **Source**: Publishes messages into the system (ingress from timers, webhooks, files)
 - **Handler**: Receives messages, processes them, publishes new messages (transformations, enrichment)
@@ -20,7 +20,7 @@ This approach works because Emergent constrains your options. Every component yo
 
 These three primitives define all possible workflows. A Source cannot receive messages. A Sink cannot publish messages. A Handler does both. This constraint makes workflows easy to reason about: data flows in one direction, from Sources through Handlers to Sinks.
 
-**You will spend this guide building one example of each primitive. By the end, you will understand the pattern well enough to build production workflows.**
+**This guide starts with a working pipeline using marketplace primitives (no code required), then teaches you to write custom primitives in your language of choice.**
 
 ---
 
@@ -33,27 +33,24 @@ The Emergent engine is a single binary. You do not need Rust or any build tools 
 Download the latest release from [GitHub Releases](https://github.com/Govcraft/emergent/releases/latest) for your platform:
 
 ```bash
-# Set the version (check the releases page for the latest)
-VERSION=0.7.0
-
 # Linux (x86_64)
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
-tar xzf emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-x86_64-unknown-linux-gnu.tar.gz
+tar xzf emergent-x86_64-unknown-linux-gnu.tar.gz
 sudo mv emergent /usr/local/bin/
 
 # Linux (aarch64 / ARM64)
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
-tar xzf emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-aarch64-unknown-linux-gnu.tar.gz
+tar xzf emergent-aarch64-unknown-linux-gnu.tar.gz
 sudo mv emergent /usr/local/bin/
 
 # macOS (Apple Silicon)
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-apple-darwin.tar.gz
-tar xzf emergent-${VERSION}-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-aarch64-apple-darwin.tar.gz
+tar xzf emergent-aarch64-apple-darwin.tar.gz
 sudo mv emergent /usr/local/bin/
 
 # macOS (Intel)
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-apple-darwin.tar.gz
-tar xzf emergent-${VERSION}-x86_64-apple-darwin.tar.gz
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-x86_64-apple-darwin.tar.gz
+tar xzf emergent-x86_64-apple-darwin.tar.gz
 sudo mv emergent /usr/local/bin/
 ```
 
@@ -77,9 +74,25 @@ cargo build --release
 
 This produces the engine binary at `./target/release/emergent` along with the example primitives.
 
-### Install an SDK
+### Install Marketplace Primitives (Optional)
 
-You write primitives (Sources, Handlers, Sinks) in any supported language. Install the SDK for your language of choice:
+The marketplace ships pre-built primitives you can use without writing any code. Browse and install them with the `marketplace` subcommand:
+
+```bash
+# See what's available
+emergent marketplace list
+
+# Install primitives
+emergent marketplace install http-source
+emergent marketplace install console-sink
+emergent marketplace install exec-handler
+```
+
+Installed primitives are placed in `~/.local/share/emergent/bin/` and can be referenced directly in your configuration.
+
+### Install an SDK (For Writing Custom Primitives)
+
+When marketplace primitives aren't enough, write your own in any supported language. Install the SDK for your language of choice:
 
 **TypeScript (Deno)**:
 ```bash
@@ -98,60 +111,84 @@ uv add emergent-client
 cargo add emergent-client tokio serde_json --features tokio/full
 ```
 
-You only need the engine binary and one SDK to start building. The SDK handles IPC communication with the engine automatically.
+You only need the engine binary and one SDK to start building custom primitives. The SDK handles IPC communication with the engine automatically.
 
 ---
 
-## 3. Run the Example Pipeline
+## 3. Run Your First Pipeline
 
-Before writing code, run the example pipeline to see Emergent in action. This pipeline demonstrates all three primitives working together.
+Before writing any code, build a working pipeline using pre-built marketplace primitives. This demonstrates all three primitives working together—without a compiler.
 
-The example pipeline requires the example primitives (timer, filter, console), which are built from source. Clone and build the repo:
+Install two primitives from the marketplace:
 
 ```bash
-git clone https://github.com/Govcraft/emergent
-cd emergent
-cargo build --release
+emergent marketplace install exec-source
+emergent marketplace install console-sink
+```
+
+Create a configuration file:
+
+```bash
+emergent init --name my-pipeline
+```
+
+Edit `emergent.toml` to define a simple pipeline that runs a command every 5 seconds and prints the output:
+
+```toml
+[engine]
+name = "my-pipeline"
+socket_path = "auto"
+
+[[sources]]
+name = "ticker"
+path = "~/.local/share/emergent/bin/exec-source"
+args = ["--command", "date", "--interval", "5000"]
+publishes = ["exec.output"]
+
+[[sinks]]
+name = "printer"
+path = "~/.local/share/emergent/bin/console-sink"
+args = ["--subscribe", "exec.output", "--timestamp"]
+subscribes = ["exec.output"]
 ```
 
 Start the engine:
 
 ```bash
-emergent --config ./config/emergent.toml
+emergent --config ./emergent.toml
 ```
 
-You should see output like this:
+You should see the current date printed every 5 seconds:
 
 ```
-[17:23:45.123] [STARTED] timer (source) [msg_01a2]
-[17:23:45.124] [STARTED] filter (handler) [msg_01a3]
-[17:23:45.125] [STARTED] console (sink) [msg_01a4]
-[17:23:50.000] [FILTER] tick #1 filtered not_multiple_of_5
-[17:23:55.000] [FILTER] tick #2 filtered not_multiple_of_5
-[17:24:00.000] [FILTER] tick #3 filtered not_multiple_of_5
-[17:24:05.000] [FILTER] tick #4 filtered not_multiple_of_5
-[17:24:10.000] [FILTER] tick #5 passed every_5th
-[17:24:10.001] [FILTERED] tick #5 (every_5th every 5)
+[17:23:50.000] exec.output: {"stdout": "Thu Mar 13 17:23:50 UTC 2025", "exit_code": 0}
+[17:23:55.000] exec.output: {"stdout": "Thu Mar 13 17:23:55 UTC 2025", "exit_code": 0}
+[17:24:00.000] exec.output: {"stdout": "Thu Mar 13 17:24:00 UTC 2025", "exit_code": 0}
 ```
-
-Here is what happened:
-
-1. The engine started three child processes (timer, filter, console)
-2. The timer Source emits a `timer.tick` event every 5 seconds
-3. The filter Handler receives each tick, publishes `filter.processed` for every tick, and publishes `timer.filtered` for every 5th tick
-4. The console Sink subscribes to `filter.processed` and `timer.filtered`, printing formatted output
 
 Stop the engine with Ctrl+C. You will see graceful shutdown:
 
 ```
-[17:24:15.000] [STOPPED] timer (source) [msg_01a8]
-[17:24:15.100] [STOPPED] filter (handler) [msg_01a9]
-[17:24:15.200] [STOPPED] console (sink) [msg_01aa]
+[17:24:05.000] [STOPPED] ticker (source)
+[17:24:05.100] [STOPPED] printer (sink)
 ```
 
-The engine stopped the timer (no new events), waited for the filter to drain (process remaining events), then stopped the console (consume final output). This three-phase shutdown ensures no message loss.
+The engine stopped the source (no new events), then stopped the sink (consume final output). This cascading shutdown ensures no message loss.
 
-**The example ran with zero configuration beyond a TOML file. You did not install a message broker or database. The engine handled process lifecycle and message routing.**
+**You built a working pipeline with zero code.** Two marketplace primitives, one TOML file, one binary. The engine handled process lifecycle, message routing, and graceful shutdown.
+
+### Running the Built-from-Source Examples
+
+If you have the Rust toolchain and want to explore the source examples (timer, filter, console), clone and build the repo:
+
+```bash
+git clone https://github.com/Govcraft/emergent
+cd emergent
+cargo build --release
+./target/release/emergent --config ./config/emergent.toml
+```
+
+This runs a more complex pipeline: a timer Source emits `timer.tick` every 5 seconds, a filter Handler passes every 5th tick, and a console Sink prints the results. See `config/emergent.toml` for the full configuration.
 
 ---
 
@@ -496,7 +533,7 @@ Now your pipeline mixes Rust (timer), Python (enricher, webhook), and TypeScript
 
 ## 8. Write Your First Source (Rust Deep Dive)
 
-This section walks through building primitives from scratch in Rust. If you used `emergent scaffold` in Section 6, the generated code follows these same patterns.
+The marketplace and scaffold get you started fast, but sometimes you need full control. This section walks through building primitives from scratch in Rust. TypeScript and Python users: the patterns are identical—see Section 7 for examples in those languages, or use `emergent scaffold` to generate a project in your language.
 
 Create a new Rust project for a simple Source that says "hello":
 
@@ -951,16 +988,17 @@ Replay events by reading JSON logs and re-publishing them through a Source.
 
 ## 14. Conclusion
 
-You learned Emergent's three primitives (Source, Handler, Sink), ran an example pipeline, wrote your first components, and explored message tracing and shutdown behavior. The SDK helpers reduce each primitive to a single function call with your business logic—connection, signal handling, and graceful shutdown happen automatically.
+You learned Emergent's three primitives (Source, Handler, Sink), built a pipeline from marketplace primitives, explored polyglot workflows, and wrote custom components with message tracing and shutdown behavior. The SDK helpers reduce each primitive to a single function call with your business logic—connection, signal handling, and graceful shutdown happen automatically.
 
 This simplicity scales. Production workflows use the same three primitives you practiced here. A 50-component pipeline follows the same principles as a 3-component example.
 
-Three key takeaways:
+Four key takeaways:
 
-1. **Constraints enable reasoning**: Sources publish, Handlers transform, Sinks consume. Every component fits one pattern.
-2. **Helpers eliminate boilerplate**: `run_source`, `run_handler`, and `run_sink` handle connection, signals, and cleanup—you write only the business logic.
-3. **Polyglot is practical**: Mix languages based on component requirements. The helper APIs are consistent across Rust, TypeScript, and Python.
+1. **Start with marketplace primitives**: Pre-built Sources, Handlers, and Sinks let you build working pipelines with no code at all.
+2. **Constraints enable reasoning**: Sources publish, Handlers transform, Sinks consume. Every component fits one pattern.
+3. **Helpers eliminate boilerplate**: `run_source`, `run_handler`, and `run_sink` handle connection, signals, and cleanup—you write only the business logic.
+4. **Polyglot is practical**: Mix languages based on component requirements. The helper APIs are consistent across Rust, TypeScript, and Python.
 
-Start building workflows by identifying Sources (where does data come from?), Handlers (what transformations are needed?), and Sinks (where does data go?). Write one component at a time, test it in isolation, then compose components in the configuration file.
+Start building workflows by checking `emergent marketplace list` for existing primitives. When you need custom logic, identify your Sources (where does data come from?), Handlers (what transformations are needed?), and Sinks (where does data go?). Use `emergent scaffold` to generate a project in your language of choice, test it in isolation, then compose components in the configuration file.
 
-**The code patterns you learned are production-ready.** You'll want to add error handling, monitoring, and deployment automation, but the core structure remains the same. Deploy these primitives by pointing the engine at your configuration and starting the binary.
+**The patterns you learned are production-ready.** Deploy by pointing the engine at your configuration and starting the binary.

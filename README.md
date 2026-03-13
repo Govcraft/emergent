@@ -4,41 +4,28 @@ A lightweight event-driven workflow engine with three simple primitives.
 
 Building event-driven systems means coordinating processes that emit, transform, and consume events. Traditional workflow engines add complexity; rolling your own is fragile. Emergent gives you three primitives—Sources emit events, Handlers transform them, Sinks consume them—while the engine handles routing, lifecycle, and observability.
 
-## Quick Example
+## Quick Start
 
-A timer emits ticks every 5 seconds. A filter passes every 5th tick. A console prints the result.
-
-```toml
-# config/emergent.toml
-[engine]
-name = "emergent"
-socket_path = "auto"
-
-[[sources]]
-name = "timer"
-path = "./target/release/timer"
-args = ["--interval", "5000"]
-publishes = ["timer.tick"]
-
-[[handlers]]
-name = "filter"
-path = "./target/release/filter"
-args = ["--filter-every", "5"]
-subscribes = ["timer.tick"]
-publishes = ["timer.filtered"]
-
-[[sinks]]
-name = "console"
-path = "./target/release/console"
-subscribes = ["timer.filtered"]
-```
-
-Run the pipeline:
+Install the engine binary and start building pipelines. No Rust toolchain required.
 
 ```bash
-cargo build --release
-./target/release/emergent --config ./config/emergent.toml
+# Download the latest release (Linux x86_64 shown — see Releases for all platforms)
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-x86_64-unknown-linux-gnu.tar.gz
+tar xzf emergent-x86_64-unknown-linux-gnu.tar.gz
+sudo mv emergent /usr/local/bin/
+
+# Create a config file
+emergent init
+
+# Install a pre-built primitive from the marketplace
+emergent marketplace install http-source
+emergent marketplace install console-sink
+
+# Run the pipeline
+emergent --config ./emergent.toml
 ```
+
+No code written. The engine managed process lifecycle, message routing, and graceful shutdown.
 
 ## The Three Primitives
 
@@ -54,32 +41,109 @@ Source ──publish──> Handler ──transform──> Sink
 | Handler   | Yes       | Yes     | Transform: process and re-emit events |
 | Sink      | Yes       | No      | Egress: consume events (logs, HTTP, etc.) |
 
-## Features
+## Built-in Primitives
 
-- **Language-agnostic primitives**: Write in Rust, TypeScript, or Python—primitives are standalone processes
-- **Built-in event sourcing**: Every message logged with causation chains for debugging and replay
-- **Graceful lifecycle management**: Engine handles startup ordering, subscription routing, three-phase shutdown
-- **Simple IPC protocol**: MessagePack over Unix sockets—no distributed systems setup
-- **TOML configuration**: Declare your pipeline topology in one readable file
+The [marketplace](https://github.com/Govcraft/emergent-primitives) ships pre-built primitives you can install and use without writing any code:
 
-## Topology Viewer
-
-The built-in topology viewer shows your running pipeline — nodes, subscriptions, and process state — in real time.
-
-![Emergent Topology Viewer](docs/images/topology-viewer.png)
-
-## Quick Start
+| Primitive | Kind | Description |
+|-----------|------|-------------|
+| `http-source` | Source | Generic HTTP webhook receiver |
+| `exec-source` | Source | Execute shell commands and emit output as events |
+| `github-source` | Source | Receive GitHub webhooks for PRs, issues, and pushes |
+| `slack-source` | Source | Monitor Slack channels for messages, reactions, and threads |
+| `exec-handler` | Handler | Pipe event payloads through any executable |
+| `console-sink` | Sink | Output message payloads to stdout |
+| `http-sink` | Sink | Make outbound HTTP requests |
+| `github-sink` | Sink | Create GitHub comments, labels, and status checks |
+| `slack-sink` | Sink | Post messages to Slack channels |
+| `topology-viewer` | Sink | Real-time D3.js workflow visualization |
 
 ```bash
-# Clone and build
-git clone https://github.com/emergent/emergent
-cd emergent && cargo build --release
+# Browse the marketplace
+emergent marketplace list
 
-# Run the example pipeline
-./target/release/emergent --config ./config/emergent.toml
+# Install a primitive
+emergent marketplace install slack-source
+
+# See what a primitive does
+emergent marketplace info exec-handler
 ```
 
-## Writing a Source
+## Zero-Code Pipeline Example
+
+Receive HTTP webhooks, pipe them through a shell command, and post results to Slack—no code required:
+
+```toml
+[engine]
+name = "webhook-pipeline"
+socket_path = "auto"
+
+[[sources]]
+name = "webhooks"
+path = "~/.local/share/emergent/bin/http-source"
+args = ["--port", "8080"]
+publishes = ["http.request"]
+
+[[handlers]]
+name = "process"
+path = "~/.local/share/emergent/bin/exec-handler"
+args = ["--publish-as", "processed.result"]
+subscribes = ["http.request"]
+publishes = ["processed.result"]
+
+[[sinks]]
+name = "notify"
+path = "~/.local/share/emergent/bin/slack-sink"
+args = ["--token", "xoxb-your-token", "--default-channel", "C0123456"]
+subscribes = ["processed.result"]
+```
+
+```bash
+emergent --config ./emergent.toml
+```
+
+## Write Your Own Primitives
+
+When built-in primitives aren't enough, write your own in any supported language. The SDKs for Rust, TypeScript, and Python expose identical patterns.
+
+### Scaffold a Primitive
+
+```bash
+# Interactive wizard — pick your language, primitive type, and message types
+emergent scaffold
+
+# Or use flags for scripting
+emergent scaffold -t handler -n my_filter -l python -S timer.tick -p timer.filtered
+```
+
+### TypeScript
+
+```typescript
+import { runSink } from "jsr:@govcraft/emergent";
+
+await runSink("my_sink", ["sensor.reading"], async (msg) => {
+  const data = msg.payloadAs<{ temperature: number }>();
+  console.log(`Temperature: ${data.temperature}°F`);
+});
+```
+
+### Python
+
+```python
+from emergent import run_handler, create_message
+
+async def enrich(msg, handler):
+    data = msg.payload_as(dict)
+    enriched = {**data, "processed_by": "python"}
+    await handler.publish(
+        create_message("data.enriched").caused_by(msg.id).payload(enriched)
+    )
+
+import asyncio
+asyncio.run(run_handler("enricher", ["data.raw"], enrich))
+```
+
+### Rust
 
 ```rust
 use emergent_client::{EmergentSource, EmergentMessage};
@@ -97,34 +161,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## Writing a Handler
+## Features
 
-```rust
-use emergent_client::{EmergentHandler, EmergentMessage};
-use serde_json::json;
+- **Language-agnostic primitives**: Write in Rust, TypeScript, or Python—or use pre-built marketplace primitives with no code at all
+- **Built-in marketplace**: Install community primitives as pre-built binaries with `emergent marketplace install`
+- **Scaffold command**: Generate new primitives from templates in any supported language
+- **Built-in event sourcing**: Every message logged with causation chains for debugging and replay
+- **Graceful lifecycle management**: Engine handles startup ordering, subscription routing, three-phase shutdown
+- **Simple IPC protocol**: MessagePack over Unix sockets—no distributed systems setup
+- **TOML configuration**: Declare your pipeline topology in one readable file
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let handler = EmergentHandler::connect("my_handler").await?;
-    let mut stream = handler.subscribe(["sensor.reading"]).await?;
+## Topology Viewer
 
-    while let Some(msg) = stream.next().await {
-        let temp: f64 = msg.payload()["temperature"].as_f64().unwrap_or(0.0);
+The built-in topology viewer shows your running pipeline — nodes, subscriptions, and process state — in real time.
 
-        if temp > 80.0 {
-            let alert = EmergentMessage::new("alert.high_temp")
-                .with_causation_id(msg.id())
-                .with_payload(json!({"temperature": temp}));
-            handler.publish(alert).await?;
-        }
-    }
-    Ok(())
-}
+![Emergent Topology Viewer](docs/images/topology-viewer.png)
+
+```bash
+emergent marketplace install topology-viewer
 ```
 
 ## Documentation
 
-- **[Getting Started](docs/getting-started.md)** - Build your first pipeline in 30 minutes
+- **[Getting Started](docs/getting-started.md)** - Build your first pipeline
 - **[Concepts](docs/concepts.md)** - Architecture, message flow, event sourcing
 - **[Primitives](docs/primitives/)** - Reference for Sources, Handlers, Sinks
 - **[Configuration](docs/configuration.md)** - All configuration options
@@ -132,9 +191,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Requirements
 
-- Rust 1.75+ (for engine and Rust primitives)
-- Or: Deno 1.40+ (for TypeScript primitives)
-- Or: Python 3.11+ with uv (for Python primitives)
+The engine is a single pre-built binary. No Rust toolchain required.
+
+To write your own primitives, install the SDK for your language:
+- **TypeScript**: Deno 1.40+
+- **Python**: Python 3.11+ with uv
+- **Rust**: Rust 1.75+
 
 ## License
 
