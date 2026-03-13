@@ -55,8 +55,21 @@ pub async fn execute(args: InitArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Resolve engine name: explicit flag > interactive prompt > default
+    let name = if let Some(name) = args.name {
+        name
+    } else if std::io::stdin().is_terminal() {
+        dialoguer::Input::<String>::new()
+            .with_prompt("Engine name")
+            .default("emergent".to_string())
+            .interact_text()
+            .map_err(|e| anyhow::anyhow!("Prompt error: {e}"))?
+    } else {
+        "emergent".to_string()
+    };
+
     // Render the template
-    let content = template::render_config_template(&args.name)
+    let content = template::render_config_template(&name)
         .map_err(|e| anyhow::anyhow!("Template error: {e}"))?;
 
     // Dry-run: print to stdout and return
@@ -96,7 +109,7 @@ mod tests {
         let output = dir.path().join("emergent.toml");
 
         let args = InitArgs {
-            name: "test-engine".to_string(),
+            name: Some("test-engine".to_string()),
             output: output.clone(),
             force: false,
             dry_run: false,
@@ -119,7 +132,7 @@ mod tests {
         let output = dir.path().join("emergent.toml");
 
         let args = InitArgs {
-            name: "emergent".to_string(),
+            name: Some("emergent".to_string()),
             output: output.clone(),
             force: false,
             dry_run: true,
@@ -139,7 +152,7 @@ mod tests {
         std::fs::write(&output, "existing content")?;
 
         let args = InitArgs {
-            name: "emergent".to_string(),
+            name: None,
             output: output.clone(),
             force: false,
             dry_run: false,
@@ -166,7 +179,7 @@ mod tests {
         std::fs::write(&output, "old content")?;
 
         let args = InitArgs {
-            name: "new-engine".to_string(),
+            name: Some("new-engine".to_string()),
             output: output.clone(),
             force: true,
             dry_run: false,

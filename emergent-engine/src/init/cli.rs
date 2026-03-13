@@ -31,8 +31,8 @@ Examples:
 ")]
 pub struct InitArgs {
     /// Engine instance name
-    #[arg(short, long, default_value = "emergent")]
-    pub name: String,
+    #[arg(short, long)]
+    pub name: Option<String>,
 
     /// Output file path
     #[arg(short, long, default_value = "./emergent.toml")]
