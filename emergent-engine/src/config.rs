@@ -103,12 +103,16 @@ pub struct EventStoreConfig {
     pub retention_days: u32,
 }
 
+/// Sentinel value indicating the event store path should be resolved to an XDG data directory.
+const EVENT_STORE_SENTINEL_LOG_DIR: &str = "auto";
+const EVENT_STORE_SENTINEL_SQLITE: &str = "auto";
+
 fn default_json_log_dir() -> PathBuf {
-    PathBuf::from("./logs")
+    PathBuf::from(EVENT_STORE_SENTINEL_LOG_DIR)
 }
 
 fn default_sqlite_path() -> PathBuf {
-    PathBuf::from("./events.db")
+    PathBuf::from(EVENT_STORE_SENTINEL_SQLITE)
 }
 
 const fn default_retention_days() -> u32 {
@@ -401,6 +405,7 @@ impl EmergentConfig {
         let mut config: EmergentConfig = toml::from_str(&content)?;
         config.expand_paths();
         config.resolve_path_commands();
+        config.resolve_event_store();
         config.validate()?;
         Ok(config)
     }
@@ -413,6 +418,7 @@ impl EmergentConfig {
         let mut config: EmergentConfig = toml::from_str(content)?;
         config.expand_paths();
         config.resolve_path_commands();
+        config.resolve_event_store();
         config.validate()?;
         Ok(config)
     }
@@ -502,6 +508,49 @@ impl EmergentConfig {
         self.validate_unique_names()?;
         self.validate_paths()?;
         Ok(())
+    }
+
+    /// Resolve event store paths to XDG data directory if set to "auto" (pure function).
+    ///
+    /// Replaces sentinel defaults with `{data_dir}/{engine_name}/logs` and
+    /// `{data_dir}/{engine_name}/events.db`. Explicit paths are left unchanged.
+    #[must_use]
+    pub fn with_resolved_event_store(&self, data_dir: Option<&Path>) -> Self {
+        let mut config = self.clone();
+        config.resolve_event_store_paths(data_dir);
+        config
+    }
+
+    /// Resolve event store paths in place.
+    ///
+    /// If `json_log_dir` or `sqlite_path` is the sentinel value "auto",
+    /// replaces it with an XDG-compliant path under the data directory
+    /// namespaced by engine name.
+    pub fn resolve_event_store_paths(&mut self, data_dir: Option<&Path>) {
+        if self.event_store.json_log_dir == Path::new(EVENT_STORE_SENTINEL_LOG_DIR) {
+            if let Some(dir) = data_dir {
+                self.event_store.json_log_dir = dir.join(&self.engine.name).join("logs");
+            } else {
+                self.event_store.json_log_dir = PathBuf::from("./logs");
+            }
+        }
+        if self.event_store.sqlite_path == Path::new(EVENT_STORE_SENTINEL_SQLITE) {
+            if let Some(dir) = data_dir {
+                self.event_store.sqlite_path =
+                    dir.join(&self.engine.name).join("events.db");
+            } else {
+                self.event_store.sqlite_path = PathBuf::from("./events.db");
+            }
+        }
+    }
+
+    /// Resolve event store paths using system XDG directories.
+    ///
+    /// Uses `~/.local/share/emergent/{engine_name}/` as the base directory.
+    pub fn resolve_event_store(&mut self) {
+        let data_dir = directories::ProjectDirs::from("ai", "govcraft", "emergent")
+            .map(|dirs| dirs.data_dir().to_path_buf());
+        self.resolve_event_store_paths(data_dir.as_deref());
     }
 
     /// Resolve the socket path given an optional runtime directory (pure function).

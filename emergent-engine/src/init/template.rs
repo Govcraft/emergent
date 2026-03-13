@@ -50,10 +50,10 @@ mod tests {
             config.engine.wire_format,
             crate::config::WireFormat::Messagepack
         );
-        assert_eq!(config.event_store.json_log_dir.to_string_lossy(), "./logs");
+        assert_eq!(config.event_store.json_log_dir.to_string_lossy(), "auto");
         assert_eq!(
             config.event_store.sqlite_path.to_string_lossy(),
-            "./events.db"
+            "auto"
         );
         assert_eq!(config.event_store.retention_days, 30);
         Ok(())

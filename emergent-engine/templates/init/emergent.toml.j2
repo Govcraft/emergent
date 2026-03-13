@@ -35,10 +35,12 @@ wire_format = "messagepack"
 
 [event_store]
 # Directory for JSON log files (append-only, one file per day)
-json_log_dir = "./logs"
+# Use "auto" for XDG-compliant path: ~/.local/share/emergent/{{ name }}/logs
+json_log_dir = "auto"
 
 # Path to SQLite database for structured event storage and replay
-sqlite_path = "./events.db"
+# Use "auto" for XDG-compliant path: ~/.local/share/emergent/{{ name }}/events.db
+sqlite_path = "auto"
 
 # How many days to retain events before cleanup
 retention_days = 30
