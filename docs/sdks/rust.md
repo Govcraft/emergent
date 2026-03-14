@@ -1,6 +1,8 @@
 # Rust SDK
 
-The `emergent-client` crate provides the Rust SDK for building Sources, Handlers, and Sinks.
+The `emergent-client` crate provides the Rust SDK for building custom Sources, Handlers, and Sinks. Use this when marketplace exec primitives are not enough -- you need persistent state across messages, custom protocols, or high-performance processing.
+
+For stateless transformations (jq, model calls, data extraction), use the marketplace exec primitives instead. See [Getting Started](../getting-started.md).
 
 ## Installation
 
@@ -71,6 +73,39 @@ struct MyPayload {
 let payload: MyPayload = msg.payload_as()?;
 ```
 
+## Helper Functions
+
+Helpers eliminate boilerplate for the common case -- connection, signal handling, and graceful shutdown are automatic:
+
+```rust
+use emergent_client::helpers::{run_source, run_handler, run_sink};
+
+// Source: shutdown is a watch::Receiver<bool>
+run_source(Some("name"), |source, mut shutdown| async move {
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            _ = interval.tick() => { source.publish(msg).await?; }
+        }
+    }
+    Ok(())
+}).await?;
+
+// Handler: called for each message
+run_handler(Some("name"), &["topic"], |msg, handler| async move {
+    let output = EmergentMessage::new("output")
+        .with_causation_from_message(msg.id())
+        .with_payload(json!({"processed": true}));
+    handler.publish(output).await.map_err(|e| e.to_string())
+}).await?;
+
+// Sink: called for each message
+run_sink(Some("name"), &["topic"], |msg| async move {
+    println!("{}", msg.payload());
+    Ok(())
+}).await?;
+```
+
 ## EmergentSource
 
 Sources publish messages into the system.
@@ -129,11 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = handler.subscribe(["input.event"]).await?;
 
     while let Some(msg) = stream.next().await {
-        // Process the message
         let input: i64 = msg.payload()["value"].as_i64().unwrap_or(0);
         let output = input * 2;
 
-        // Publish result with causation link
         let result = EmergentMessage::new("output.event")
             .with_causation_id(msg.id())
             .with_payload(json!({"doubled": output}));
@@ -188,10 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "my_sink".to_string());
 
     let sink = EmergentSink::connect(&name).await?;
-
-    // Get subscriptions from engine config
     let topics = sink.get_my_subscriptions().await?;
-
     let mut stream = sink.subscribe(&topics).await?;
 
     while let Some(msg) = stream.next().await {
@@ -221,7 +251,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Convenience Method
 
 ```rust
-// One-liner for simple sinks
 let mut stream = EmergentSink::messages("console", ["timer.tick"]).await?;
 
 while let Some(msg) = stream.next().await {
@@ -236,11 +265,9 @@ The subscription stream:
 ```rust
 let mut stream = handler.subscribe(["events"]).await?;
 
-// Iterate with next()
 while let Some(msg) = stream.next().await {
     process(msg);
 }
-
 // Stream ends on graceful shutdown
 ```
 
@@ -268,7 +295,7 @@ match source.publish(message).await {
 
 | Error | Description |
 |-------|-------------|
-| `SocketNotFound` | Engine socket doesn't exist |
+| `SocketNotFound` | Engine socket does not exist |
 | `ConnectionFailed` | Failed to connect to engine |
 | `Timeout` | Operation timed out |
 | `SubscriptionFailed` | Subscription request failed |
@@ -297,7 +324,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             msg = stream.next() => {
                 match msg {
                     Some(msg) => process(msg).await?,
-                    None => break,  // Graceful shutdown from engine
+                    None => break,
                 }
             }
         }

@@ -1,6 +1,8 @@
 # Go SDK
 
-The `emergent` package provides the Go SDK for building Sources, Handlers, and Sinks.
+The `emergent` package provides the Go SDK for building custom Sources, Handlers, and Sinks. Use this when marketplace exec primitives are not enough -- you need persistent state across messages, custom protocols, or high-performance processing.
+
+For stateless transformations (jq, model calls, data extraction), use the marketplace exec primitives instead. See [Getting Started](../getting-started.md).
 
 ## Installation
 
@@ -8,9 +10,67 @@ The `emergent` package provides the Go SDK for building Sources, Handlers, and S
 go get github.com/govcraft/emergent/sdks/go
 ```
 
-## Documentation
+Then import:
 
-See the full SDK README for API reference, examples, and error handling:
+```go
+import emergent "github.com/govcraft/emergent/sdks/go"
+```
+
+## Quick Examples
+
+### Sink (consume messages)
+
+```go
+emergent.RunSink("my_sink", []string{"timer.tick"}, func(msg *emergent.EmergentMessage) error {
+    var data struct {
+        Count int64 `json:"count"`
+    }
+    msg.PayloadAs(&data)
+    fmt.Printf("Tick #%d\n", data.Count)
+    return nil
+})
+```
+
+### Handler (transform messages)
+
+```go
+emergent.RunHandler("my_handler", []string{"data.raw"}, func(msg *emergent.EmergentMessage, handler *emergent.EmergentHandler) error {
+    var input struct {
+        Value int64 `json:"value"`
+    }
+    msg.PayloadAs(&input)
+
+    result, _ := emergent.NewMessage("data.processed")
+    result.WithCausationFromMessage(msg.ID).
+        WithPayload(map[string]any{"doubled": input.Value * 2})
+
+    return handler.Publish(result)
+})
+```
+
+### Source (publish messages)
+
+```go
+emergent.RunSource("my_source", func(ctx context.Context, source *emergent.EmergentSource) error {
+    ticker := time.NewTicker(3 * time.Second)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return nil
+        case <-ticker.C:
+            msg, _ := emergent.NewMessage("timer.tick")
+            msg.WithPayload(map[string]any{"timestamp": time.Now().UnixMilli()})
+            source.Publish(msg)
+        }
+    }
+})
+```
+
+## Full Documentation
+
+See the complete SDK README for the full API reference, message types, error handling, and configuration examples:
 
 - [Go SDK README](../../sdks/go/README.md)
 
@@ -21,9 +81,6 @@ See the full SDK README for API reference, examples, and error handling:
 The universal message envelope:
 
 ```go
-import emergent "github.com/govcraft/emergent/sdks/go"
-
-// Create a message
 msg, _ := emergent.NewMessage("event.type")
 msg.WithPayload(map[string]any{"key": "value"}).
     WithSource("my_source")
@@ -60,51 +117,32 @@ msg.WithCorrelationID("request-123").
 ### Payload Extraction
 
 ```go
-// Get raw payload
-raw := msg.Payload
-
-// Deserialize to typed struct
-type MyPayload struct {
-    Count int    `json:"count"`
-    Name  string `json:"name"`
-}
-
 var payload MyPayload
 err := msg.PayloadAs(&payload)
 ```
 
-## EmergentSource
+## Helper Functions
 
-Sources publish messages into the system.
+Helpers handle connection, signal handling (SIGTERM/SIGINT), graceful shutdown, and cleanup automatically:
 
 ```go
-import (
-    "context"
-    "time"
+// Source: ctx is cancelled on SIGTERM/SIGINT
+emergent.RunSource("name", func(ctx context.Context, source *emergent.EmergentSource) error {
+    // Your source logic
+})
 
-    emergent "github.com/govcraft/emergent/sdks/go"
-)
+// Handler: called for each message
+emergent.RunHandler("name", []string{"topic"}, func(msg *emergent.EmergentMessage, h *emergent.EmergentHandler) error {
+    // Process msg, optionally h.Publish(...)
+})
 
-func main() {
-    emergent.RunSource("my_source", func(ctx context.Context, source *emergent.EmergentSource) error {
-        ticker := time.NewTicker(time.Second)
-        defer ticker.Stop()
-        var count int64
-
-        for {
-            select {
-            case <-ctx.Done():
-                return nil
-            case <-ticker.C:
-                count++
-                msg, _ := emergent.NewMessage("counter.tick")
-                msg.WithPayload(map[string]any{"count": count})
-                source.Publish(msg)
-            }
-        }
-    })
-}
+// Sink: called for each message
+emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) error {
+    // Consume msg
+})
 ```
+
+## API Reference
 
 ### Source API
 
@@ -115,29 +153,6 @@ func main() {
 | `Discover(ctx)` | Query available message types and primitives |
 | `Close()` | Graceful disconnection |
 | `Name()` | Get this source's name |
-
-## EmergentHandler
-
-Handlers subscribe to messages and publish new ones.
-
-```go
-import emergent "github.com/govcraft/emergent/sdks/go"
-
-func main() {
-    emergent.RunHandler("my_handler", []string{"input.event"}, func(msg *emergent.EmergentMessage, handler *emergent.EmergentHandler) error {
-        var input struct {
-            Value int64 `json:"value"`
-        }
-        msg.PayloadAs(&input)
-
-        result, _ := emergent.NewMessage("output.event")
-        result.WithCausationFromMessage(msg.ID).
-            WithPayload(map[string]any{"doubled": input.Value * 2})
-
-        return handler.Publish(result)
-    })
-}
-```
 
 ### Handler API
 
@@ -150,25 +165,6 @@ func main() {
 | `Discover(ctx)` | Query available message types |
 | `Close()` | Graceful disconnection |
 | `SubscribedTypes()` | Get current subscriptions |
-
-## EmergentSink
-
-Sinks subscribe to messages for output.
-
-```go
-import (
-    "fmt"
-
-    emergent "github.com/govcraft/emergent/sdks/go"
-)
-
-func main() {
-    emergent.RunSink("my_sink", []string{"counter.tick"}, func(msg *emergent.EmergentMessage) error {
-        fmt.Printf("[%s] %s: %v\n", msg.MessageType, msg.Source, msg.Payload)
-        return nil
-    })
-}
-```
 
 ### Sink API
 
@@ -201,29 +197,6 @@ msg := stream.Next() // nil when closed
 msg := stream.TryNext() // nil if nothing available
 ```
 
-## Helper Functions
-
-Helpers eliminate boilerplate for the common case:
-
-```go
-// Source: ctx is cancelled on SIGTERM/SIGINT
-emergent.RunSource("name", func(ctx context.Context, source *emergent.EmergentSource) error {
-    // Your source logic
-})
-
-// Handler: called for each message
-emergent.RunHandler("name", []string{"topic"}, func(msg *emergent.EmergentMessage, h *emergent.EmergentHandler) error {
-    // Process msg, optionally h.Publish(...)
-})
-
-// Sink: called for each message
-emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) error {
-    // Consume msg
-})
-```
-
-All helpers handle connection, signal handling (SIGTERM/SIGINT), graceful shutdown, and cleanup automatically.
-
 ## Error Handling
 
 ```go
@@ -245,7 +218,7 @@ default:
 
 | Error | Description |
 |-------|-------------|
-| `SocketNotFoundError` | Engine socket doesn't exist |
+| `SocketNotFoundError` | Engine socket does not exist |
 | `ConnectionError` | Failed to connect to engine |
 | `TimeoutError` | Operation timed out |
 | `SubscriptionError` | Subscription request failed |
@@ -266,11 +239,10 @@ defer source.Close()
 ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 defer cancel()
 
-// Use ctx for cancellation
 <-ctx.Done()
 ```
 
-For Handlers and Sinks, the SDK automatically handles `system.shutdown` from the engine—the message stream closes and the `for range stream.C()` loop exits naturally.
+For Handlers and Sinks, the SDK automatically handles `system.shutdown` from the engine -- the message stream closes and the `for range stream.C()` loop exits naturally.
 
 ## Configuration
 

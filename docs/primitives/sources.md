@@ -1,18 +1,60 @@
 # Sources
 
-Sources are the ingress point for data entering an Emergent pipeline. They can only publish messages—they cannot subscribe to receive messages from other primitives.
+Sources are the ingress point for data entering an Emergent pipeline. They can only publish messages -- they cannot subscribe.
 
-## When to Use a Source
+## Two Approaches
 
-Use a Source when you need to bring external data into the system:
+### Marketplace exec-source (zero code)
 
-- **Timers**: Emit periodic events
-- **HTTP webhooks**: Receive external HTTP requests
-- **File watchers**: React to filesystem changes
-- **Message queues**: Bridge from Kafka, RabbitMQ, etc.
-- **APIs**: Poll external services
+For most use cases, the marketplace `exec-source` turns any shell command into a Source. No code required:
 
-## Basic Structure
+```toml
+[[sources]]
+name = "timer"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--command", "date", "--interval", "5000"]
+publishes = ["exec.output"]
+```
+
+```toml
+# One-shot: run once and exit
+[[sources]]
+name = "seed"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "echo '{\"pattern\":\"glider\"}'"]
+publishes = ["life.seed"]
+```
+
+```toml
+# Shell command with pipes
+[[sources]]
+name = "cpu"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "grep 'cpu ' /proc/stat | awk '{printf \"{\\\"idle\\\":%d,\\\"total\\\":%d}\", $5, $2+$3+$4+$5}'", "--interval", "1000"]
+publishes = ["metric.cpu"]
+```
+
+Install with:
+
+```bash
+emergent marketplace install exec-source
+```
+
+### Custom SDK Source (when exec is not enough)
+
+Write a custom Source when you need persistent connections, custom protocols, or complex async logic (HTTP servers, file watchers, message queue bridges).
+
+## When to Use a Custom Source
+
+- **HTTP servers**: Accept webhooks with custom routing or authentication
+- **File watchers**: React to filesystem changes with debouncing
+- **Message queue bridges**: Consume from Kafka, RabbitMQ, NATS
+- **Streaming connections**: Maintain long-lived connections (SSE, gRPC streams)
+- **Custom protocols**: Binary or proprietary protocols
+
+For periodic command execution, polling APIs via curl, or one-shot data emission, use exec-source instead.
+
+## Basic Structure (Rust)
 
 ```rust
 use emergent_client::{EmergentSource, EmergentMessage};
@@ -20,21 +62,43 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Get name from engine (or use default for testing)
     let name = std::env::var("EMERGENT_NAME")
         .unwrap_or_else(|_| "my_source".to_string());
 
-    // Connect to engine
     let source = EmergentSource::connect(&name).await?;
 
-    // Publish messages
     let message = EmergentMessage::new("my.event")
         .with_payload(json!({"data": "value"}));
 
     source.publish(message).await?;
-
-    // Disconnect gracefully
     source.disconnect().await?;
+    Ok(())
+}
+```
+
+Or use the helper for less boilerplate:
+
+```rust
+use emergent_client::helpers::run_source;
+use emergent_client::EmergentMessage;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run_source(Some("my_source"), |source, mut shutdown| async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = interval.tick() => {
+                    let msg = EmergentMessage::new("my.event")
+                        .with_payload(json!({"count": 1}));
+                    source.publish(msg).await.map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }).await?;
     Ok(())
 }
 ```
@@ -50,8 +114,6 @@ enabled = true
 publishes = ["my.event", "my.other_event"]
 ```
 
-The `path` can be any executable: a compiled Rust binary, a script run through an interpreter (`"deno"`, `"python3"`), or a script with a shebang line.
-
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | Yes | Unique identifier for this source |
@@ -59,6 +121,8 @@ The `path` can be any executable: a compiled Rust binary, a script run through a
 | `args` | No | Command-line arguments |
 | `enabled` | No | Set to `false` to disable (default: `true`) |
 | `publishes` | Yes | Message types this source will emit |
+
+The `path` can be any executable: a compiled binary, a script run through an interpreter (`"deno"`, `"python3"`), or a marketplace binary.
 
 ## Message Construction
 
@@ -80,30 +144,24 @@ let msg = EmergentMessage::new("api.response")
 
 ## Graceful Shutdown
 
-Handle SIGTERM for clean shutdown:
+Sources receive SIGTERM from the engine during shutdown (Phase 1). The helper handles this automatically. For manual control:
 
 ```rust
 use tokio::signal::unix::{signal, SignalKind};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let source = EmergentSource::connect("my_source").await?;
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
+let mut sigterm = signal(SignalKind::terminate())?;
+let mut interval = tokio::time::interval(Duration::from_secs(1));
 
-    loop {
-        tokio::select! {
-            _ = sigterm.recv() => {
-                source.disconnect().await?;
-                break;
-            }
-            _ = interval.tick() => {
-                // Publish your message
-            }
+loop {
+    tokio::select! {
+        _ = sigterm.recv() => {
+            source.disconnect().await?;
+            break;
+        }
+        _ = interval.tick() => {
+            // Publish your message
         }
     }
-
-    Ok(())
 }
 ```
 
@@ -116,13 +174,9 @@ let mut interval = tokio::time::interval(Duration::from_secs(60));
 
 loop {
     interval.tick().await;
-
-    // Fetch from external API
     let data = fetch_external_api().await?;
-
     let message = EmergentMessage::new("api.data")
         .with_payload(data);
-
     source.publish(message).await?;
 }
 ```
@@ -138,7 +192,6 @@ async fn webhook_handler(
 ) -> &'static str {
     let message = EmergentMessage::new("webhook.received")
         .with_payload(payload);
-
     source.publish(message).await.ok();
     "OK"
 }
@@ -156,7 +209,6 @@ watcher.watch("/path/to/watch", RecursiveMode::Recursive)?;
 for event in rx {
     let message = EmergentMessage::new("file.changed")
         .with_payload(json!({"event": format!("{:?}", event)}));
-
     source.publish(message).await?;
 }
 ```
@@ -165,9 +217,9 @@ for event in rx {
 
 1. **Message type naming**: Use dot-separated namespaces (`domain.action`)
 2. **Payload structure**: Keep payloads self-contained with all needed context
-3. **Error handling**: Sources should be resilient—log errors, don't crash
+3. **Error handling**: Sources should be resilient -- log errors, do not crash
 4. **Idempotency**: Include unique identifiers in payloads for deduplication downstream
-5. **Silent operation**: Don't print to stdout/stderr—let Sinks handle output
+5. **Silent operation**: Do not print to stdout/stderr -- let Sinks handle output
 
 ## API Reference
 
@@ -181,4 +233,4 @@ for event in rx {
 | `disconnect()` | Graceful disconnection |
 | `name()` | Get this source's name |
 
-See also: [Handlers](handlers.md), [Sinks](sinks.md), [Rust SDK](../sdks/rust.md), [TypeScript SDK](../sdks/typescript.md), [Python SDK](../sdks/python.md)
+See also: [Handlers](handlers.md), [Sinks](sinks.md), [Rust SDK](../sdks/rust.md), [TypeScript SDK](../sdks/typescript.md), [Python SDK](../sdks/python.md), [Go SDK](../sdks/go.md)

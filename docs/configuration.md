@@ -1,21 +1,19 @@
 # Configuration Reference
 
-Emergent uses TOML configuration files to declare pipeline topology. The engine reads the configuration at startup and enforces the declared message routing.
+The TOML configuration file is your pipeline's architecture. It declares which processes run, what events they publish and subscribe to, and how they connect. The engine reads this file at startup and enforces the declared topology.
 
 ## File Location
 
 ```bash
-# Specify the config file path when starting the engine
 emergent --config /path/to/config.toml
-
-# Common locations
 emergent --config ./emergent.toml
-emergent --config ~/.config/emergent/emergent.toml
 ```
+
+Use `emergent init` to generate a starter config interactively.
 
 ## Complete Example
 
-The `path` field for each primitive points to any executable: a compiled binary, an interpreter running your script, or a script with a shebang line. The engine spawns these as child processes.
+This example shows all three primitive types: a marketplace exec-source running a shell command, a Deno-based TypeScript handler, and a Python sink. The `path` field for each primitive points to any executable -- the engine spawns these as child processes.
 
 ```toml
 # =============================================================================
@@ -41,11 +39,11 @@ retention_days = 30
 # Sources (publish only)
 # =============================================================================
 
-# Rust binary (compiled from your own project)
+# Marketplace exec-source: run any shell command on an interval
 [[sources]]
 name = "timer"
-path = "/home/user/my-project/target/release/timer"
-args = ["--interval", "5000"]
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--command", "date", "--interval", "5000"]
 enabled = true
 publishes = ["timer.tick"]
 
@@ -89,7 +87,7 @@ api_port = 8891                # HTTP API port (0 to disable)
 |--------|---------|-------------|
 | `name` | `"emergent"` | Engine instance name |
 | `socket_path` | `"auto"` | `"auto"` for XDG-compliant path, or explicit path like `"/tmp/emergent.sock"` |
-| `wire_format` | `"messagepack"` | `"messagepack"` (binary) or `"json"` (human-readable) |
+| `wire_format` | `"messagepack"` | `"messagepack"` (binary) or `"json"` (human-readable, useful for debugging) |
 | `api_port` | `8891` | HTTP API port for topology queries. Set to `0` to disable. |
 
 **Socket path resolution:**
@@ -108,49 +106,51 @@ retention_days = 30
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `json_log_dir` | `"./logs"` | Directory for append-only JSON log files |
-| `sqlite_path` | `"./events.db"` | Path to SQLite database |
+| `json_log_dir` | `"./logs"` | Directory for append-only JSON log files (one per day) |
+| `sqlite_path` | `"./events.db"` | Path to SQLite database for structured queries |
 | `retention_days` | `30` | Days to retain events before cleanup |
 
-The event store provides:
-- **JSON logs**: Append-only files (one per day) for fast writes
-- **SQLite**: Structured storage for queries and replay
+Both paths support `"auto"` for XDG data directory placement.
 
 ## Sources
+
+Sources bring data into the system. They can only publish -- they cannot subscribe.
 
 ```toml
 [[sources]]
 name = "timer"
-path = "/path/to/your/timer-binary"
-args = ["--interval", "5000"]
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--command", "date", "--interval", "5000"]
 enabled = true
 publishes = ["timer.tick"]
 ```
 
-| Option | Required | Description |
-|--------|----------|-------------|
+| Field | Required | Description |
+|-------|----------|-------------|
 | `name` | Yes | Unique identifier |
 | `path` | Yes | Path to executable |
 | `args` | No | Command-line arguments (array of strings) |
 | `enabled` | No | `true` (default) or `false` to disable |
 | `publishes` | Yes | Message types this source will emit |
 
-Sources can only publish—they cannot subscribe.
+**Path resolution:** Tilde expansion (`~/bin/app`), bare command lookup via PATH (`path = "python3"`), and `"auto"` XDG paths are all supported.
 
 ## Handlers
+
+Handlers transform data. They subscribe to events, process them, and publish new events.
 
 ```toml
 [[handlers]]
 name = "filter"
-path = "/path/to/your/filter-binary"
-args = ["--filter-every", "5"]
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "timer.tick", "--publish-as", "timer.filtered", "--", "jq", "."]
 enabled = true
 subscribes = ["timer.tick"]
 publishes = ["timer.filtered"]
 ```
 
-| Option | Required | Description |
-|--------|----------|-------------|
+| Field | Required | Description |
+|-------|----------|-------------|
 | `name` | Yes | Unique identifier |
 | `path` | Yes | Path to executable |
 | `args` | No | Command-line arguments |
@@ -158,28 +158,26 @@ publishes = ["timer.filtered"]
 | `subscribes` | Yes | Message types to receive |
 | `publishes` | Yes | Message types this handler will emit |
 
-Handlers can both subscribe and publish.
-
 ## Sinks
+
+Sinks consume data. They subscribe to events but cannot publish.
 
 ```toml
 [[sinks]]
 name = "console"
-path = "/path/to/your/console-binary"
-args = ["--format", "json"]
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "timer.filtered", "--", "jq", "."]
 enabled = true
 subscribes = ["timer.filtered", "system.started.*"]
 ```
 
-| Option | Required | Description |
-|--------|----------|-------------|
+| Field | Required | Description |
+|-------|----------|-------------|
 | `name` | Yes | Unique identifier |
 | `path` | Yes | Path to executable |
 | `args` | No | Command-line arguments |
 | `enabled` | No | `true` (default) or `false` |
 | `subscribes` | Yes | Message types to receive |
-
-Sinks can only subscribe—they cannot publish.
 
 ## Subscription Patterns
 
@@ -193,30 +191,20 @@ subscribes = [
 ]
 ```
 
-## Environment Variables
-
-The engine sets these environment variables for each primitive:
-
-| Variable | Description |
-|----------|-------------|
-| `EMERGENT_SOCKET` | Path to Unix socket for IPC |
-| `EMERGENT_NAME` | Primitive's configured name |
-| `EMERGENT_API_PORT` | HTTP API port for topology queries |
-| `EMERGENT_PUBLISHES` | Comma-separated list of publish message types from config |
-| `EMERGENT_SUBSCRIBES` | Comma-separated list of subscribe message types from config |
-
-Primitives use these to connect:
-
-```rust
-let name = std::env::var("EMERGENT_NAME")?;
-let source = EmergentSource::connect(&name).await?;
-```
-
 ## Multi-Language Primitives
 
-The engine spawns each primitive as a child process. The `path` field can point to a compiled binary or a language runtime that runs your script.
+The engine spawns each primitive as a child process. The `path` field can point to a compiled binary, a language runtime, or any executable.
 
-### Rust
+### Marketplace Primitives (exec)
+
+```toml
+[[handlers]]
+name = "transform"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "input.event", "--publish-as", "output.event", "--", "jq", ".data"]
+```
+
+### Rust (compiled binary)
 
 ```toml
 [[handlers]]
@@ -249,22 +237,46 @@ name = "webhook"
 path = "python3"
 args = ["/home/user/my-project/webhook.py", "--port", "8008"]
 
-# Or using uv for dependency management
+# Using uv for dependency management
 [[sources]]
 name = "webhook"
 path = "uv"
 args = ["run", "--project", "/home/user/my-project", "python", "/home/user/my-project/webhook.py"]
 ```
 
+### Go (compiled binary)
+
+```toml
+[[sources]]
+name = "timer-go"
+path = "./timer-go"
+args = ["--interval", "3000"]
+publishes = ["timer.tick"]
+```
+
+## Environment Variables
+
+The engine sets these environment variables for each primitive:
+
+| Variable | Description |
+|----------|-------------|
+| `EMERGENT_SOCKET` | Path to Unix socket for IPC |
+| `EMERGENT_NAME` | Primitive's configured name |
+| `EMERGENT_API_PORT` | HTTP API port for topology queries |
+| `EMERGENT_PUBLISHES` | Comma-separated list of publish types from config |
+| `EMERGENT_SUBSCRIBES` | Comma-separated list of subscribe types from config |
+
+Additionally, the engine forwards the parent process's full environment to all child primitives. This is how secrets and configuration reach your tools.
+
 ## Startup Order
 
 The engine starts primitives in this order:
 
-1. **Sinks** — started first so they are ready to receive messages
-2. **Handlers** — started next so they can process messages
-3. **Sources** — started last so they produce messages only when the pipeline is ready
+1. **Sinks** -- started first so they are ready to receive messages
+2. **Handlers** -- started next so they can process messages
+3. **Sources** -- started last so they produce messages only when the pipeline is ready
 
-Within each tier, primitives start in the order they appear in the configuration file. This ordering matters when one primitive depends on another's `system.started.*` event — the subscriber must appear before the publisher in the config.
+Within each tier, primitives start in the order they appear in the configuration file. This matters when one primitive depends on another's `system.started.*` event -- the subscriber must appear before the publisher in the config.
 
 At shutdown, the order reverses: Sources stop first (no new messages), then Handlers drain, then Sinks consume remaining messages.
 
@@ -277,7 +289,7 @@ The engine publishes lifecycle events:
 | `system.started.<name>` | Primitive connected |
 | `system.stopped.<name>` | Primitive disconnected |
 | `system.error.<name>` | Primitive failed |
-| `system.shutdown.requested` | Shutdown requested — cleanup window before teardown |
+| `system.shutdown.requested` | Shutdown requested -- cleanup window before teardown |
 | `system.shutdown` | Graceful shutdown in progress (intercepted by SDK) |
 
 Subscribe to monitor:
@@ -295,7 +307,7 @@ Set `enabled = false` to disable without removing:
 ```toml
 [[handlers]]
 name = "enricher"
-path = "/path/to/your/enricher"
+path = "/path/to/enricher"
 enabled = false  # Temporarily disabled
 subscribes = ["event.raw"]
 publishes = ["event.enriched"]

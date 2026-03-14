@@ -1,19 +1,64 @@
 # Sinks
 
-Sinks are the egress point for data leaving an Emergent pipeline. They subscribe to messages but cannot publish—they're the final destination for events.
+Sinks are the egress point for data leaving an Emergent pipeline. They subscribe to messages but cannot publish -- they are the final destination for events.
 
-## When to Use a Sink
+## Two Approaches
 
-Use a Sink when you need to output data:
+### Marketplace exec-sink (zero code)
 
-- **Console/Logging**: Display events for monitoring
-- **Databases**: Persist events to PostgreSQL, SQLite, etc.
-- **Files**: Write to log files or data exports
-- **HTTP webhooks**: Send to external services
-- **Notifications**: Email, Slack, SMS alerts
-- **Metrics**: Push to Prometheus, StatsD, etc.
+For most use cases, the marketplace `exec-sink` pipes event payloads through any executable. No code required:
 
-## Basic Structure
+```toml
+# Pretty-print events with jq
+[[sinks]]
+name = "printer"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "data.processed", "--", "jq", "."]
+subscribes = ["data.processed"]
+
+# Post to a Slack channel via curl
+[[sinks]]
+name = "slack-poster"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "alert.triggered", "--", "sh", "-c", "jq -c . | curl -s -X POST https://slack.com/api/chat.postMessage -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" -H 'Content-Type: application/json' -d @-"]
+subscribes = ["alert.triggered"]
+
+# Append to a log file
+[[sinks]]
+name = "logger"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "event.processed", "--", "sh", "-c", "jq -c . >> /var/log/events.jsonl"]
+subscribes = ["event.processed"]
+```
+
+Install with:
+
+```bash
+emergent marketplace install exec-sink
+```
+
+Other marketplace sinks:
+
+```bash
+emergent marketplace install sse-sink          # Push events to browsers via Server-Sent Events
+emergent marketplace install topology-viewer   # Real-time D3.js pipeline visualization
+```
+
+### Custom SDK Sink (when exec is not enough)
+
+Write a custom Sink when you need persistent connections (database pools, streaming uploads), batching, retry logic, or complex output formatting.
+
+## When to Use a Custom Sink
+
+- **Database writes**: Connection pooling, prepared statements, batch inserts
+- **Streaming output**: Maintain long-lived connections to external services
+- **Batching**: Collect messages and flush periodically for efficiency
+- **Retry logic**: Exponential backoff on transient failures
+- **Custom formatting**: Complex output transformations beyond what shell commands can express
+
+For simple output (printing, curling an API, appending to files), use exec-sink instead.
+
+## Basic Structure (Rust)
 
 ```rust
 use emergent_client::EmergentSink;
@@ -24,11 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "my_sink".to_string());
 
     let sink = EmergentSink::connect(&name).await?;
-
-    // Get subscriptions from engine config
     let topics = sink.get_my_subscriptions().await?;
-
-    // Subscribe and process
     let mut stream = sink.subscribe(&topics).await?;
 
     while let Some(msg) = stream.next().await {
@@ -43,6 +84,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+Or use the helper:
+
+```rust
+use emergent_client::helpers::run_sink;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run_sink(
+        Some("my_sink"),
+        &["event.processed"],
+        |msg| async move {
+            println!("{}", msg.payload());
+            Ok(())
+        }
+    ).await?;
+    Ok(())
+}
+```
+
 ## Configuration
 
 ```toml
@@ -53,8 +113,6 @@ args = ["--output", "/var/log/events.log"]
 enabled = true
 subscribes = ["event.processed", "system.started.*", "system.error.*"]
 ```
-
-The `path` can be any executable: a compiled Rust binary, a script run through an interpreter (`"deno"`, `"python3"`), or a script with a shebang line.
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -73,9 +131,12 @@ let stream = sink.subscribe(&topics).await?;
 
 // Or explicit topics
 let stream = sink.subscribe(["event.type", "other.event"]).await?;
+```
 
-// Wildcards work in configuration
-// subscribes = ["system.started.*"]  matches system.started.timer, etc.
+Wildcards work in configuration:
+
+```toml
+subscribes = ["system.started.*"]  # matches system.started.timer, etc.
 ```
 
 ## Patterns
@@ -165,7 +226,6 @@ loop {
                     }
                 }
                 None => {
-                    // Graceful shutdown - flush remaining
                     if !batch.is_empty() {
                         flush_batch(&batch).await?;
                     }
@@ -203,7 +263,6 @@ let mut sigterm = signal(SignalKind::terminate())?;
 loop {
     tokio::select! {
         _ = sigterm.recv() => {
-            // Flush any buffers
             sink.disconnect().await?;
             break;
         }
@@ -219,13 +278,12 @@ loop {
 
 ## Error Handling
 
-Sinks should be resilient:
+Sinks should be resilient -- log errors and continue processing:
 
 ```rust
 while let Some(msg) = stream.next().await {
     if let Err(e) = process(msg).await {
         eprintln!("Failed to process message: {}", e);
-        // Log and continue—don't crash
     }
 }
 ```
@@ -260,12 +318,10 @@ while let Some(msg) = stream.next().await {
 }
 ```
 
-This connects, queries configured subscriptions, and returns the stream.
-
 ## Best Practices
 
 1. **Query subscriptions from engine**: Use `get_my_subscriptions()` for config-driven behavior
-2. **Handle errors gracefully**: Log and continue, don't crash
+2. **Handle errors gracefully**: Log and continue, do not crash
 3. **Flush on shutdown**: Ensure all buffered data is written
 4. **Subscribe to system events**: Monitor `system.error.*` for debugging
 5. **Sinks own output**: This is the only place to print, log, or send externally
@@ -284,4 +340,4 @@ This connects, queries configured subscriptions, and returns the stream.
 | `discover()` | Query available message types |
 | `disconnect()` | Graceful disconnection |
 
-See also: [Sources](sources.md), [Handlers](handlers.md), [Rust SDK](../sdks/rust.md), [TypeScript SDK](../sdks/typescript.md), [Python SDK](../sdks/python.md)
+See also: [Sources](sources.md), [Handlers](handlers.md), [Rust SDK](../sdks/rust.md), [TypeScript SDK](../sdks/typescript.md), [Python SDK](../sdks/python.md), [Go SDK](../sdks/go.md)

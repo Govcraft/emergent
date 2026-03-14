@@ -1,36 +1,18 @@
-# Getting Started with Emergent
+# Getting Started
 
-*Build your first event-driven workflow*
+*From zero to a running AI pipeline in minutes.*
 
-## Abstract
-
-Building distributed workflows requires coordinating processes that emit, transform, and consume events—typically involving message brokers, orchestrators, and complex infrastructure. Developers need a simpler path. Emergent reduces workflow engines to three primitives: Sources (publish events), Handlers (transform events), and Sinks (consume events). Unlike traditional engines requiring infrastructure setup, Emergent runs as a single pre-built binary managing components as child processes over Unix sockets. Download the binary, install pre-built marketplace primitives, and start processing events—no code required. When you need custom logic, write primitives in Rust, TypeScript, or Python. **You can go from zero to a working pipeline in minutes, then extend it with custom code in the language of your choice.**
+Emergent turns CLI tools into composable pipeline building blocks. You declare the topology in TOML, and the engine handles process lifecycle, message routing, and graceful shutdown. This guide starts with pre-built marketplace primitives (no code required), then shows how to write custom primitives when you need more control.
 
 ---
 
-## 1. Introduction: Three Primitives, Zero Infrastructure
+## 1. Install the Engine
 
-Most workflow engines force you to think about infrastructure before writing code. You install message brokers, configure databases, deploy orchestrators, then finally write your business logic. Emergent reverses this: download a single binary, install pre-built primitives from the marketplace, write a TOML config, and start processing events. When you need custom logic, write primitives in any supported language (Rust, TypeScript, or Python). The engine handles process management, message routing, and graceful shutdown.
-
-This approach works because Emergent constrains your options. Every component fits into one of three categories:
-
-- **Source**: Publishes messages into the system (ingress from timers, webhooks, files)
-- **Handler**: Receives messages, processes them, publishes new messages (transformations, enrichment)
-- **Sink**: Receives messages, produces side effects (console output, HTTP calls, database writes)
-
-These three primitives define all possible workflows. A Source cannot receive messages. A Sink cannot publish messages. A Handler does both. This constraint makes workflows easy to reason about: data flows in one direction, from Sources through Handlers to Sinks.
-
-**This guide starts with a working pipeline using marketplace primitives (no code required), then teaches you to write custom primitives in your language of choice.**
-
----
-
-## 2. Install the Engine
-
-The Emergent engine is a single binary. You do not need Rust or any build tools to run it.
+The engine is a single binary. No Rust toolchain, no runtime dependencies.
 
 ### Download a Pre-built Binary (Recommended)
 
-Download the latest release from [GitHub Releases](https://github.com/Govcraft/emergent/releases/latest) for your platform:
+Download the latest release from [GitHub Releases](https://github.com/Govcraft/emergent/releases/latest):
 
 ```bash
 # Linux (x86_64)
@@ -60,11 +42,9 @@ Verify the installation:
 emergent --help
 ```
 
-You can also install to `~/.local/bin/` instead of `/usr/local/bin/` if you prefer a user-local installation (make sure `~/.local/bin` is on your PATH).
+You can also install to `~/.local/bin/` instead of `/usr/local/bin/` (make sure `~/.local/bin` is on your PATH).
 
 ### Build from Source (Alternative)
-
-If you want to contribute to the engine or need a custom build, you can build from source with Rust:
 
 ```bash
 git clone https://github.com/Govcraft/emergent
@@ -72,72 +52,32 @@ cd emergent
 cargo build --release
 ```
 
-This produces the engine binary at `./target/release/emergent` along with the example primitives.
+This produces the engine binary at `./target/release/emergent` along with example primitives.
 
-### Install Marketplace Primitives (Optional)
+## 2. Install Marketplace Primitives
 
-The marketplace ships pre-built primitives you can use without writing any code. Browse and install them with the `marketplace` subcommand:
+The marketplace ships pre-built primitives you can compose without writing code. The exec primitives are the primary integration mechanism -- they turn any CLI tool into a pipeline building block.
 
 ```bash
 # See what's available
 emergent marketplace list
 
-# Install primitives
-emergent marketplace install exec-source
-emergent marketplace install exec-handler
-emergent marketplace install exec-sink
+# Install the core exec primitives
+emergent marketplace install exec-source exec-handler exec-sink
+
+# Install others as needed
+emergent marketplace install http-source websocket-handler sse-sink topology-viewer
 ```
 
-Installed primitives are placed in `~/.local/share/emergent/bin/` and can be referenced directly in your configuration.
-
-### Install an SDK (For Writing Custom Primitives)
-
-When marketplace primitives aren't enough, write your own in any supported language. Install the SDK for your language of choice:
-
-**TypeScript (Deno)**:
-```bash
-deno add jsr:@govcraft/emergent
-```
-
-**Python**:
-```bash
-pip install emergent-client
-# or with uv:
-uv add emergent-client
-```
-
-**Rust**:
-```bash
-cargo add emergent-client tokio serde_json --features tokio/full
-```
-
-**Go**:
-```bash
-go get github.com/govcraft/emergent/sdks/go
-```
-
-You only need the engine binary and one SDK to start building custom primitives. The SDK handles IPC communication with the engine automatically.
+Installed primitives are placed in `~/.local/share/emergent/primitives/bin/`.
 
 ---
 
 ## 3. Run Your First Pipeline
 
-Before writing any code, build a working pipeline using pre-built marketplace primitives. This demonstrates all three primitives working together—without a compiler.
+Create a pipeline that runs `date` every 5 seconds and pretty-prints the output. No code, just TOML.
 
-Install two primitives from the marketplace:
-
-```bash
-emergent marketplace install exec-source
-emergent marketplace install exec-sink
-```
-
-Create a configuration file:
-
-```bash
-emergent init --name my-pipeline
-```
-
-Edit `emergent.toml` to define a simple pipeline that runs a command every 5 seconds and pretty-prints the output:
+Create `emergent.toml`:
 
 ```toml
 [engine]
@@ -146,24 +86,24 @@ socket_path = "auto"
 
 [[sources]]
 name = "ticker"
-path = "~/.local/share/emergent/bin/exec-source"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
 args = ["--command", "date", "--interval", "5000"]
 publishes = ["exec.output"]
 
 [[sinks]]
 name = "printer"
-path = "~/.local/share/emergent/bin/exec-sink"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "exec.output", "--", "jq", "."]
 subscribes = ["exec.output"]
 ```
 
-Start the engine:
+Run it:
 
 ```bash
 emergent --config ./emergent.toml
 ```
 
-You should see the current date printed every 5 seconds, pretty-printed by `jq`:
+You should see the current date printed every 5 seconds:
 
 ```json
 {
@@ -173,842 +113,270 @@ You should see the current date printed every 5 seconds, pretty-printed by `jq`:
 }
 ```
 
-Stop the engine with Ctrl+C. You will see graceful shutdown:
+Stop with Ctrl+C. The engine stops the source first (no new events), then drains the sink (consumes remaining output). No messages lost.
 
-```
-[17:24:05.000] [STOPPED] ticker (source)
-[17:24:05.100] [STOPPED] printer (sink)
-```
-
-The engine stopped the source (no new events), then stopped the sink (consume final output). This cascading shutdown ensures no message loss.
-
-**You built a working pipeline with zero code.** Two marketplace primitives, one TOML file, one binary. The engine handled process lifecycle, message routing, and graceful shutdown.
-
-### Running the Built-from-Source Examples
-
-If you have the Rust toolchain and want to explore the source examples (timer, filter, console), clone and build the repo:
-
-```bash
-git clone https://github.com/Govcraft/emergent
-cd emergent
-cargo build --release
-./target/release/emergent --config ./config/emergent.toml
-```
-
-This runs a more complex pipeline: a timer Source emits `timer.tick` every 5 seconds, a filter Handler passes every 5th tick, and a console Sink prints the results. See `config/emergent.toml` for the full configuration.
+**You built a working pipeline with zero code.** One TOML file, two marketplace primitives, one binary.
 
 ---
 
-## 4. Understanding the Configuration
+## 4. Add a Transformation Step
 
-**The configuration file is your executable architecture diagram.** Everything about your workflow lives in one TOML file: which processes run, what they publish/subscribe to, how they connect. The engine enforces this contract at runtime.
+Now add a handler that transforms the data between source and sink. This is where real pipelines take shape -- every handler is a processing step that subscribes to events, transforms them, and publishes new events.
 
-Open `config/emergent.toml`. The file has five sections.
+Update `emergent.toml`:
+
+```toml
+[engine]
+name = "my-pipeline"
+socket_path = "auto"
+
+[[sources]]
+name = "ticker"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--command", "date", "--interval", "5000"]
+publishes = ["exec.output"]
+
+[[handlers]]
+name = "transform"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "exec.output", "--publish-as", "data.transformed", "--", "jq", "-c", "{date: .stdout, processed: true}"]
+subscribes = ["exec.output"]
+publishes = ["data.transformed"]
+
+[[sinks]]
+name = "printer"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "data.transformed", "--", "jq", "."]
+subscribes = ["data.transformed"]
+```
+
+Now the output is transformed:
+
+```json
+{
+  "date": "Thu Mar 13 17:23:50 UTC 2025",
+  "processed": true
+}
+```
+
+The handler used jq, but it could be any executable. Replace jq with `claude -p "Summarize this"` and you have an AI pipeline. Replace it with `python3 predict.py` and you have an ML inference step. The tool is incidental -- the engine manages everything else.
+
+---
+
+## 5. Build an AI Pipeline
+
+Here is a concrete example: a pipeline that generates data and sends it through an LLM for analysis.
+
+```toml
+[engine]
+name = "ai-pipeline"
+socket_path = "auto"
+
+# Generate system stats every 30 seconds
+[[sources]]
+name = "stats"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "uptime | jq -Rc '{uptime: .}'", "--interval", "30000"]
+publishes = ["system.stats"]
+
+# Send to an LLM for analysis
+[[handlers]]
+name = "analyzer"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = [
+    "-s", "system.stats",
+    "--publish-as", "analysis.result",
+    "--timeout", "30000",
+    "--",
+    "sh", "-c", "jq -r .uptime | claude -p 'Briefly analyze this system load. Flag anything concerning.' 2>/dev/null"
+]
+subscribes = ["system.stats"]
+publishes = ["analysis.result"]
+
+# Print the analysis
+[[sinks]]
+name = "output"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "analysis.result", "--", "jq", "-r", ".stdout // ."]
+subscribes = ["analysis.result"]
+```
+
+Swap the LLM by changing the handler's command:
+
+```toml
+# Use local Ollama instead of Claude
+args = ["--", "sh", "-c", "input=$(cat) && curl -s http://localhost:11434/api/generate -d '{\"model\":\"llama3\",\"prompt\":'\"$input\"',\"stream\":false}' | jq -r .response"]
+
+# Use a Python ML model instead of an LLM
+args = ["--", "python3", "analyze.py"]
+
+# Use a simple heuristic
+args = ["--", "sh", "-c", "jq -r '.uptime' | awk '{if ($NF > 2.0) print \"HIGH LOAD\"; else print \"OK\"}'"]
+```
+
+The model or tool behind the handler is your choice. Emergent does not know or care what runs inside -- it manages the process, routes the messages, and handles the lifecycle.
+
+---
+
+## 6. Understanding the Configuration
+
+**The configuration file is your architecture diagram.** Everything about your pipeline lives in one TOML file: which processes run, what they publish and subscribe to, how they connect. New team members can read this file and understand your entire workflow -- no code diving required.
 
 ### Engine Settings
 
 ```toml
 [engine]
 name = "emergent"
-socket_path = "auto"
-wire_format = "messagepack"  # binary format for efficiency; use "json" for debugging
+socket_path = "auto"              # XDG-compliant default
+wire_format = "messagepack"       # or "json" for debugging
+api_port = 8891                   # HTTP topology API (0 to disable)
 ```
-
-The engine creates a Unix socket at a standard location in your home directory (`~/.local/share/emergent/emergent.sock` by default). Primitives connect to this socket using the path from the `EMERGENT_SOCKET` environment variable. The wire format defaults to MessagePack (a compact binary encoding); use `"json"` when debugging message content.
 
 ### Event Store
 
 ```toml
 [event_store]
-json_log_dir = "./logs"
-sqlite_path = "./events.db"
+json_log_dir = "./logs"           # Append-only JSON logs (one per day)
+sqlite_path = "./events.db"       # Structured storage for queries
 retention_days = 30
 ```
 
-The engine writes all messages to append-only JSON logs (one file per day) and a SQLite database. You can replay workflows from these logs. The retention policy deletes events older than 30 days.
+Every message is persisted before routing. You can replay workflows, trace causation chains, and audit all activity.
 
-### Sources
+### The Three Primitive Types
 
 ```toml
+# Sources: publish only. Bring data into the system.
 [[sources]]
 name = "timer"
-path = "./target/release/timer"
-args = ["--interval", "5000"]
-enabled = true
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--command", "date", "--interval", "5000"]
 publishes = ["timer.tick"]
-```
 
-Each Source declares a name, executable path, arguments, and the message types it publishes. The engine validates that Sources only publish declared types. The `enabled` flag lets you disable components without removing them.
-
-The `path` field points to any executable. In this example it points to binaries built from the cloned repo. In your own projects, the path will point to your compiled binary, a script interpreter (like `"deno"` or `"python3"`), or any other executable. See the [Configuration Reference](configuration.md) for multi-language examples.
-
-### Handlers
-
-```toml
+# Handlers: subscribe and publish. Transform data.
 [[handlers]]
 name = "filter"
-path = "./target/release/filter"
-args = ["--filter-every", "5"]
-enabled = true
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "timer.tick", "--publish-as", "timer.filtered", "--", "jq", "."]
 subscribes = ["timer.tick"]
-publishes = ["timer.filtered", "filter.processed"]
-```
+publishes = ["timer.filtered"]
 
-Handlers declare both subscriptions (input) and publications (output). The engine routes messages based on these declarations. A Handler receives only the message types it subscribes to.
-
-### Sinks
-
-```toml
+# Sinks: subscribe only. Consume data (output, store, forward).
 [[sinks]]
 name = "console"
-path = "./target/release/console"
-enabled = true
-subscribes = ["timer.filtered", "filter.processed", "system.started.*", "system.stopped.*"]
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "timer.filtered", "--", "jq", "."]
+subscribes = ["timer.filtered"]
 ```
 
-Sinks declare only subscriptions. They cannot publish. The wildcard `system.started.*` matches all system startup events (e.g., `system.started.timer`, `system.started.filter`).
+The `path` field points to any executable: a marketplace binary, a compiled Rust program, `python3`, `deno`, or any other command. The engine spawns each primitive as a child process.
 
-**New team members can read this file and understand your entire workflow topology—no code diving required.**
+See the [Configuration Reference](configuration.md) for all options.
 
 ---
 
-## 5. The Three Primitives: Mental Model
+## 7. The Three Primitives: Mental Model
 
-Every Emergent component follows an async event loop:
+Every component fits one of three roles:
 
-1. Connect to the engine
-2. Loop: publish or receive messages
-3. Disconnect on shutdown signal
+- **Source**: Publishes events into the system. Cannot receive messages. Examples: timers, webhooks, file watchers, API pollers.
+- **Handler**: Subscribes to events, processes them, publishes new events. This is where transformation logic lives -- filtering, enrichment, model inference, routing.
+- **Sink**: Subscribes to events, produces side effects. Cannot publish. Examples: console output, file logging, HTTP calls, database writes, Slack posts.
 
-The primitive type (Source, Handler, Sink) determines which operations you can perform.
+**Startup order**: Sinks start first (ready to receive), then Handlers, then Sources (produce only when pipeline is ready).
 
-### Source Mental Model
+**Shutdown order**: Sources stop first (no new events), Handlers drain pending work, Sinks flush remaining output. Zero message loss.
 
-A Source runs an infinite loop that publishes messages at intervals, on external triggers (webhooks, file changes), or in response to other systems. Sources are **blind**: they publish events without knowing who receives them.
-
-```
-┌─────────────┐
-│   Source    │
-│             │
-│  ┌───────┐  │
-│  │ async │  │
-│  │ loop  │──┼──> publish("timer.tick", data)
-│  └───────┘  │
-└─────────────┘
-```
-
-### Handler Mental Model
-
-A Handler runs an async loop that receives messages, processes them, and publishes new messages. Handlers form the transformation pipeline.
-
-```
-┌─────────────────────────┐
-│       Handler           │
-│                         │
-│  subscribe(["timer.tick"])
-│         │               │
-│         ▼               │
-│  ┌────────────┐         │
-│  │ async loop │         │
-│  │  process   │─────────┼──> publish("timer.filtered", result)
-│  └────────────┘         │
-└─────────────────────────┘
-```
-
-### Sink Mental Model
-
-A Sink runs an async loop that receives messages and produces side effects (writes to console, sends HTTP requests, appends to files). Sinks are **terminal**: they end the data flow.
-
-```
-┌─────────────────────────┐
-│         Sink            │
-│                         │
-│  subscribe(["timer.filtered"])
-│         │               │
-│         ▼               │
-│  ┌────────────┐         │
-│  │ async loop │         │
-│  │   output   │         │
-│  └────────────┘         │
-└─────────────────────────┘
-```
-
-**These patterns are identical across Rust, TypeScript, Python, and Go. Once you learn the pattern in one language, you know it in all four.**
+These patterns are identical across Rust, TypeScript, Python, and Go. Once you learn the model, you know it in all four languages.
 
 ---
 
-## 6. Quick Start with Scaffold
+## 8. When to Write Custom Primitives
 
-You don't need to write boilerplate manually. The `emergent scaffold` command generates primitives from templates in any supported language.
+The exec primitives handle most use cases: any CLI tool becomes a pipeline building block. Write a custom primitive when you need:
 
-### Interactive Wizard
+- **Persistent state across messages**: exec-handler is stateless (each message spawns a fresh process). A custom handler can maintain state in memory.
+- **Custom protocols**: Binary protocols, streaming connections, or anything beyond stdin/stdout piping.
+- **High-performance processing**: Eliminate per-message process spawn overhead for high-throughput workloads.
+- **Complex async logic**: Long-running connections, concurrent processing, backpressure.
 
-Run without arguments to start the interactive wizard:
+### Scaffold a Custom Primitive
 
 ```bash
+# Interactive wizard -- pick language, type, message types
 emergent scaffold
+
+# Or script it
+emergent scaffold -t handler -n my_filter -l python -S timer.tick -p timer.filtered
 ```
 
-The wizard prompts for:
-1. **Language** - Rust, TypeScript, Python, or Go
-2. **Primitive type** - Source, Handler, or Sink
-3. **Name** - Your primitive's name (snake_case)
-4. **Message types** - What to subscribe to and/or publish
-5. **Output directory** - Where to create the project
-
-### Flag Mode for Scripting
-
-For CI/CD or automation, pass all options as flags:
+### Install an SDK
 
 ```bash
-# Generate a handler
-emergent scaffold \
-  --type handler \
-  --name my_filter \
-  --subscribes "timer.tick" \
-  --publishes "timer.filtered" \
-  --description "Filters timer events"
+# TypeScript (Deno)
+deno add jsr:@govcraft/emergent
 
-# Preview without writing files
-emergent scaffold --type source --name my_timer --dry-run
+# Python
+pip install emergent-client    # or: uv add emergent-client
+
+# Rust
+cargo add emergent-client tokio serde_json --features tokio/full
+
+# Go
+go get github.com/govcraft/emergent/sdks/go
 ```
 
-### Generated Code
+### Quick Examples
 
-Scaffold creates a complete project:
-
-```
-my_filter/
-├── Cargo.toml
-└── src/
-    └── main.rs
-```
-
-The generated code uses the same helper functions you'll see in the deep-dive sections:
-
-```rust
-// Generated handler uses run_handler
-run_handler(
-    Some("my_filter"),
-    &["timer.tick"],
-    |msg, handler| async move {
-        let output = EmergentMessage::new("timer.filtered")
-            .with_causation_from_message(msg.id())
-            .with_payload(json!({"processed": true}));
-        handler.publish(output).await.map_err(|e| e.to_string())
-    }
-).await?;
-```
-
-### Available Options
-
-| Flag | Description |
-|------|-------------|
-| `-t, --type` | Primitive type: `source`, `handler`, or `sink` |
-| `-n, --name` | Name in snake_case |
-| `-S, --subscribes` | Message types to subscribe (comma-separated) |
-| `-p, --publishes` | Message types to publish (comma-separated) |
-| `-o, --output` | Output directory (default: `./<name>`) |
-| `-d, --description` | Description for documentation |
-| `--dry-run` | Preview files without writing |
-| `--json` | JSON output for scripting |
-
-**Use scaffold to bootstrap real projects fast. The deep-dive sections below explain the concepts behind the generated code.**
-
----
-
-## 7. Polyglot Workflows
-
-You can mix languages in a single workflow. The SDKs for Rust, TypeScript, Python, and Go expose identical helper APIs.
-
-### TypeScript Sink Example
-
-Create a TypeScript Sink using Deno:
-
-```typescript
-#!/usr/bin/env -S deno run --allow-env --allow-net=unix
-
-import { runSink } from "jsr:@govcraft/emergent";
-
-await runSink("ts_printer", ["my_timer.doubled"], async (msg) => {
-  const { original, doubled } = msg.payloadAs<{ original: number; doubled: number }>();
-  console.log(`[TypeScript] ${original} → ${doubled}`);
-});
-```
-
-Make the file executable and add it to your configuration:
-
-```bash
-chmod +x my_sink.ts
-```
-
-```toml
-[[sinks]]
-name = "ts_printer"
-path = "/usr/bin/deno"
-args = ["run", "--allow-env", "--allow-net=unix", "/path/to/my_sink.ts"]
-enabled = true
-subscribes = ["my_timer.doubled"]
-```
-
-### Python Handler Example
-
-Create a Python Handler that enriches events:
+**Python Handler** (stateful -- maintains a running average):
 
 ```python
-#!/usr/bin/env python3
 from emergent import run_handler, create_message
 
-async def process_tick(msg, handler):
+readings = []
+
+async def process(msg, handler):
     data = msg.payload_as(dict)
-    enriched = {
-        **data,
-        "processed_by": "python",
-        "squared": data["count"] ** 2
-    }
+    readings.append(data["value"])
+    avg = sum(readings) / len(readings)
     await handler.publish(
-        create_message("timer.enriched")
+        create_message("sensor.average")
         .caused_by(msg.id)
-        .payload(enriched)
+        .payload({"average": avg, "count": len(readings)})
     )
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run_handler("py_enricher", ["my_timer.tick"], process_tick))
-```
-
-Add to configuration:
-
-```toml
-[[handlers]]
-name = "py_enricher"
-path = "/usr/bin/python3"
-args = ["/path/to/enricher.py"]
-enabled = true
-subscribes = ["my_timer.tick"]
-publishes = ["timer.enriched"]
-```
-
-### Python Source Example (HTTP Webhook)
-
-For Sources that need custom event loops (like HTTP servers), the helper provides a shutdown event:
-
-```python
-#!/usr/bin/env python3
 import asyncio
-from aiohttp import web
-from emergent import run_source, create_message
-
-async def webhook_logic(source, shutdown_event):
-    async def handle_webhook(request):
-        body = await request.json()
-        await source.publish(create_message("webhook.received").payload(body))
-        return web.json_response({"status": "ok"})
-
-    app = web.Application()
-    app.router.add_post("/webhook", handle_webhook)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 8080)
-    await site.start()
-
-    # Wait for shutdown signal
-    await shutdown_event.wait()
-    await runner.cleanup()
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run_source("webhook", webhook_logic))
+asyncio.run(run_handler("averager", ["sensor.reading"], process))
 ```
 
-Now your pipeline mixes Rust (timer), Python (enricher, webhook), and TypeScript (console output). The engine handles communication for all three.
-
-### When to Use Each Language
-
-| Use Case | Language | Why |
-|----------|----------|-----|
-| Performance-critical handlers | Rust | Compile-time safety, zero-cost abstractions |
-| Data transformation | Python | Pandas, NumPy ecosystem |
-| Web integrations | TypeScript | Native HTTP, JSON handling |
-| Systems & infrastructure | Go | Concurrency, static binaries, fast compilation |
-| Quick prototypes | Python/TypeScript | Faster iteration cycles |
-| Production Sources | Rust/Go | Reliability, resource efficiency |
-
-**Language choice becomes a per-component decision. Use Python for data science, TypeScript for web integrations, Go for infrastructure tooling, Rust for performance-critical transformations.**
-
----
-
-## 8. Write Your First Source (Rust Deep Dive)
-
-The marketplace and scaffold get you started fast, but sometimes you need full control. This section walks through building primitives from scratch in Rust. TypeScript, Python, and Go users: the patterns are identical—see Section 7 for examples in those languages, or use `emergent scaffold` to generate a project in your language.
-
-Create a new Rust project for a simple Source that says "hello":
-
-```bash
-cargo new --bin greeter
-cd greeter
-cargo add emergent-client tokio serde_json --features tokio/full
-```
-
-Edit `src/main.rs`:
-
-```rust
-use emergent_client::helpers::run_source;
-use emergent_client::EmergentMessage;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_source(Some("greeter"), |source, _shutdown| async move {
-        let msg = EmergentMessage::new("say.hello")
-            .with_payload(json!({"greeting": "hello"}));
-        source.publish(msg).await.map_err(|e| e.to_string())?;
-        Ok(())
-    }).await?;
-    Ok(())
-}
-```
-
-This Source publishes one message and exits. The `run_source` helper handles connection, signal handling, and cleanup—your code just publishes.
-
-Build and configure:
-
-```bash
-cargo build --release
-```
-
-```toml
-[[sources]]
-name = "greeter"
-path = "/path/to/greeter/target/release/greeter"
-enabled = true
-publishes = ["say.hello"]
-```
-
-**That's it. Seven lines of business logic to publish a message.**
-
----
-
-## 9. Write Your First Handler (Rust Deep Dive)
-
-Create a Handler that receives "hello" and adds "world":
-
-```bash
-cargo new --bin combiner
-cd combiner
-cargo add emergent-client tokio serde serde_json --features tokio/full
-```
-
-Edit `src/main.rs`:
-
-```rust
-use emergent_client::helpers::run_handler;
-use emergent_client::EmergentMessage;
-use serde::Deserialize;
-use serde_json::json;
-
-#[derive(Deserialize)]
-struct HelloPayload {
-    greeting: String,
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_handler(
-        Some("combiner"),
-        &["say.hello"],
-        |msg, handler| async move {
-            let input: HelloPayload = msg.payload_as().map_err(|e| e.to_string())?;
-            let message = format!("{} world", input.greeting);
-
-            let output = EmergentMessage::new("say.complete")
-                .with_causation_from_message(msg.id())
-                .with_payload(json!({"message": message}));
-
-            handler.publish(output).await.map_err(|e| e.to_string())
-        }
-    ).await?;
-    Ok(())
-}
-```
-
-The Handler receives "hello", appends "world", and publishes the result. The `run_handler` helper manages the message loop—your function is called once for each incoming message.
-
-The `.with_causation_from_message(msg.id())` call links output to input, creating a traceable event chain. We'll explore this in Section 11.
-
-Build and configure:
-
-```bash
-cargo build --release
-```
-
-```toml
-[[handlers]]
-name = "combiner"
-path = "/path/to/combiner/target/release/combiner"
-enabled = true
-subscribes = ["say.hello"]
-publishes = ["say.complete"]
-```
-
-**Handlers transform events. Input goes in, transformed output comes out.**
-
----
-
-## 10. Write Your First Sink (Rust Deep Dive)
-
-Create a Sink that prints the final message:
-
-```bash
-cargo new --bin printer
-cd printer
-cargo add emergent-client tokio serde --features tokio/full
-```
-
-Edit `src/main.rs`:
-
-```rust
-use emergent_client::helpers::run_sink;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct CompletePayload {
-    message: String,
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_sink(
-        Some("printer"),
-        &["say.complete"],
-        |msg| async move {
-            let data: CompletePayload = msg.payload_as().map_err(|e| e.to_string())?;
-            println!("{}", data.message);
-            Ok(())
-        }
-    ).await?;
-    Ok(())
-}
-```
-
-The Sink receives messages and produces side effects—in this case, printing to the console. Unlike Handlers, Sinks never publish.
-
-Build and configure:
-
-```bash
-cargo build --release
-```
-
-```toml
-[[sinks]]
-name = "printer"
-path = "/path/to/printer/target/release/printer"
-enabled = true
-subscribes = ["say.complete"]
-```
-
-Run the engine with your three-component pipeline:
-
-```bash
-emergent --config ./config/emergent.toml
-```
-
-You should see:
-
-```
-hello world
-```
-
-**You built a complete event-driven pipeline.** Three independent programs communicate through the engine: Source publishes "hello", Handler transforms it to "hello world", Sink prints the result. Each component is simple, testable, and replaceable.
-
----
-
-## 11. Message Structure and Tracing
-
-Now that you've seen all three primitives, let's examine the message structure that makes their communication possible.
-
-Every message in Emergent shares the same structure:
-
-```rust
-EmergentMessage {
-    id: MessageId,              // Time-sortable unique ID (UUIDv7 format)
-    message_type: String,       // "say.hello", "say.complete"
-    source: String,             // "greeter", "combiner"
-    timestamp_ms: u64,          // Unix epoch milliseconds
-    payload: Value,             // Your data
-    metadata: Option<Value>,    // Optional key-value pairs
-    correlation_id: Option<MessageId>,  // Request-response pairing
-    causation_id: Option<MessageId>,    // Event chain tracking
-}
-```
-
-### Message IDs
-
-Message IDs are time-sortable UUIDs (UUIDv7 format)—you can sort by ID to get chronological order. The engine generates IDs automatically when you call `EmergentMessage::new()`.
-
-### Message Types
-
-Message types use dotted notation: `domain.event`. Conventions:
-
-- `say.hello` - domain event from the greeter
-- `say.complete` - derived event after transformation
-- `system.started.greeter` - system event for greeter startup
-- `system.shutdown` - broadcast signal for graceful shutdown
-
-Wildcards work in subscriptions: `subscribe(&["system.*"])` matches all system events.
-
-### Causation vs Correlation
-
-**Causation ID** answers "what caused this message?" Use it to trace event chains:
-
-```
-say.hello (msg_01a2)
-  └─> say.complete (msg_01a3, caused by msg_01a2)
-        └─> notification.sent (msg_01a4, caused by msg_01a3)
-```
-
-**Correlation ID** answers "what request does this belong to?" Use it for request-response patterns:
-
-```
-http.request (msg_01a2, correlation: msg_01a2)
-  ├─> db.query (msg_01a3, correlation: msg_01a2)
-  └─> http.response (msg_01a4, correlation: msg_01a2)
-```
-
-Set causation in Handlers to track transformations:
-
-```rust
-let output = EmergentMessage::new("processed.event")
-    .with_causation_id(input_msg.id())
-    .with_payload(result);
-```
-
-Set correlation for request-response workflows:
-
-```rust
-let request_id = msg.id();
-let response = EmergentMessage::new("http.response")
-    .with_correlation_id(request_id)
-    .with_payload(data);
-```
-
-**Causation chains and correlation IDs make distributed workflows traceable. You can reconstruct the entire flow from logs.**
-
----
-
-## 12. Graceful Shutdown Explained
-
-When you stop the engine (Ctrl+C or SIGTERM), it executes a three-phase shutdown:
-
-### Phase 1: Stop Sources
-
-The engine sends SIGTERM to all Source processes. Sources stop accepting new inputs and disconnect. This prevents new messages from entering the system.
-
-### Phase 2: Drain Handlers
-
-The engine broadcasts a `system.shutdown` message. Handlers receive this message on their subscription stream, finish processing pending messages, then disconnect. The SDK automatically closes the stream when it receives `system.shutdown`.
-
-### Phase 3: Drain Sinks
-
-After all Handlers disconnect, the engine waits for Sinks to consume remaining messages. Sinks receive `system.shutdown`, process any buffered messages, then disconnect.
-
-This three-phase approach ensures:
-
-- No messages are lost
-- Handlers finish processing pending work
-- Sinks flush output buffers
-
-### The Helpers Handle Everything
-
-When you use `run_handler` or `run_sink`, signal handling and graceful shutdown happen automatically. The helpers:
-
-1. Register SIGTERM/SIGINT handlers
-2. Close the message stream when signaled
-3. Clean up and disconnect after your function completes
-
-For **one-shot Sources** (like our "hello world" greeter), shutdown handling is automatic—just complete your function and return.
-
-For **long-running Sources** (timers, HTTP servers, file watchers), the helper provides a shutdown signal you can check:
-
-```rust
-// Rust: shutdown is a watch::Receiver<bool>
-run_source(Some("my_timer"), |source, mut shutdown| async move {
-    loop {
-        tokio::select! {
-            _ = shutdown.changed() => break,  // Shutdown requested
-            _ = interval.tick() => { /* publish */ }
-        }
-    }
-    Ok(())
-}).await?;
-```
+**TypeScript Sink**:
 
 ```typescript
-// TypeScript: shutdown is an AbortSignal
-await runSource("my_timer", async (source, shutdown) => {
-  const intervalId = setInterval(() => { /* publish */ }, 3000);
-  await new Promise<void>((resolve) => {
-    shutdown.addEventListener("abort", () => {
-      clearInterval(intervalId);
-      resolve();
-    });
-  });
+import { runSink } from "jsr:@govcraft/emergent";
+
+await runSink("my_sink", ["analysis.result"], async (msg) => {
+  const data = msg.payloadAs<{ summary: string }>();
+  console.log(`Analysis: ${data.summary}`);
 });
 ```
 
-```python
-# Python: shutdown_event is an asyncio.Event
-async def timer_logic(source, shutdown_event):
-    while not shutdown_event.is_set():
-        try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=3.0)
-            break  # Shutdown requested
-        except asyncio.TimeoutError:
-            await source.publish(...)  # Publish on timeout
+The SDK helpers (`run_source`, `run_handler`, `run_sink`) handle connection, signal handling, and graceful shutdown. You write only the business logic.
 
-await run_source("my_timer", timer_logic)
-```
-
-**Graceful shutdown requires no manual signal handling when using helpers. The engine orchestrates the drain sequence; the SDK helpers manage your process lifecycle.**
+See the full [SDK documentation](sdks/) for API references in all four languages.
 
 ---
 
-## 13. Next Steps
+## 9. Next Steps
 
-You now understand Emergent's core concepts: three primitives, message structure, configuration, and shutdown. Here are patterns to explore next.
+**Explore the examples:**
+- [Examples Guide](examples.md) -- Zero-code pipelines (including the full Slack bot) and advanced patterns (fan-in, fan-out, stateful handlers, real-time visualization)
 
-### Multiple Subscriptions
+**Learn the architecture:**
+- [Concepts](concepts.md) -- Three-primitive model, message format, event sourcing, lifecycle management
 
-Handlers can subscribe to multiple message types. With the helper, pass all types in the subscription array and pattern match inside your callback:
+**Reference:**
+- [Configuration](configuration.md) -- All TOML options, secrets management, multi-language paths
+- [Primitives](primitives/) -- Source, Handler, and Sink reference
+- [SDKs](sdks/) -- Rust, TypeScript, Python, Go
 
-```rust
-run_handler(
-    Some("router"),
-    &["timer.tick", "webhook.received"],
-    |msg, handler| async move {
-        match msg.message_type().as_str() {
-            "timer.tick" => handle_tick(&msg, &handler).await,
-            "webhook.received" => handle_webhook(&msg, &handler).await,
-            _ => Ok(())
-        }
-    }
-).await?;
-```
-
-Each message carries its type, so your function can route to the appropriate logic.
-
-### Fan-out and Fan-in
-
-Multiple Sinks can subscribe to the same message type (fan-out):
-
-```toml
-[[sinks]]
-name = "console"
-subscribes = ["timer.tick"]
-
-[[sinks]]
-name = "logger"
-subscribes = ["timer.tick"]
-
-[[sinks]]
-name = "metrics"
-subscribes = ["timer.tick"]
-```
-
-Multiple Handlers can publish the same message type (fan-in):
-
-```toml
-[[handlers]]
-name = "enricher_1"
-publishes = ["data.enriched"]
-
-[[handlers]]
-name = "enricher_2"
-publishes = ["data.enriched"]
-```
-
-A single Sink subscribes to `data.enriched` and receives messages from both Handlers.
-
-### Error Handling
-
-Publish error events when processing fails:
-
-```rust
-run_handler(
-    Some("processor"),
-    &["data.incoming"],
-    |msg, handler| async move {
-        match process_message(&msg).await {
-            Ok(result) => {
-                handler.publish(
-                    EmergentMessage::new("processing.success")
-                        .with_causation_from_message(msg.id())
-                        .with_payload(json!(result))
-                ).await.map_err(|e| e.to_string())
-            }
-            Err(e) => {
-                handler.publish(
-                    EmergentMessage::new("processing.error")
-                        .with_causation_from_message(msg.id())
-                        .with_payload(json!({"error": e.to_string()}))
-                ).await.map_err(|e| e.to_string())
-            }
-        }
-    }
-).await?;
-```
-
-Create a Sink that subscribes to `*.error` to centralize error handling.
-
-### Testing Primitives
-
-Test primitives by separating business logic from SDK calls:
-
-```rust
-#[tokio::test]
-async fn test_doubler() {
-    let input = EmergentMessage::new("timer.tick")
-        .with_payload(json!({"count": 5}));
-
-    let output = process_tick(input).await.unwrap();
-
-    assert_eq!(output.message_type, "timer.doubled");
-    let payload: DoubledPayload = output.payload_as().unwrap();
-    assert_eq!(payload.doubled, 10);
-}
-```
-
-### Exploring the Event Store
-
-Query the SQLite event store to analyze workflows:
-
-```sql
-SELECT message_type, COUNT(*)
-FROM events
-WHERE timestamp_ms > ?
-GROUP BY message_type;
-```
-
-Replay events by reading JSON logs and re-publishing them through a Source.
-
----
-
-## 14. Conclusion
-
-You learned Emergent's three primitives (Source, Handler, Sink), built a pipeline from marketplace primitives, explored polyglot workflows, and wrote custom components with message tracing and shutdown behavior. The SDK helpers reduce each primitive to a single function call with your business logic—connection, signal handling, and graceful shutdown happen automatically.
-
-This simplicity scales. Production workflows use the same three primitives you practiced here. A 50-component pipeline follows the same principles as a 3-component example.
-
-Four key takeaways:
-
-1. **Start with marketplace primitives**: Pre-built Sources, Handlers, and Sinks let you build working pipelines with no code at all.
-2. **Constraints enable reasoning**: Sources publish, Handlers transform, Sinks consume. Every component fits one pattern.
-3. **Helpers eliminate boilerplate**: `run_source`, `run_handler`, and `run_sink` handle connection, signals, and cleanup—you write only the business logic.
-4. **Polyglot is practical**: Mix languages based on component requirements. The helper APIs are consistent across Rust, TypeScript, Python, and Go.
-
-Start building workflows by checking `emergent marketplace list` for existing primitives. When you need custom logic, identify your Sources (where does data come from?), Handlers (what transformations are needed?), and Sinks (where does data go?). Use `emergent scaffold` to generate a project in your language of choice, test it in isolation, then compose components in the configuration file.
-
-**Want to see these patterns in action?** The [Examples Guide](examples.md) has complete pipelines you can run immediately — from a basic three-stage pipeline to a Claude-powered Slack chatbot, Conway's Game of Life as a pub-sub stream, and Turing pattern simulations with parallel Rust computation.
-
-**The patterns you learned are production-ready.** Deploy by pointing the engine at your configuration and starting the binary.
+**Start building:** identify your Sources (where does data come from?), Handlers (what processing is needed?), and Sinks (where does output go?). Start with exec primitives. Reach for custom SDK primitives only when you need persistent state, custom protocols, or high-performance processing.
