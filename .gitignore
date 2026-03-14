@@ -1,6 +1,11 @@
 # Build artifacts
 /target/
 
+# Go binaries (examples)
+examples/sources/timer-go/timer-go
+examples/handlers/filter-go/filter-go
+examples/sinks/console-go/console-go
+
 # Database files
 *.db
 

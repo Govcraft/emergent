@@ -1,0 +1,75 @@
+version: "3"
+
+vars:
+  ROOT_DIR:
+    sh: git rev-parse --show-toplevel
+  TIMER_DIR: "{{.ROOT_DIR}}/examples/sources/timer-go"
+  FILTER_DIR: "{{.ROOT_DIR}}/examples/handlers/filter-go"
+  CONSOLE_DIR: "{{.ROOT_DIR}}/examples/sinks/console-go"
+  ENGINE: "{{.ROOT_DIR}}/target/release/emergent"
+  CONFIG: "{{.ROOT_DIR}}/config/emergent-go.toml"
+
+tasks:
+  default:
+    desc: Build all Go examples and run them with the engine
+    cmds:
+      - task: build
+      - task: run
+
+  build:
+    desc: Build all Go example primitives
+    deps: [build:timer, build:filter, build:console]
+
+  build:timer:
+    desc: Build the timer-go source
+    dir: "{{.TIMER_DIR}}"
+    sources: ["main.go", "go.mod", "go.sum"]
+    generates: ["timer-go"]
+    cmds:
+      - go build -o timer-go .
+
+  build:filter:
+    desc: Build the filter-go handler
+    dir: "{{.FILTER_DIR}}"
+    sources: ["main.go", "go.mod", "go.sum"]
+    generates: ["filter-go"]
+    cmds:
+      - go build -o filter-go .
+
+  build:console:
+    desc: Build the console-go sink
+    dir: "{{.CONSOLE_DIR}}"
+    sources: ["main.go", "go.mod", "go.sum"]
+    generates: ["console-go"]
+    cmds:
+      - go build -o console-go .
+
+  run:
+    desc: Run the Go examples with the Emergent engine
+    deps: [build]
+    preconditions:
+      - sh: test -f {{.ENGINE}}
+        msg: "Engine not found at {{.ENGINE}}. Run 'cargo build --release' first."
+    cmds:
+      - "{{.ENGINE}} --config {{.CONFIG}}"
+
+  clean:
+    desc: Remove built Go binaries
+    cmds:
+      - rm -f {{.TIMER_DIR}}/timer-go
+      - rm -f {{.FILTER_DIR}}/filter-go
+      - rm -f {{.CONSOLE_DIR}}/console-go
+
+  test:
+    desc: Run Go SDK tests
+    dir: "{{.ROOT_DIR}}/sdks/go"
+    cmds:
+      - go test ./... -count=1
+
+  check:
+    desc: Build, vet, and test the Go SDK
+    dir: "{{.ROOT_DIR}}/sdks/go"
+    cmds:
+      - go build ./...
+      - go vet ./...
+      - go test ./... -count=1

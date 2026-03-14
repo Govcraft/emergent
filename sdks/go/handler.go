@@ -1,0 +1,54 @@
+package emergent
+
+import "context"
+
+// EmergentHandler is a subscribe-and-publish primitive (transformation).
+// Handlers subscribe to incoming messages, process them, and publish results.
+type EmergentHandler struct {
+	*baseClient
+}
+
+// ConnectHandler connects to the Emergent engine as a Handler.
+func ConnectHandler(name string, opts *ConnectOptions) (*EmergentHandler, error) {
+	client := newBaseClient(name, PrimitiveKindHandler, opts)
+	if err := client.connect(opts); err != nil {
+		return nil, err
+	}
+	return &EmergentHandler{baseClient: client}, nil
+}
+
+// Subscribe subscribes to the given message types and returns a MessageStream.
+// The SDK automatically subscribes to system.shutdown and handles it internally.
+func (h *EmergentHandler) Subscribe(ctx context.Context, messageTypes []string) (*MessageStream, error) {
+	return h.subscribeInternal(ctx, messageTypes)
+}
+
+// Unsubscribe unsubscribes from the given message types.
+func (h *EmergentHandler) Unsubscribe(ctx context.Context, messageTypes []string) error {
+	return h.unsubscribeInternal(ctx, messageTypes)
+}
+
+// Publish publishes a message to the engine.
+func (h *EmergentHandler) Publish(message *EmergentMessage) error {
+	return h.publishInternal(message)
+}
+
+// Discover queries the engine for available message types and primitives.
+func (h *EmergentHandler) Discover(ctx context.Context) (*DiscoveryInfo, error) {
+	return h.discoverInternal(ctx)
+}
+
+// SubscribedTypes returns the list of currently subscribed message types.
+func (h *EmergentHandler) SubscribedTypes() []string {
+	return h.subscribedTypesList()
+}
+
+// Name returns the handler's name.
+func (h *EmergentHandler) Name() string {
+	return h.name
+}
+
+// Close gracefully disconnects from the engine.
+func (h *EmergentHandler) Close() error {
+	return h.close()
+}

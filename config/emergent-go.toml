@@ -1,0 +1,55 @@
+# Emergent Go SDK Example Configuration
+#
+# Runs the timer -> filter -> console pipeline using Go primitives.
+#
+# Prerequisites:
+#   cd examples/sources/timer-go && go build -o timer-go .
+#   cd examples/handlers/filter-go && go build -o filter-go .
+#   cd examples/sinks/console-go && go build -o console-go .
+#
+# Usage:
+#   ./target/release/emergent --config ./config/emergent-go.toml
+
+[engine]
+name = "emergent"
+socket_path = "auto"
+wire_format = "messagepack"
+
+[event_store]
+json_log_dir = "./logs"
+sqlite_path = "./events.db"
+retention_days = 30
+
+# =============================================================================
+# Go Source: Timer
+# =============================================================================
+
+[[sources]]
+name = "timer-go"
+path = "./examples/sources/timer-go/timer-go"
+args = ["--interval", "3000"]
+enabled = true
+publishes = ["timer.tick"]
+
+# =============================================================================
+# Go Handler: Filter
+# =============================================================================
+
+[[handlers]]
+name = "filter-go"
+path = "./examples/handlers/filter-go/filter-go"
+args = ["--filter-every", "3"]
+enabled = true
+subscribes = ["timer.tick"]
+publishes = ["timer.filtered", "filter.processed"]
+
+# =============================================================================
+# Go Sink: Console
+# =============================================================================
+
+[[sinks]]
+name = "console-go"
+path = "./examples/sinks/console-go/console-go"
+args = []
+enabled = true
+subscribes = ["timer.tick", "timer.filtered", "filter.processed", "system.started.*", "system.stopped.*", "system.error.*"]
