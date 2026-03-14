@@ -152,7 +152,9 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                         println!("     uv sync        # or: pip install -e .");
                     }
                     Language::TypeScript => {
-                        println!("     deno install    # pre-resolve dependencies and generate lockfile");
+                        println!(
+                            "     deno install    # pre-resolve dependencies and generate lockfile"
+                        );
                     }
                 }
 
@@ -313,7 +315,10 @@ mod tests {
         // path is resolved via which; may be absolute or bare "deno"
         assert!(snippet.contains("path = \"") && snippet.contains("deno\""));
         assert!(snippet.contains("./my_console/main.ts"));
-        assert!(!snippet.contains("--allow-write"), "should not request unnecessary --allow-write");
+        assert!(
+            !snippet.contains("--allow-write"),
+            "should not request unnecessary --allow-write"
+        );
         assert!(snippet.contains("subscribes = [\"timer.tick\", \"system.started.*\"]"));
         assert!(!snippet.contains("publishes"));
     }

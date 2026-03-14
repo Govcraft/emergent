@@ -89,6 +89,8 @@ enum Command {
     Scaffold(scaffold::cli::ScaffoldArgs),
     /// Manage marketplace primitives
     Marketplace(emergent_engine::marketplace::MarketplaceArgs),
+    /// Update emergent to the latest release
+    Update(emergent_engine::update::UpdateArgs),
 }
 
 use emergent_engine::config::EmergentConfig;
@@ -364,6 +366,10 @@ async fn main() -> Result<()> {
                 emergent_engine::marketplace::execute(marketplace_args).await?;
                 return Ok(());
             }
+            Command::Update(update_args) => {
+                emergent_engine::update::execute(update_args).await?;
+                return Ok(());
+            }
         }
     }
 
@@ -378,9 +384,7 @@ async fn main() -> Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
 
     if args.verbose {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     } else {
         let log_dir = directories::ProjectDirs::from("ai", "govcraft", "emergent")
             .map(|dirs| dirs.data_dir().join(&config.engine.name))
@@ -391,8 +395,7 @@ async fn main() -> Result<()> {
             .append(true)
             .open(log_dir.join("emergent.log"))
             .unwrap_or_else(|_| {
-                std::fs::File::open("/dev/null")
-                    .unwrap_or_else(|_| panic!("cannot open /dev/null"))
+                std::fs::File::open("/dev/null").unwrap_or_else(|_| panic!("cannot open /dev/null"))
             });
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
@@ -641,7 +644,10 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to bind HTTP API server to {}: {}. Set api_port to a different value in [engine] config, or set api_port = 0 to disable the HTTP API.", bind_addr, e);
+                    warn!(
+                        "Failed to bind HTTP API server to {}: {}. Set api_port to a different value in [engine] config, or set api_port = 0 to disable the HTTP API.",
+                        bind_addr, e
+                    );
                 }
             }
         });
