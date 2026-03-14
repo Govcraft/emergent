@@ -1,0 +1,75 @@
+# System Monitor — Fan-in metrics with live SSE dashboard
+#
+# Three exec-sources poll system metrics on different intervals,
+# converge on a formatter handler, then fan out to:
+#   - sse-sink for live browser dashboard
+#   - exec-sink for console output
+#   - exec-sink for conditional Slack alerts (optional)
+#
+# This demonstrates fan-in (multiple sources → one handler) and
+# fan-out (one handler → multiple sinks) — patterns that linear
+# orchestrators like Step Functions can't express without explicit
+# branching and merging nodes.
+#
+# Prerequisites:
+#   emergent marketplace install exec-source exec-handler exec-sink sse-sink
+#
+# Usage:
+#   emergent --config ./config/advanced-examples/system-monitor/emergent.toml
+#   # Open dashboard.html in a browser (serve with any static file server)
+
+[engine]
+name = "system-monitor"
+socket_path = "auto"
+api_port = 0
+
+# =============================================================================
+# Sources — three independent metric collectors (fan-in)
+# =============================================================================
+
+[[sources]]
+name = "disk"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "df -h --output=target,pcent,avail / | tail -1 | awk '{print \"{\\\"metric\\\":\\\"disk\\\",\\\"mount\\\":\\\"\" $1 \"\\\",\\\"used_pct\\\":\\\"\" $2 \"\\\",\\\"avail\\\":\\\"\" $3 \"\\\"}\"}'", "--interval", "10000"]
+publishes = ["metric.disk"]
+
+[[sources]]
+name = "memory"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "free -m | awk '/Mem:/ {printf \"{\\\"metric\\\":\\\"memory\\\",\\\"total_mb\\\":%d,\\\"used_mb\\\":%d,\\\"free_mb\\\":%d,\\\"used_pct\\\":%.1f}\\n\", $2, $3, $4, $3/$2*100}'", "--interval", "5000"]
+publishes = ["metric.memory"]
+
+[[sources]]
+name = "load"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "uptime | awk -F'load average:' '{print \"{\\\"metric\\\":\\\"load\\\",\\\"load_avg\\\":\" $2 \"}\"}' | jq -c '{metric: \"load\", load_1m: .load_avg[0], load_5m: .load_avg[1], load_15m: .load_avg[2]}'", "--interval", "5000"]
+publishes = ["metric.load"]
+
+# =============================================================================
+# Handler — normalize all metrics into a common format
+# =============================================================================
+
+[[handlers]]
+name = "formatter"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "metric.disk", "-s", "metric.memory", "-s", "metric.load", "--", "jq", "-c", ".stdout | fromjson // .stdout"]
+subscribes = ["metric.disk", "metric.memory", "metric.load"]
+publishes = ["monitor.metric"]
+
+# =============================================================================
+# Sinks — fan-out to multiple destinations
+# =============================================================================
+
+# Live browser dashboard via SSE
+[[sinks]]
+name = "dashboard"
+path = "~/.local/share/emergent/primitives/bin/sse-sink"
+args = ["--port", "8081"]
+subscribes = ["monitor.metric"]
+
+# Console output for debugging
+[[sinks]]
+name = "console"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "monitor.metric", "--", "jq", "-c", "[.metric, if .metric == \"disk\" then .used_pct elif .metric == \"memory\" then \"\\(.used_pct)%\" elif .metric == \"load\" then \"\\(.load_1m)\" else \"\" end] | join(\": \")"]
+subscribes = ["monitor.metric"]

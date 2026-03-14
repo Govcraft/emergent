@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>System Monitor — Emergent</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      padding: 2rem;
+    }
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 500;
+      color: #888;
+      margin-bottom: 1.5rem;
+    }
+    .status {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 0.5rem;
+      background: #333;
+      transition: background 0.3s;
+    }
+    .status.connected { background: #22c55e; }
+    .status.disconnected { background: #ef4444; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1.5rem;
+    }
+    .card {
+      background: #141414;
+      border: 1px solid #222;
+      border-radius: 8px;
+      padding: 1.5rem;
+    }
+    .card h2 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #666;
+      margin-bottom: 1rem;
+    }
+    .metric {
+      font-size: 2.4rem;
+      font-weight: 300;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      margin-bottom: 0.5rem;
+    }
+    .metric.warn { color: #f59e0b; }
+    .metric.critical { color: #ef4444; }
+    .metric.ok { color: #22c55e; }
+    .detail {
+      font-size: 0.85rem;
+      color: #555;
+    }
+    .bar-container {
+      width: 100%;
+      height: 6px;
+      background: #222;
+      border-radius: 3px;
+      margin-top: 0.75rem;
+      overflow: hidden;
+    }
+    .bar {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.5s ease, background 0.5s ease;
+    }
+    .bar.ok { background: #22c55e; }
+    .bar.warn { background: #f59e0b; }
+    .bar.critical { background: #ef4444; }
+    .history {
+      margin-top: 1rem;
+      font-size: 0.75rem;
+      color: #444;
+      font-family: monospace;
+      max-height: 4rem;
+      overflow: hidden;
+    }
+    .history div { padding: 1px 0; }
+  </style>
+</head>
+<body>
+  <h1><span class="status" id="conn-status"></span>System Monitor</h1>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Disk Usage</h2>
+      <div class="metric" id="disk-value">—</div>
+      <div class="detail" id="disk-detail"></div>
+      <div class="bar-container"><div class="bar" id="disk-bar" style="width: 0%"></div></div>
+    </div>
+
+    <div class="card">
+      <h2>Memory</h2>
+      <div class="metric" id="mem-value">—</div>
+      <div class="detail" id="mem-detail"></div>
+      <div class="bar-container"><div class="bar" id="mem-bar" style="width: 0%"></div></div>
+    </div>
+
+    <div class="card">
+      <h2>Load Average</h2>
+      <div class="metric" id="load-value">—</div>
+      <div class="detail" id="load-detail"></div>
+    </div>
+  </div>
+
+  <script>
+    const SSE_URL = "http://localhost:8081/events";
+
+    function severity(pct) {
+      if (pct >= 90) return "critical";
+      if (pct >= 70) return "warn";
+      return "ok";
+    }
+
+    function updateDisk(payload) {
+      const pct = parseFloat(payload.used_pct);
+      const level = severity(pct);
+      const el = document.getElementById("disk-value");
+      el.textContent = payload.used_pct;
+      el.className = "metric " + level;
+      document.getElementById("disk-detail").textContent = payload.avail + " available on " + payload.mount;
+      const bar = document.getElementById("disk-bar");
+      bar.style.width = pct + "%";
+      bar.className = "bar " + level;
+    }
+
+    function updateMemory(payload) {
+      const pct = payload.used_pct;
+      const level = severity(pct);
+      const el = document.getElementById("mem-value");
+      el.textContent = pct.toFixed(1) + "%";
+      el.className = "metric " + level;
+      document.getElementById("mem-detail").textContent =
+        payload.used_mb + " MB / " + payload.total_mb + " MB (" + payload.free_mb + " MB free)";
+      const bar = document.getElementById("mem-bar");
+      bar.style.width = pct + "%";
+      bar.className = "bar " + level;
+    }
+
+    function updateLoad(payload) {
+      const el = document.getElementById("load-value");
+      el.textContent = payload.load_1m.toFixed(2);
+      const cores = navigator.hardwareConcurrency || 4;
+      const level = payload.load_1m > cores ? "critical" : payload.load_1m > cores * 0.7 ? "warn" : "ok";
+      el.className = "metric " + level;
+      document.getElementById("load-detail").textContent =
+        "1m: " + payload.load_1m.toFixed(2) +
+        "  5m: " + payload.load_5m.toFixed(2) +
+        "  15m: " + payload.load_15m.toFixed(2);
+    }
+
+    function connect() {
+      const status = document.getElementById("conn-status");
+      const source = new EventSource(SSE_URL);
+
+      source.onopen = () => {
+        status.className = "status connected";
+      };
+
+      source.onmessage = (e) => {
+        const event = JSON.parse(e.data);
+        const p = event.payload;
+        if (!p || !p.metric) return;
+
+        if (p.metric === "disk") updateDisk(p);
+        else if (p.metric === "memory") updateMemory(p);
+        else if (p.metric === "load") updateLoad(p);
+      };
+
+      source.onerror = () => {
+        status.className = "status disconnected";
+        source.close();
+        setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>
