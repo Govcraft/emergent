@@ -1,18 +1,13 @@
-# Ouroboros Loop: http-source → exec-handler → exec-sink (curls back)
+# Ouroboros Loop: self-seeding infinite loop
 #
-# An infinite loop pipeline. POST once to seed it, and the message
-# circulates forever with an incrementing counter.
+# Starts automatically — no manual curl needed. An exec-source seeds the
+# loop, then the message circulates forever with an incrementing counter.
 #
 # Prerequisites:
-#   emergent marketplace install http-source exec-handler exec-sink
+#   emergent marketplace install http-source exec-source exec-handler exec-sink
 #
 # Usage:
 #   emergent --config ./config/examples/ouroboros-loop.toml
-#
-# Then in another terminal:
-#   curl -X POST -H "Content-Type: application/json" \
-#     -d '{"count": 0, "message": "hello ouroboros"}' \
-#     http://localhost:8088
 
 [engine]
 name = "ouroboros"
@@ -24,6 +19,13 @@ name = "webhook"
 path = "~/.local/share/emergent/primitives/bin/http-source"
 args = ["--port", "8088"]
 publishes = ["http.request"]
+
+# Seed the loop once (sleep 2 to let http-source bind first)
+[[sources]]
+name = "seed"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "sleep 2 && curl -s -X POST -H 'Content-Type: application/json' -d '{\"count\": 0, \"message\": \"hello ouroboros\"}' http://localhost:8088"]
+publishes = ["exec.output"]
 
 [[handlers]]
 name = "enrich"
