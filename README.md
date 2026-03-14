@@ -101,7 +101,7 @@ emergent --config ./emergent.toml
 
 ## Write Your Own Primitives
 
-When built-in primitives aren't enough, write your own in any supported language. The SDKs for Rust, TypeScript, and Python expose identical patterns.
+When built-in primitives aren't enough, write your own in any supported language. The SDKs for Rust, TypeScript, Python, and Go expose identical patterns.
 
 ### Scaffold a Primitive
 
@@ -158,9 +158,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Go
+
+```go
+package main
+
+import (
+    "context"
+    emergent "github.com/govcraft/emergent/sdks/go"
+)
+
+func main() {
+    emergent.RunSource("my_source", func(ctx context.Context, source *emergent.EmergentSource) error {
+        msg, _ := emergent.NewMessage("sensor.reading")
+        msg.WithPayload(map[string]any{"temperature": 72.5})
+        return source.Publish(msg)
+    })
+}
+```
+
 ## Features
 
-- **Language-agnostic primitives**: Write in Rust, TypeScript, or Python—or use pre-built marketplace primitives with no code at all
+- **Language-agnostic primitives**: Write in Rust, TypeScript, Python, or Go—or use pre-built marketplace primitives with no code at all
 - **Built-in marketplace**: Install community primitives as pre-built binaries with `emergent marketplace install`
 - **Scaffold command**: Generate new primitives from templates in any supported language
 - **Built-in event sourcing**: Every message logged with causation chains for debugging and replay
@@ -184,7 +203,7 @@ emergent marketplace install topology-viewer
 - **[Concepts](docs/concepts.md)** - Architecture, message flow, event sourcing
 - **[Primitives](docs/primitives/)** - Reference for Sources, Handlers, Sinks
 - **[Configuration](docs/configuration.md)** - All configuration options
-- **[SDKs](docs/sdks/)** - Rust, TypeScript, Python
+- **[SDKs](docs/sdks/)** - Rust, TypeScript, Python, Go
 
 ## Requirements
 
@@ -194,6 +213,7 @@ To write your own primitives, install the SDK for your language:
 - **TypeScript**: Deno 1.40+
 - **Python**: Python 3.11+ with uv
 - **Rust**: Rust 1.75+
+- **Go**: Go 1.23+
 
 ## License
 
