@@ -1,0 +1,39 @@
+# Basic Pipeline: exec-source → exec-handler → exec-sink
+#
+# Runs `date` every 3 seconds, pipes through jq to transform,
+# then pretty-prints the result with topology viewer.
+#
+# Prerequisites:
+#   emergent marketplace install exec-source exec-handler exec-sink topology-viewer
+#
+# Usage:
+#   emergent --config ./config/examples/basic-pipeline.toml
+
+[engine]
+name = "basic-pipeline"
+socket_path = "auto"
+
+[[sources]]
+name = "ticker"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--command", "date", "--interval", "3000"]
+publishes = ["exec.output"]
+
+[[handlers]]
+name = "transform"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "exec.output", "--publish-as", "data.transformed", "--", "jq", "-c", ". + {transformed: true}"]
+subscribes = ["exec.output"]
+publishes = ["data.transformed"]
+
+[[sinks]]
+name = "printer"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "data.transformed", "--", "jq", "."]
+subscribes = ["data.transformed"]
+
+[[sinks]]
+name = "topology"
+path = "~/.local/share/emergent/primitives/bin/topology-viewer"
+args = ["--port", "8009"]
+subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]

@@ -1,0 +1,54 @@
+# WebSocket Echo: exec-source → websocket-handler → exec-sink
+#
+# Connects to a WebSocket echo server, sends a test message,
+# and prints the echoed response. Demonstrates the full
+# websocket-handler round-trip.
+#
+# Prerequisites:
+#   emergent marketplace install exec-source exec-handler websocket-handler exec-sink
+#
+# Usage:
+#   emergent --config ./config/examples/websocket-echo.toml
+
+[engine]
+name = "ws-echo"
+socket_path = "auto"
+api_port = 0
+
+# Emit a connect command with the echo server URL
+[[sources]]
+name = "connector"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--command", "echo", "--args", "{\"url\":\"wss://echo.websocket.org\"}"]
+publishes = ["exec.output"]
+
+# Extract the URL from exec-source's stdout wrapper
+[[handlers]]
+name = "url-extractor"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "exec.output", "--", "jq", "-c", ".stdout | fromjson"]
+subscribes = ["exec.output"]
+publishes = ["ws.connect"]
+
+# WebSocket handler connects and relays frames
+[[handlers]]
+name = "echo-ws"
+path = "~/.local/share/emergent/primitives/bin/websocket-handler"
+args = ["--prefix", "ws"]
+subscribes = ["ws.connect", "ws.send"]
+publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
+
+# When connected, send a test message
+[[handlers]]
+name = "sender"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "ws.connected", "--", "jq", "-c", "-n", "{data: {hello: \"emergent\", timestamp: now}}"]
+subscribes = ["ws.connected"]
+publishes = ["ws.send"]
+
+# Print every frame that comes back
+[[sinks]]
+name = "printer"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "ws.frame", "-s", "ws.connected", "-s", "ws.error", "--", "jq", "."]
+subscribes = ["ws.frame", "ws.connected", "ws.error"]

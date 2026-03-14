@@ -1,0 +1,114 @@
+# Slack Bot via Socket Mode + Claude
+#
+# Connects to Slack via Socket Mode (outbound WebSocket, no public URL),
+# receives messages, sends them to Claude, and posts the response back.
+#
+# Prerequisites:
+#   emergent marketplace install exec-source exec-handler websocket-handler exec-sink
+#
+# Environment variables (set these before running):
+#   SLACK_APP_TOKEN  — Slack App-Level Token (xapp-...)
+#   SLACK_BOT_TOKEN  — Slack Bot User OAuth Token (xoxb-...)
+#
+# Usage:
+#   source .env
+#   emergent --config ./config/examples/slack-bot.toml
+#
+# Slack App Setup:
+#   1. Create app at https://api.slack.com/apps
+#   2. Enable Socket Mode → create App-Level Token with connections:write
+#   3. OAuth & Permissions → add chat:write, channels:history, im:history
+#   4. Event Subscriptions → subscribe to message.channels, message.im
+#   5. Install to workspace
+
+[engine]
+name = "slack-bot"
+socket_path = "auto"
+api_port = 0
+
+# =============================================================================
+# Step 1: Get the Socket Mode WSS URL from Slack API
+# =============================================================================
+[[sources]]
+name = "slack-connect"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = [
+    "--shell", "sh",
+    "--command", "curl -s -X POST https://slack.com/api/apps.connections.open -H \"Authorization: Bearer $SLACK_APP_TOKEN\" | jq -c '{url: .url}'"
+]
+publishes = ["exec.output"]
+
+# =============================================================================
+# Step 2: Extract the URL from exec-source's stdout wrapper
+# =============================================================================
+[[handlers]]
+name = "url-extractor"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "exec.output", "--", "jq", "-c", ".stdout | fromjson"]
+subscribes = ["exec.output"]
+publishes = ["slack.connect"]
+
+# =============================================================================
+# Step 3: WebSocket handler connects to Slack Socket Mode
+# =============================================================================
+[[handlers]]
+name = "slack-ws"
+path = "~/.local/share/emergent/primitives/bin/websocket-handler"
+args = ["--prefix", "slack"]
+subscribes = ["slack.connect", "slack.send"]
+publishes = ["slack.connected", "slack.frame", "slack.closed", "slack.error"]
+
+# =============================================================================
+# Step 4: Auto-ack every envelope (Slack requires this within 3 seconds)
+# =============================================================================
+[[handlers]]
+name = "slack-ack"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "slack.frame", "--", "jq", "-ce", "select(.data.envelope_id != null) | {data: {envelope_id: .data.envelope_id}}"]
+subscribes = ["slack.frame"]
+publishes = ["slack.send"]
+
+# =============================================================================
+# Step 5: Extract message events (ignore bot messages, acks, hellos)
+# =============================================================================
+[[handlers]]
+name = "slack-extract"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "slack.frame", "--", "jq", "-c", "select(.data.type == \"events_api\" and .data.payload.event.type == \"message\" and (.data.payload.event.subtype // null) == null and (.data.payload.event.bot_id // null) == null) | .data.payload.event"]
+subscribes = ["slack.frame"]
+publishes = ["slack.message"]
+
+# =============================================================================
+# Step 6: Extract channel + text for Claude
+# =============================================================================
+[[handlers]]
+name = "prepare-prompt"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "slack.message", "--", "jq", "-c", "{channel: .channel, text: .text}"]
+subscribes = ["slack.message"]
+publishes = ["slack.prompt"]
+
+# =============================================================================
+# Step 7: Send to Claude, return channel + response
+# =============================================================================
+[[handlers]]
+name = "claude-respond"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = [
+    "-s", "slack.prompt",
+    "--timeout", "60000",
+    "--",
+    "sh", "-c",
+    "input=$(cat) && channel=$(echo \"$input\" | jq -r .channel) && text=$(echo \"$input\" | jq -r .text) && response=$(echo \"$text\" | claude --model claude-haiku-4-5-20251001 -p 2>/dev/null) && jq -nc --arg channel \"$channel\" --arg text \"$response\" '{channel: $channel, text: $text}'"
+]
+subscribes = ["slack.prompt"]
+publishes = ["slack.post"]
+
+# =============================================================================
+# Step 8: Post the reply to Slack
+# =============================================================================
+[[sinks]]
+name = "slack-poster"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "slack.post", "--", "sh", "-c", "jq -c . | curl -s -o /dev/null -X POST https://slack.com/api/chat.postMessage -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" -H 'Content-Type: application/json' -d @-"]
+subscribes = ["slack.post"]
