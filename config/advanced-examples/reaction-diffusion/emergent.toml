@@ -1,0 +1,79 @@
+# Reaction-Diffusion — Turing patterns from two chemicals
+#
+# The Gray-Scott model: chemical U feeds chemical V, V decays. Their
+# diffusion rates differ, creating instabilities that self-organize
+# into spots, stripes, coral, and labyrinths — the same math behind
+# animal skin patterns.
+#
+# Prerequisites:
+#   emergent marketplace install exec-source sse-sink
+#
+# Usage:
+#   emergent --config ./config/advanced-examples/reaction-diffusion/emergent.toml
+#   # Open http://localhost:8084
+#
+# Change pattern: set RD_PRESET to one of:
+#   mitosis, coral, maze, holes, waves, spots, worms
+#
+#   RD_PRESET=maze emergent --config ./config/advanced-examples/reaction-diffusion/emergent.toml
+
+[engine]
+name = "reaction-diffusion"
+socket_path = "auto"
+api_port = 0
+
+# =============================================================================
+# Sources
+# =============================================================================
+
+[[sources]]
+name = "webserver"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "python3 -m http.server 8084 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/reaction-diffusion} & echo $! > /tmp/emergent-rd-webserver.pid && echo 'Dashboard: http://localhost:8084' >&2 && echo '{\"status\":\"started\"}'"]
+publishes = ["webserver.started"]
+
+# Seed the simulation (one-shot)
+[[sources]]
+name = "seed"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "echo '{\"preset\":\"'${RD_PRESET:-coral}'\"}'"]
+publishes = ["rd.seed"]
+
+# Simulation clock — each tick computes SUBSTEPS iterations
+[[sources]]
+name = "clock"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "echo '{\"tick\":true}'", "--interval", "30"]
+publishes = ["rd.tick"]
+
+# =============================================================================
+# Handler — Gray-Scott reaction-diffusion
+# =============================================================================
+
+[[handlers]]
+name = "world"
+path = "cargo"
+args = ["+nightly", "-Zscript", "config/advanced-examples/reaction-diffusion/world.rs"]
+subscribes = ["rd.seed", "rd.tick"]
+publishes = ["rd.frame"]
+
+# =============================================================================
+# Webserver lifecycle
+# =============================================================================
+
+[[handlers]]
+name = "webserver-stop"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "system.shutdown.requested", "--", "sh", "-c", "kill $(cat /tmp/emergent-rd-webserver.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/emergent-rd-webserver.pid; jq -nc '{status: \"stopped\"}'"]
+subscribes = ["system.shutdown.requested"]
+publishes = ["webserver.stopped"]
+
+# =============================================================================
+# Sinks
+# =============================================================================
+
+[[sinks]]
+name = "dashboard"
+path = "~/.local/share/emergent/primitives/bin/sse-sink"
+args = ["--port", "8085"]
+subscribes = ["rd.frame"]

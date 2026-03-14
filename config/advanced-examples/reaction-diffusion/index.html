@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reaction-Diffusion — Emergent</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+      min-height: 100vh;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 500;
+      color: #888;
+    }
+    .status {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #333;
+      transition: background 0.3s;
+    }
+    .status.connected { background: #22c55e; }
+    .status.disconnected { background: #ef4444; }
+    .stats {
+      font-size: 0.8rem;
+      color: #555;
+      font-variant-numeric: tabular-nums;
+    }
+    canvas {
+      border: 1px solid #222;
+      border-radius: 4px;
+    }
+    .info {
+      margin-top: 1rem;
+      font-size: 0.7rem;
+      color: #444;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span class="status" id="conn-status"></span> Reaction-Diffusion</h1>
+    <span class="stats" id="stats"></span>
+  </div>
+  <canvas id="grid"></canvas>
+  <div class="info">Gray-Scott model — Turing patterns from two diffusing chemicals</div>
+
+  <script>
+    const SSE_URL = "http://localhost:8085/events";
+
+    const canvas = document.getElementById("grid");
+    const ctx = canvas.getContext("2d");
+    const statsEl = document.getElementById("stats");
+
+    let rows = 100, cols = 140;
+    let imageData = null;
+
+    // Color palette: dark blue → cyan → white → warm yellow → deep orange
+    const palette = new Uint8Array(256 * 3);
+    (function buildPalette() {
+      const stops = [
+        [0,   [8,   8,   20]],
+        [40,  [10,  30,  80]],
+        [80,  [20,  80,  160]],
+        [120, [40,  180, 200]],
+        [160, [140, 220, 220]],
+        [200, [240, 230, 180]],
+        [230, [240, 160, 60]],
+        [255, [200, 60,  30]],
+      ];
+      for (let i = 0; i < 256; i++) {
+        let lo = stops[0], hi = stops[stops.length - 1];
+        for (let s = 0; s < stops.length - 1; s++) {
+          if (i >= stops[s][0] && i <= stops[s + 1][0]) {
+            lo = stops[s];
+            hi = stops[s + 1];
+            break;
+          }
+        }
+        const t = hi[0] === lo[0] ? 0 : (i - lo[0]) / (hi[0] - lo[0]);
+        palette[i * 3]     = Math.round(lo[1][0] + t * (hi[1][0] - lo[1][0]));
+        palette[i * 3 + 1] = Math.round(lo[1][1] + t * (hi[1][1] - lo[1][1]));
+        palette[i * 3 + 2] = Math.round(lo[1][2] + t * (hi[1][2] - lo[1][2]));
+      }
+    })();
+
+    function initCanvas(r, c) {
+      rows = r;
+      cols = c;
+      const scale = 5;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.style.width = (cols * scale) + "px";
+      canvas.style.height = (rows * scale) + "px";
+      canvas.width = cols * scale * dpr;
+      canvas.height = rows * scale * dpr;
+      ctx.scale(dpr, dpr);
+      ctx.imageSmoothingEnabled = false;
+
+      // Off-screen canvas at 1:1 for pixel-level rendering
+      imageData = ctx.createImageData(cols, rows);
+    }
+
+    function render(cells, generation) {
+      const data = imageData.data;
+      for (let i = 0; i < cells.length; i++) {
+        const v = cells[i];
+        const pi = v * 3;
+        const di = i * 4;
+        data[di]     = palette[pi];
+        data[di + 1] = palette[pi + 1];
+        data[di + 2] = palette[pi + 2];
+        data[di + 3] = 255;
+      }
+
+      // Draw 1:1 to a temp canvas, then scale up
+      const tmp = new OffscreenCanvas(cols, rows);
+      const tctx = tmp.getContext("2d");
+      tctx.putImageData(imageData, 0, 0);
+
+      const scale = 5;
+      ctx.drawImage(tmp, 0, 0, cols * scale, rows * scale);
+      statsEl.textContent = `Gen ${generation}`;
+    }
+
+    function connect() {
+      const status = document.getElementById("conn-status");
+      const source = new EventSource(SSE_URL);
+
+      source.onopen = () => {
+        status.className = "status connected";
+      };
+
+      source.onmessage = (e) => {
+        const event = JSON.parse(e.data);
+        const p = event.payload;
+        if (!p || p.metric !== "rd") return;
+
+        if (p.rows !== rows || p.cols !== cols) {
+          initCanvas(p.rows, p.cols);
+        }
+
+        render(p.cells, p.generation);
+      };
+
+      source.onerror = () => {
+        status.className = "status disconnected";
+        source.close();
+        setTimeout(connect, 3000);
+      };
+    }
+
+    initCanvas(rows, cols);
+    connect();
+  </script>
+</body>
+</html>

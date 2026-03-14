@@ -94,3 +94,52 @@ emergent --config /path/to/emergent/config/advanced-examples/game-of-life/emerge
 - **Emergent complexity**: Four simple rules, one handler, two sinks. Gliders navigate across the grid, oscillators pulse, and spaceships fly — all from a single seed event flowing through a pub-sub pipeline. The complex behavior emerges from the rules, not from the topology.
 - **Real-time streaming**: The SSE sink pushes every generation to the browser. The canvas renders incrementally (only changed cells), keeping frame rate smooth at 150ms intervals.
 - **Environment-driven configuration**: The `LIFE_PATTERN` variable selects the seed pattern without changing any config or code — the exec-source shell command reads it directly.
+
+## reaction-diffusion
+
+The Gray-Scott model: two chemicals diffuse and react on a grid, creating Turing patterns — the same math behind animal skin markings. A Rust script handler (using `cargo -Zscript`, no build step) computes the simulation with rayon parallelism across CPU cores, publishing each frame via SSE to a browser canvas with a heat-map palette.
+
+```
+exec-source (seed, one-shot) ──→ Rust handler (Gray-Scott + rayon) ──→ sse-sink (canvas)
+exec-source (clock, 30ms)    ──┘
+```
+
+### Prerequisites
+
+```bash
+emergent marketplace install exec-source sse-sink
+```
+
+Requires Rust nightly for `cargo -Zscript` (single-file scripts with inline dependencies).
+
+### Usage
+
+Run from the repo root:
+
+```bash
+emergent --config ./config/advanced-examples/reaction-diffusion/emergent.toml
+```
+
+Open http://localhost:8084 to watch patterns emerge. The simulation runs 16 substeps per frame at ~33fps.
+
+Switch presets with an environment variable:
+
+```bash
+RD_PRESET=maze emergent --config ./config/advanced-examples/reaction-diffusion/emergent.toml
+```
+
+Available presets: `mitosis`, `coral`, `maze`, `holes`, `waves`, `spots`, `worms`.
+
+To run from a different directory, set the dashboard path:
+
+```bash
+export EMERGENT_DASHBOARD_DIR=/path/to/emergent/config/advanced-examples/reaction-diffusion
+emergent --config /path/to/emergent/config/advanced-examples/reaction-diffusion/emergent.toml
+```
+
+### What this demonstrates
+
+- **Rust script handler**: A single `.rs` file with inline `Cargo.toml` dependencies, run via `cargo +nightly -Zscript`. No workspace entry, no build step, no Cargo.toml file — just a script next to the config. First run compiles and caches; subsequent runs start instantly.
+- **Parallel computation**: Rayon parallelizes the Gray-Scott simulation across CPU cores. Each row of the 100x140 grid is computed independently, enabling 16 substeps per 30ms frame (~530 simulation steps/sec).
+- **Multi-SDK showcase**: The three advanced examples use three different approaches — marketplace exec-handler (jq), Python SDK (`run_handler`), and Rust script. Same engine, same pub-sub protocol, best tool for each job.
+- **Emergent complexity**: Two chemicals, four parameters (diffusion rates, feed, kill). Spots, stripes, coral, and labyrinths self-organize from uniform initial conditions — the same instability mechanism Turing proposed for biological morphogenesis.
