@@ -30,19 +30,19 @@ api_port = 0
 [[sources]]
 name = "disk"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
-args = ["--shell", "sh", "--command", "df -h --output=target,pcent,avail / | tail -1 | awk '{print \"{\\\"metric\\\":\\\"disk\\\",\\\"mount\\\":\\\"\" $1 \"\\\",\\\"used_pct\\\":\\\"\" $2 \"\\\",\\\"avail\\\":\\\"\" $3 \"\\\"}\"}'", "--interval", "10000"]
+args = ["--shell", "sh", "--command", "df -h --output=target,pcent,avail / | tail -1 | awk '{print \"{\\\"metric\\\":\\\"disk\\\",\\\"mount\\\":\\\"\" $1 \"\\\",\\\"used_pct\\\":\\\"\" $2 \"\\\",\\\"avail\\\":\\\"\" $3 \"\\\"}\"}'", "--interval", "2000"]
 publishes = ["metric.disk"]
 
 [[sources]]
 name = "memory"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
-args = ["--shell", "sh", "--command", "free -m | awk '/Mem:/ {printf \"{\\\"metric\\\":\\\"memory\\\",\\\"total_mb\\\":%d,\\\"used_mb\\\":%d,\\\"free_mb\\\":%d,\\\"used_pct\\\":%.1f}\\n\", $2, $3, $4, $3/$2*100}'", "--interval", "5000"]
+args = ["--shell", "sh", "--command", "free -m | awk '/Mem:/ {printf \"{\\\"metric\\\":\\\"memory\\\",\\\"total_mb\\\":%d,\\\"used_mb\\\":%d,\\\"free_mb\\\":%d,\\\"used_pct\\\":%.1f}\\n\", $2, $3, $4, $3/$2*100}'", "--interval", "1000"]
 publishes = ["metric.memory"]
 
 [[sources]]
 name = "load"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
-args = ["--shell", "sh", "--command", "uptime | awk -F'load average: ' '{split($2,a,\", \"); printf \"{\\\"metric\\\":\\\"load\\\",\\\"load_1m\\\":%s,\\\"load_5m\\\":%s,\\\"load_15m\\\":%s}\\n\", a[1], a[2], a[3]}'", "--interval", "5000"]
+args = ["--shell", "sh", "--command", "uptime | awk -F'load average: ' '{split($2,a,\", \"); printf \"{\\\"metric\\\":\\\"load\\\",\\\"load_1m\\\":%s,\\\"load_5m\\\":%s,\\\"load_15m\\\":%s}\\n\", a[1], a[2], a[3]}'", "--interval", "1000"]
 publishes = ["metric.load"]
 
 # =============================================================================
