@@ -536,8 +536,7 @@ impl EmergentConfig {
         }
         if self.event_store.sqlite_path == Path::new(EVENT_STORE_SENTINEL_SQLITE) {
             if let Some(dir) = data_dir {
-                self.event_store.sqlite_path =
-                    dir.join(&self.engine.name).join("events.db");
+                self.event_store.sqlite_path = dir.join(&self.engine.name).join("events.db");
             } else {
                 self.event_store.sqlite_path = PathBuf::from("./events.db");
             }
