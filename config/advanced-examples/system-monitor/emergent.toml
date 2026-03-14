@@ -42,7 +42,7 @@ publishes = ["metric.memory"]
 [[sources]]
 name = "load"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
-args = ["--shell", "sh", "--command", "uptime | awk -F'load average:' '{print \"{\\\"metric\\\":\\\"load\\\",\\\"load_avg\\\":\" $2 \"}\"}' | jq -c '{metric: \"load\", load_1m: .load_avg[0], load_5m: .load_avg[1], load_15m: .load_avg[2]}'", "--interval", "5000"]
+args = ["--shell", "sh", "--command", "uptime | awk -F'load average: ' '{split($2,a,\", \"); printf \"{\\\"metric\\\":\\\"load\\\",\\\"load_1m\\\":%s,\\\"load_5m\\\":%s,\\\"load_15m\\\":%s}\\n\", a[1], a[2], a[3]}'", "--interval", "5000"]
 publishes = ["metric.load"]
 
 # =============================================================================
