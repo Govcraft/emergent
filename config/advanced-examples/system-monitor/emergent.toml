@@ -67,12 +67,12 @@ publishes = ["monitor.metric"]
 # Webserver lifecycle — source starts it, handler stops it
 # =============================================================================
 
-# Stop web server on shutdown (handlers drain before sinks)
+# Stop web server on shutdown request (fires before the drain sequence begins)
 [[handlers]]
 name = "webserver-stop"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "system.shutdown", "--", "sh", "-c", "kill $(cat /tmp/emergent-webserver.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/emergent-webserver.pid; jq -nc '{status: \"stopped\"}'"]
-subscribes = ["system.shutdown"]
+args = ["-s", "system.shutdown.requested", "--", "sh", "-c", "kill $(cat /tmp/emergent-webserver.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/emergent-webserver.pid; jq -nc '{status: \"stopped\"}'"]
+subscribes = ["system.shutdown.requested"]
 publishes = ["webserver.stopped"]
 
 # =============================================================================

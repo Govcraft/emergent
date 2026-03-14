@@ -277,7 +277,8 @@ The engine publishes lifecycle events:
 | `system.started.<name>` | Primitive connected |
 | `system.stopped.<name>` | Primitive disconnected |
 | `system.error.<name>` | Primitive failed |
-| `system.shutdown` | Graceful shutdown signal |
+| `system.shutdown.requested` | Shutdown requested — cleanup window before teardown |
+| `system.shutdown` | Graceful shutdown in progress (intercepted by SDK) |
 
 Subscribe to monitor:
 

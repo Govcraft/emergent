@@ -710,9 +710,23 @@ async fn main() -> Result<()> {
 
     info!("Shutdown signal received...");
 
+    // Broadcast system.shutdown.requested before teardown begins.
+    // This gives primitives a window to clean up (close connections,
+    // kill background processes, flush buffers) before the drain starts.
+    // Unlike system.shutdown, the SDK does NOT intercept this — it reaches
+    // user code like any normal message.
+    let broker = runtime.broker();
+    let requested_event = IpcSystemEvent {
+        inner: EmergentMessage::new("system.shutdown.requested")
+            .with_source("emergent-engine")
+            .with_payload(serde_json::json!({})),
+    };
+    broker.broadcast(requested_event).await;
+    info!("Broadcast system.shutdown.requested — waiting for cleanup...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
     // Graceful shutdown with coordinated drain protocol
     // Sources → Handlers → Sinks (each tier drains before the next)
-    let broker = runtime.broker();
     process_manager.graceful_shutdown(&broker).await;
 
     // Flush event stores
