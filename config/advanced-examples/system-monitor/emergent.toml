@@ -57,17 +57,28 @@ subscribes = ["metric.disk", "metric.memory", "metric.load"]
 publishes = ["monitor.metric"]
 
 # =============================================================================
-# Sinks — fan-out to multiple destinations
+# Handlers — webserver lifecycle (handlers drain before sinks on shutdown)
 # =============================================================================
 
-# Static file server for dashboard HTML — blocks on the server process.
-# When the engine shuts down, SIGTERM kills exec-sink and its child (the server).
-# Must start before dashboard so it catches system.started.dashboard.
-[[sinks]]
-name = "webserver"
-path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "system.started.dashboard", "--", "sh", "-c", "echo 'Dashboard: http://localhost:8080' >&2 && exec python3 -m http.server 8080 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/system-monitor}"]
+# Start web server when SSE dashboard is ready
+[[handlers]]
+name = "webserver-start"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "system.started.dashboard", "--", "sh", "-c", "python3 -m http.server 8080 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/system-monitor} & echo $! > /tmp/emergent-webserver.pid && echo 'Dashboard: http://localhost:8080' >&2 && jq -nc '{status: \"started\", pid: '\"$!\"'}'"]
 subscribes = ["system.started.dashboard"]
+publishes = ["webserver.started"]
+
+# Stop web server on shutdown (handlers drain before sinks, so this runs first)
+[[handlers]]
+name = "webserver-stop"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "system.shutdown", "--", "sh", "-c", "kill $(cat /tmp/emergent-webserver.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/emergent-webserver.pid; jq -nc '{status: \"stopped\"}'"]
+subscribes = ["system.shutdown"]
+publishes = ["webserver.stopped"]
+
+# =============================================================================
+# Sinks — fan-out to multiple destinations
+# =============================================================================
 
 # Live browser dashboard via SSE
 [[sinks]]
