@@ -20,16 +20,20 @@ emergent marketplace install exec-source exec-handler exec-sink sse-sink
 
 ### Usage
 
-```bash
-# Terminal 1: serve the dashboard
-cd config/advanced-examples/system-monitor
-python3 -m http.server 8080
+Run from the repo root:
 
-# Terminal 2: run the pipeline
+```bash
 emergent --config ./config/advanced-examples/system-monitor/emergent.toml
 ```
 
-Open http://localhost:8080/dashboard.html to see live metrics. The SSE sink pushes updates on port 8081.
+The pipeline auto-starts a web server on port 8080. Open http://localhost:8080/dashboard.html to see live metrics. The SSE sink pushes updates on port 8081.
+
+To run from a different directory, set the dashboard path:
+
+```bash
+export EMERGENT_DASHBOARD_DIR=/path/to/emergent/config/advanced-examples/system-monitor
+emergent --config /path/to/emergent/config/advanced-examples/system-monitor/emergent.toml
+```
 
 ### What this demonstrates
 
