@@ -139,6 +139,19 @@ async fn connect_to_engine(name: &str) -> Result<UnixStream> {
     })
 }
 
+/// Spawn a background task that reads and discards all incoming frames.
+///
+/// Prevents the OS socket buffer from filling when the server sends
+/// `MSG_TYPE_RESPONSE` back for each `MSG_TYPE_REQUEST` publish. Without this
+/// drain, the server's writer blocks, its read loop stalls, and the client's
+/// `write_frame` blocks indefinitely after ~100 seconds of 1-second publishing.
+fn spawn_drain_task(mut reader: OwnedReadHalf, name: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while read_frame(&mut reader, MAX_FRAME_SIZE).await.is_ok() {}
+        debug!(primitive.name = %name, "response drain stopped");
+    })
+}
+
 /// Send a discover request and get available message types.
 async fn discover_impl(
     reader: &mut OwnedReadHalf,
@@ -483,8 +496,8 @@ pub struct EmergentSource {
     name: String,
     /// Writer half of the socket connection.
     writer: Arc<Mutex<OwnedWriteHalf>>,
-    /// Reader half (kept for discovery, but generally unused).
-    reader: Arc<Mutex<OwnedReadHalf>>,
+    /// Handle to abort the background response-drain task on shutdown.
+    drain_abort: tokio::task::AbortHandle,
 }
 
 impl EmergentSource {
@@ -499,12 +512,14 @@ impl EmergentSource {
         let stream = connect_to_engine(name).await?;
         let (reader, writer) = stream.into_split();
 
+        let drain_handle = spawn_drain_task(reader, name.to_string());
+
         info!(primitive.name = %name, primitive.kind = "source", "connected to engine");
 
         Ok(Self {
             name: name.to_string(),
             writer: Arc::new(Mutex::new(writer)),
-            reader: Arc::new(Mutex::new(reader)),
+            drain_abort: drain_handle.abort_handle(),
         })
     }
 
@@ -538,8 +553,8 @@ impl EmergentSource {
     ///
     /// Returns an error if the discovery request fails.
     pub async fn discover(&self) -> Result<DiscoveryInfo> {
-        let mut reader = self.reader.lock().await;
-        let mut writer = self.writer.lock().await;
+        let stream = connect_to_engine(&self.name).await?;
+        let (mut reader, mut writer) = stream.into_split();
         discover_impl(&mut reader, &mut writer).await
     }
 
@@ -560,40 +575,36 @@ impl EmergentSource {
     pub async fn disconnect(&self) -> Result<()> {
         info!(primitive.name = %self.name, "disconnecting from engine");
 
-        // Send unsubscribe-all as a "goodbye" signal on the original connection.
-        // We use the original connection (not a new one) so the server knows
-        // THIS specific connection is closing.
-        let mut reader = self.reader.lock().await;
         let mut writer = self.writer.lock().await;
 
+        // Send unsubscribe-all as a "goodbye" signal (fire-and-forget).
+        // The drain task consumes any response.
         let request = IpcUnsubscribeRequest::unsubscribe_all();
         let payload = rmp_serde::to_vec_named(&request)?;
-
-        // Send the unsubscribe request
-        if write_frame(
+        let _ = write_frame(
             &mut *writer,
             MSG_TYPE_UNSUBSCRIBE,
             Format::MessagePack,
             &payload,
         )
-        .await
-        .is_err()
-        {
-            // Connection already closed, that's fine for disconnect
-            return Ok(());
-        }
+        .await;
 
-        // Wait for response with a short timeout to let the server finish processing.
-        let short_timeout = Duration::from_secs(1);
-        let _ = timeout(short_timeout, read_frame(&mut *reader, MAX_FRAME_SIZE)).await;
-
-        // Explicitly shutdown the writer for clean socket close
+        // Shutdown writer — causes the drain task to see EOF and exit
         use tokio::io::AsyncWriteExt;
         let _ = writer.shutdown().await;
+
+        // Stop the drain task
+        self.drain_abort.abort();
 
         info!(primitive.name = %self.name, "disconnected from engine");
 
         Ok(())
+    }
+}
+
+impl Drop for EmergentSource {
+    fn drop(&mut self) {
+        self.drain_abort.abort();
     }
 }
 
@@ -634,6 +645,8 @@ pub struct EmergentHandler {
     writer: Arc<Mutex<OwnedWriteHalf>>,
     /// Currently subscribed message types.
     subscribed_types: Arc<Mutex<Vec<String>>>,
+    /// Handle to abort the background response-drain task on shutdown.
+    drain_abort: tokio::task::AbortHandle,
 }
 
 impl EmergentHandler {
@@ -644,7 +657,9 @@ impl EmergentHandler {
     /// Returns an error if the connection fails.
     pub async fn connect(name: &str) -> Result<Self> {
         let stream = connect_to_engine(name).await?;
-        let (_reader, writer) = stream.into_split();
+        let (reader, writer) = stream.into_split();
+
+        let drain_handle = spawn_drain_task(reader, name.to_string());
 
         info!(primitive.name = %name, primitive.kind = "handler", "connected to engine");
 
@@ -652,6 +667,7 @@ impl EmergentHandler {
             name: name.to_string(),
             writer: Arc::new(Mutex::new(writer)),
             subscribed_types: Arc::new(Mutex::new(Vec::new())),
+            drain_abort: drain_handle.abort_handle(),
         })
     }
 
@@ -907,10 +923,17 @@ impl EmergentHandler {
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
         info!(primitive.name = %self.name, "disconnecting from engine");
+        self.drain_abort.abort();
         // Unsubscribe from all message types
         self.unsubscribe(&[]).await?;
         info!(primitive.name = %self.name, "disconnected from engine");
         Ok(())
+    }
+}
+
+impl Drop for EmergentHandler {
+    fn drop(&mut self) {
+        self.drain_abort.abort();
     }
 }
 
