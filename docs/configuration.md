@@ -256,6 +256,18 @@ path = "uv"
 args = ["run", "--project", "/home/user/my-project", "python", "/home/user/my-project/webhook.py"]
 ```
 
+## Startup Order
+
+The engine starts primitives in this order:
+
+1. **Sinks** — started first so they are ready to receive messages
+2. **Handlers** — started next so they can process messages
+3. **Sources** — started last so they produce messages only when the pipeline is ready
+
+Within each tier, primitives start in the order they appear in the configuration file. This ordering matters when one primitive depends on another's `system.started.*` event — the subscriber must appear before the publisher in the config.
+
+At shutdown, the order reverses: Sources stop first (no new messages), then Handlers drain, then Sinks consume remaining messages.
+
 ## System Events
 
 The engine publishes lifecycle events:
