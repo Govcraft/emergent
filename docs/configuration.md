@@ -202,6 +202,8 @@ The engine sets these environment variables for each primitive:
 | `EMERGENT_SOCKET` | Path to Unix socket for IPC |
 | `EMERGENT_NAME` | Primitive's configured name |
 | `EMERGENT_API_PORT` | HTTP API port for topology queries |
+| `EMERGENT_PUBLISHES` | Comma-separated list of publish message types from config |
+| `EMERGENT_SUBSCRIBES` | Comma-separated list of subscribe message types from config |
 
 Primitives use these to connect:
 
@@ -285,6 +287,66 @@ enabled = false  # Temporarily disabled
 subscribes = ["event.raw"]
 publishes = ["event.enriched"]
 ```
+
+## Secrets
+
+Never hardcode tokens, keys, or credentials in TOML configuration files. The engine forwards the parent process's full environment to all child primitives, so shell variable expansion works inside `sh -c` commands:
+
+```toml
+[[sources]]
+name = "slack-connect"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = [
+    "--shell", "sh",
+    "--command", "curl -s -X POST https://slack.com/api/apps.connections.open -H \"Authorization: Bearer $SLACK_APP_TOKEN\" | jq -c '{url: .url}'"
+]
+publishes = ["exec.output"]
+```
+
+Set secrets before starting the engine:
+
+```bash
+# Option 1: export directly
+export SLACK_APP_TOKEN="xapp-..."
+export SLACK_BOT_TOKEN="xoxb-..."
+emergent --config ./emergent.toml
+
+# Option 2: source a .env file (add .env to .gitignore)
+source .env
+emergent --config ./emergent.toml
+```
+
+### Production: systemd credentials
+
+For unattended services on Linux, use `systemd-creds` to encrypt secrets to the machine's TPM or host key. Decrypted values are mounted at runtime and scoped to the service:
+
+```ini
+# /etc/systemd/system/emergent.service
+[Service]
+ExecStart=/usr/local/bin/emergent --config /etc/emergent/pipeline.toml
+LoadCredentialEncrypted=SLACK_BOT_TOKEN:/etc/emergent/secrets/slack-bot-token.cred
+LoadCredentialEncrypted=SLACK_APP_TOKEN:/etc/emergent/secrets/slack-app-token.cred
+```
+
+Primitives read the decrypted values from files at runtime:
+
+```toml
+args = ["--", "sh", "-c", "... -H \"Authorization: Bearer $(cat /run/credentials/emergent.service/SLACK_BOT_TOKEN)\" ..."]
+```
+
+### Production: macOS Keychain
+
+On macOS, store secrets in Keychain and retrieve them in shell commands:
+
+```toml
+args = ["--shell", "sh", "--command", "curl -s ... -H \"Authorization: Bearer $(security find-generic-password -s SLACK_BOT_TOKEN -w)\" ..."]
+```
+
+### Security considerations
+
+- **Process environment**: Other users on a shared system can read process environment variables via `/proc/<pid>/environ`. On single-user machines this is not a concern.
+- **Child inheritance**: All primitives in the pipeline inherit the engine's full environment. A compromised primitive could read any secret in the environment.
+- **Shell history**: Use `source .env` rather than inline `export` to keep secrets out of shell history.
 
 ## Validation
 

@@ -14,6 +14,24 @@
 #   source .env
 #   emergent --config ./config/examples/slack-bot.toml
 #
+# Secrets:
+#   Never hardcode tokens in this file. Use environment variables:
+#
+#   Option 1: export directly
+#     export SLACK_APP_TOKEN="xapp-..."
+#     export SLACK_BOT_TOKEN="xoxb-..."
+#
+#   Option 2: source a .env file (add .env to .gitignore)
+#     source .env
+#
+#   Production (Linux): use systemd-creds to encrypt secrets to the
+#   machine's TPM, then read via $(cat /run/credentials/...) in args.
+#
+#   Production (macOS): use Keychain via
+#     $(security find-generic-password -s SLACK_BOT_TOKEN -w)
+#
+#   See docs/configuration.md for full details.
+#
 # Slack App Setup:
 #   1. Create app at https://api.slack.com/apps
 #   2. Enable Socket Mode → create App-Level Token with connections:write
