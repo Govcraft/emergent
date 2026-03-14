@@ -24,6 +24,9 @@ See the full SDK README for API reference, examples, and error handling:
 
 ## See Also
 
+- [Rust SDK](rust.md) - crates.io: [emergent-client](https://crates.io/crates/emergent-client)
+- [Python SDK](python.md) - PyPI: [emergent-client](https://pypi.org/project/emergent-client/)
+- [Go SDK](go.md) - `go get github.com/govcraft/emergent/sdks/go`
 - [Sources](../primitives/sources.md) - Building data ingress
 - [Handlers](../primitives/handlers.md) - Building transformations
 - [Sinks](../primitives/sinks.md) - Building data egress

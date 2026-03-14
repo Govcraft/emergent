@@ -111,6 +111,11 @@ uv add emergent-client
 cargo add emergent-client tokio serde_json --features tokio/full
 ```
 
+**Go**:
+```bash
+go get github.com/govcraft/emergent/sdks/go
+```
+
 You only need the engine binary and one SDK to start building custom primitives. The SDK handles IPC communication with the engine automatically.
 
 ---
@@ -328,7 +333,7 @@ A Sink runs an async loop that receives messages and produces side effects (writ
 └─────────────────────────┘
 ```
 
-**These patterns are identical across Rust, TypeScript, and Python. Once you learn the pattern in one language, you know it in all three.**
+**These patterns are identical across Rust, TypeScript, Python, and Go. Once you learn the pattern in one language, you know it in all four.**
 
 ---
 
@@ -345,7 +350,7 @@ emergent scaffold
 ```
 
 The wizard prompts for:
-1. **Language** - Rust, TypeScript, or Python
+1. **Language** - Rust, TypeScript, Python, or Go
 2. **Primitive type** - Source, Handler, or Sink
 3. **Name** - Your primitive's name (snake_case)
 4. **Message types** - What to subscribe to and/or publish
@@ -414,7 +419,7 @@ run_handler(
 
 ## 7. Polyglot Workflows
 
-You can mix languages in a single workflow. The SDKs for Rust, TypeScript, and Python expose identical helper APIs.
+You can mix languages in a single workflow. The SDKs for Rust, TypeScript, Python, and Go expose identical helper APIs.
 
 ### TypeScript Sink Example
 
@@ -526,16 +531,17 @@ Now your pipeline mixes Rust (timer), Python (enricher, webhook), and TypeScript
 | Performance-critical handlers | Rust | Compile-time safety, zero-cost abstractions |
 | Data transformation | Python | Pandas, NumPy ecosystem |
 | Web integrations | TypeScript | Native HTTP, JSON handling |
+| Systems & infrastructure | Go | Concurrency, static binaries, fast compilation |
 | Quick prototypes | Python/TypeScript | Faster iteration cycles |
-| Production Sources | Rust | Reliability, resource efficiency |
+| Production Sources | Rust/Go | Reliability, resource efficiency |
 
-**Language choice becomes a per-component decision. Use Python for data science, TypeScript for web integrations, Rust for performance-critical transformations.**
+**Language choice becomes a per-component decision. Use Python for data science, TypeScript for web integrations, Go for infrastructure tooling, Rust for performance-critical transformations.**
 
 ---
 
 ## 8. Write Your First Source (Rust Deep Dive)
 
-The marketplace and scaffold get you started fast, but sometimes you need full control. This section walks through building primitives from scratch in Rust. TypeScript and Python users: the patterns are identical—see Section 7 for examples in those languages, or use `emergent scaffold` to generate a project in your language.
+The marketplace and scaffold get you started fast, but sometimes you need full control. This section walks through building primitives from scratch in Rust. TypeScript, Python, and Go users: the patterns are identical—see Section 7 for examples in those languages, or use `emergent scaffold` to generate a project in your language.
 
 Create a new Rust project for a simple Source that says "hello":
 
@@ -999,7 +1005,7 @@ Four key takeaways:
 1. **Start with marketplace primitives**: Pre-built Sources, Handlers, and Sinks let you build working pipelines with no code at all.
 2. **Constraints enable reasoning**: Sources publish, Handlers transform, Sinks consume. Every component fits one pattern.
 3. **Helpers eliminate boilerplate**: `run_source`, `run_handler`, and `run_sink` handle connection, signals, and cleanup—you write only the business logic.
-4. **Polyglot is practical**: Mix languages based on component requirements. The helper APIs are consistent across Rust, TypeScript, and Python.
+4. **Polyglot is practical**: Mix languages based on component requirements. The helper APIs are consistent across Rust, TypeScript, Python, and Go.
 
 Start building workflows by checking `emergent marketplace list` for existing primitives. When you need custom logic, identify your Sources (where does data come from?), Handlers (what transformations are needed?), and Sinks (where does data go?). Use `emergent scaffold` to generate a project in your language of choice, test it in isolation, then compose components in the configuration file.
 

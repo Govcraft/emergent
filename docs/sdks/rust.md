@@ -343,6 +343,7 @@ let from_msgpack = EmergentMessage::from_msgpack(&msgpack_bytes)?;
 
 - [TypeScript SDK](typescript.md) - JSR: [@govcraft/emergent](https://jsr.io/@govcraft/emergent)
 - [Python SDK](python.md) - PyPI: [emergent-client](https://pypi.org/project/emergent-client/)
+- [Go SDK](go.md) - `go get github.com/govcraft/emergent/sdks/go`
 - [Sources](../primitives/sources.md) - Building data ingress
 - [Handlers](../primitives/handlers.md) - Building transformations
 - [Sinks](../primitives/sinks.md) - Building data egress
