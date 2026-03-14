@@ -96,5 +96,5 @@ subscribes = ["monitor.metric"]
 [[sinks]]
 name = "console"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "monitor.metric", "--", "jq", "-c", "[.metric, if .metric == \"disk\" then .used_pct elif .metric == \"memory\" then \"\\(.used_pct)%\" elif .metric == \"load\" then \"\\(.load_1m)\" else \"\" end] | join(\": \")"]
+args = ["-s", "monitor.metric", "--", "jq", "-ce", "select(.metric != \"cpu\") | [.metric, if .metric == \"disk\" then .used_pct elif .metric == \"memory\" then \"\\(.used_pct)%\" elif .metric == \"load\" then \"\\(.load_1m)\" else empty end] | join(\": \")"]
 subscribes = ["monitor.metric"]
