@@ -1,0 +1,87 @@
+# Game of Life — emergent behavior from simple rules
+#
+# A one-shot seed source initializes the grid, a timer ticks generations,
+# and a stateful Python handler evolves the world. Two sinks render output:
+# a browser canvas via SSE and ASCII art on the console.
+#
+# Prerequisites:
+#   emergent marketplace install exec-source exec-sink sse-sink
+#
+# Usage:
+#   emergent --config ./config/advanced-examples/game-of-life/emergent.toml
+#   # Open http://localhost:8080 for the browser visualization
+#
+# Change pattern: set LIFE_PATTERN to one of:
+#   glider, blinker, pulsar, r-pentomino, acorn, gosper-gun
+#
+#   LIFE_PATTERN=gosper-gun emergent --config ./config/advanced-examples/game-of-life/emergent.toml
+
+[engine]
+name = "game-of-life"
+socket_path = "auto"
+api_port = 0
+
+# =============================================================================
+# Sources
+# =============================================================================
+
+# Static file server for dashboard
+[[sources]]
+name = "webserver"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "python3 -m http.server 8082 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/game-of-life} & echo $! > /tmp/emergent-life-webserver.pid && echo 'Dashboard: http://localhost:8080' >&2 && echo '{\"status\":\"started\"}'"]
+publishes = ["webserver.started"]
+
+# Seed the world (one-shot, runs once then exits)
+[[sources]]
+name = "seed"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "echo '{\"pattern\":\"'${LIFE_PATTERN:-r-pentomino}'\"}'"]
+publishes = ["life.seed"]
+
+# Generation clock
+[[sources]]
+name = "clock"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "echo '{\"tick\":true}'", "--interval", "150"]
+publishes = ["life.tick"]
+
+# =============================================================================
+# Handler — stateful Game of Life world
+# =============================================================================
+
+[[handlers]]
+name = "world"
+path = "uv"
+args = ["run", "--with", "emergent-client", "config/advanced-examples/game-of-life/world.py"]
+subscribes = ["life.seed", "life.tick"]
+publishes = ["life.frame"]
+
+# =============================================================================
+# Webserver lifecycle
+# =============================================================================
+
+[[handlers]]
+name = "webserver-stop"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "system.shutdown.requested", "--", "sh", "-c", "kill $(cat /tmp/emergent-life-webserver.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/emergent-life-webserver.pid; jq -nc '{status: \"stopped\"}'"]
+subscribes = ["system.shutdown.requested"]
+publishes = ["webserver.stopped"]
+
+# =============================================================================
+# Sinks
+# =============================================================================
+
+# Browser canvas via SSE
+[[sinks]]
+name = "dashboard"
+path = "~/.local/share/emergent/primitives/bin/sse-sink"
+args = ["--port", "8083"]
+subscribes = ["life.frame"]
+
+# ASCII console output
+[[sinks]]
+name = "console"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "life.frame", "--", "jq", "-r", "\"Gen \\(.generation) | Pop \\(.population)\""]
+subscribes = ["life.frame"]

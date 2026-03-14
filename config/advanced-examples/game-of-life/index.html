@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Game of Life — Emergent</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+      min-height: 100vh;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 500;
+      color: #888;
+    }
+    .status {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #333;
+      transition: background 0.3s;
+    }
+    .status.connected { background: #22c55e; }
+    .status.disconnected { background: #ef4444; }
+    .stats {
+      font-size: 0.8rem;
+      color: #555;
+      font-variant-numeric: tabular-nums;
+    }
+    canvas {
+      border: 1px solid #222;
+      border-radius: 4px;
+      image-rendering: pixelated;
+    }
+    .info {
+      margin-top: 1rem;
+      font-size: 0.7rem;
+      color: #444;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span class="status" id="conn-status"></span> Game of Life</h1>
+    <span class="stats" id="stats"></span>
+  </div>
+  <canvas id="grid"></canvas>
+  <div class="info">Powered by Emergent — emergent behavior from simple pub-sub rules</div>
+
+  <script>
+    const SSE_URL = "http://localhost:8083/events";
+    const CELL_SIZE = 12;
+    const GAP = 1;
+
+    const canvas = document.getElementById("grid");
+    const ctx = canvas.getContext("2d");
+    const statsEl = document.getElementById("stats");
+
+    let rows = 40, cols = 80;
+    let prevCells = new Set();
+
+    function initCanvas(r, c) {
+      rows = r;
+      cols = c;
+      const dpr = window.devicePixelRatio || 1;
+      const w = cols * (CELL_SIZE + GAP) + GAP;
+      const h = rows * (CELL_SIZE + GAP) + GAP;
+      canvas.style.width = w + "px";
+      canvas.style.height = h + "px";
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      ctx.scale(dpr, dpr);
+      ctx.fillStyle = "#0a0a0a";
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    function render(cells, generation, population) {
+      const cellSet = new Set(cells);
+
+      // Only redraw changed cells
+      const toDraw = new Set([...cellSet].filter(c => !prevCells.has(c)));
+      const toClear = new Set([...prevCells].filter(c => !cellSet.has(c)));
+
+      for (const idx of toClear) {
+        const r = Math.floor(idx / cols);
+        const c = idx % cols;
+        const x = c * (CELL_SIZE + GAP) + GAP;
+        const y = r * (CELL_SIZE + GAP) + GAP;
+        ctx.fillStyle = "#141414";
+        ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
+      }
+
+      for (const idx of toDraw) {
+        const r = Math.floor(idx / cols);
+        const c = idx % cols;
+        const x = c * (CELL_SIZE + GAP) + GAP;
+        const y = r * (CELL_SIZE + GAP) + GAP;
+
+        // Color based on density — more neighbors = brighter
+        ctx.fillStyle = "#22c55e";
+        ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
+      }
+
+      prevCells = cellSet;
+      statsEl.textContent = `Gen ${generation} | Pop ${population}`;
+    }
+
+    function connect() {
+      const status = document.getElementById("conn-status");
+      const source = new EventSource(SSE_URL);
+
+      source.onopen = () => {
+        status.className = "status connected";
+      };
+
+      source.onmessage = (e) => {
+        const event = JSON.parse(e.data);
+        const p = event.payload;
+        if (!p || p.metric !== "life") return;
+
+        if (p.rows !== rows || p.cols !== cols) {
+          initCanvas(p.rows, p.cols);
+        }
+
+        render(p.cells, p.generation, p.population);
+      };
+
+      source.onerror = () => {
+        status.className = "status disconnected";
+        source.close();
+        setTimeout(connect, 3000);
+      };
+    }
+
+    initCanvas(rows, cols);
+    connect();
+  </script>
+</body>
+</html>
