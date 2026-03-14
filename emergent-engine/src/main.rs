@@ -722,8 +722,7 @@ async fn main() -> Result<()> {
             .with_payload(serde_json::json!({})),
     };
     broker.broadcast(requested_event).await;
-    info!("Broadcast system.shutdown.requested — waiting for cleanup...");
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    info!("Broadcast system.shutdown.requested");
 
     // Graceful shutdown with coordinated drain protocol
     // Sources → Handlers → Sinks (each tier drains before the next)
