@@ -197,9 +197,48 @@ The built-in topology viewer shows your running pipeline — nodes, subscription
 emergent marketplace install topology-viewer
 ```
 
+## Examples
+
+### Zero-Code Pipelines
+
+Complete workflows built entirely from marketplace primitives and TOML configuration — no application code required.
+
+| Example | Description |
+|---------|-------------|
+| [basic-pipeline](config/examples/basic-pipeline.toml) | Run `date` every 3s, pipe through `jq`, pretty-print with live topology viewer |
+| [ouroboros-loop](config/examples/ouroboros-loop.toml) | Self-seeding infinite loop — subscribes to its own startup event to bootstrap, then circulates forever with an incrementing counter |
+| [websocket-echo](config/examples/websocket-echo.toml) | Connect to a WebSocket echo server, send a message, print the round-trip response |
+| [slack-bot](config/examples/slack-bot.toml) | Claude-powered Slack chatbot via Socket Mode — receives messages over WebSocket, sends to Claude, posts responses back to the channel |
+
+```bash
+# Install prerequisites and run any example
+emergent marketplace install exec-source exec-handler exec-sink
+emergent --config ./config/examples/basic-pipeline.toml
+```
+
+### Advanced Examples
+
+Pipelines demonstrating fan-in, fan-out, stateful transformation, and real-time browser visualization.
+
+| Example | Description |
+|---------|-------------|
+| [system-monitor](config/advanced-examples/system-monitor/) | Six metric sources (CPU, memory, load, disk, I/O, network) converge on a stateful Python handler, fan out to an SSE dashboard and console |
+| [game-of-life](config/advanced-examples/game-of-life/) | Conway's Game of Life as a pub-sub pipeline — gliders, oscillators, and spaceships emerge from four rules applied to a message stream |
+| [reaction-diffusion](config/advanced-examples/reaction-diffusion/) | Gray-Scott Turing patterns computed by a Rust script handler with rayon parallelism, streamed to a browser canvas via SSE |
+
+```bash
+# Install prerequisites and run
+emergent marketplace install exec-source exec-sink sse-sink
+emergent --config ./config/advanced-examples/game-of-life/emergent.toml
+# Open http://localhost:8082 to watch
+```
+
+See the [Examples Guide](docs/examples.md) for full setup instructions and explanations of the patterns each example demonstrates.
+
 ## Documentation
 
 - **[Getting Started](docs/getting-started.md)** - Build your first pipeline
+- **[Examples](docs/examples.md)** - Zero-code pipelines and advanced patterns
 - **[Concepts](docs/concepts.md)** - Architecture, message flow, event sourcing
 - **[Primitives](docs/primitives/)** - Reference for Sources, Handlers, Sinks
 - **[Configuration](docs/configuration.md)** - All configuration options

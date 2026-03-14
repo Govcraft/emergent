@@ -1009,4 +1009,6 @@ Four key takeaways:
 
 Start building workflows by checking `emergent marketplace list` for existing primitives. When you need custom logic, identify your Sources (where does data come from?), Handlers (what transformations are needed?), and Sinks (where does data go?). Use `emergent scaffold` to generate a project in your language of choice, test it in isolation, then compose components in the configuration file.
 
+**Want to see these patterns in action?** The [Examples Guide](examples.md) has complete pipelines you can run immediately — from a basic three-stage pipeline to a Claude-powered Slack chatbot, Conway's Game of Life as a pub-sub stream, and Turing pattern simulations with parallel Rust computation.
+
 **The patterns you learned are production-ready.** Deploy by pointing the engine at your configuration and starting the binary.
