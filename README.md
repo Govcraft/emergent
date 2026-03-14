@@ -52,6 +52,7 @@ The [marketplace](https://github.com/Govcraft/emergent-primitives) ships pre-bui
 | `exec-handler` | Handler | Pipe event payloads through any executable and publish results |
 | `websocket-handler` | Handler | Bidirectional WebSocket bridge for real-time connections |
 | `exec-sink` | Sink | Pipe event payloads through any executable (fire-and-forget) |
+| `sse-sink` | Sink | Push pipeline events to browsers via Server-Sent Events |
 | `topology-viewer` | Sink | Real-time D3.js workflow visualization |
 
 ```bash
