@@ -8,6 +8,12 @@ The `emergent` package provides the Go SDK for building Sources, Handlers, and S
 go get github.com/govcraft/emergent/sdks/go
 ```
 
+## Documentation
+
+See the full SDK README for API reference, examples, and error handling:
+
+- [Go SDK README](../../sdks/go/README.md)
+
 ## Core Types
 
 ### EmergentMessage
