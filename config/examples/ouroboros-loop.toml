@@ -20,12 +20,12 @@ path = "~/.local/share/emergent/primitives/bin/http-source"
 args = ["--port", "8088"]
 publishes = ["http.request"]
 
-# Seed the loop once (sleep 2 to let http-source bind first)
-[[sources]]
+# Seed the loop when http-source is ready (triggered by system.started.webhook)
+[[sinks]]
 name = "seed"
-path = "~/.local/share/emergent/primitives/bin/exec-source"
-args = ["--shell", "sh", "--command", "sleep 2 && curl -s -X POST -H 'Content-Type: application/json' -d '{\"count\": 0, \"message\": \"hello ouroboros\"}' http://localhost:8088"]
-publishes = ["exec.output"]
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "system.started.webhook", "--", "sh", "-c", "curl -s -X POST -H 'Content-Type: application/json' -d '{\"count\": 0, \"message\": \"hello ouroboros\"}' http://localhost:8088"]
+subscribes = ["system.started.webhook"]
 
 [[handlers]]
 name = "enrich"
