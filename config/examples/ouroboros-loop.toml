@@ -4,7 +4,7 @@
 # loop, then the message circulates forever with an incrementing counter.
 #
 # Prerequisites:
-#   emergent marketplace install http-source exec-source exec-handler exec-sink
+#   emergent marketplace install http-source exec-handler exec-sink
 #
 # Usage:
 #   emergent --config ./config/examples/ouroboros-loop.toml
@@ -20,13 +20,6 @@ path = "~/.local/share/emergent/primitives/bin/http-source"
 args = ["--port", "8088"]
 publishes = ["http.request"]
 
-# Seed the loop when http-source is ready (triggered by system.started.webhook)
-[[sinks]]
-name = "seed"
-path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "system.started.webhook", "--", "sh", "-c", "curl -s -X POST -H 'Content-Type: application/json' -d '{\"count\": 0, \"message\": \"hello ouroboros\"}' http://localhost:8088"]
-subscribes = ["system.started.webhook"]
-
 [[handlers]]
 name = "enrich"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
@@ -40,8 +33,10 @@ path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "loop.iteration", "--", "jq", "."]
 subscribes = ["loop.iteration"]
 
+# Loopback: curls back to the webhook on each iteration AND on startup
+# system.started.webhook seeds the loop, loop.iteration keeps it going
 [[sinks]]
 name = "loopback"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "loop.iteration", "--", "sh", "-c", "sleep 1 && jq -r .body | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:8088"]
-subscribes = ["loop.iteration"]
+args = ["-s", "loop.iteration", "-s", "system.started.webhook", "--", "sh", "-c", "body=$(jq -r '.body // empty') && payload=${body:-'{\"count\":0,\"message\":\"hello ouroboros\"}'} && sleep 1 && echo $payload | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:8088"]
+subscribes = ["loop.iteration", "system.started.webhook"]
