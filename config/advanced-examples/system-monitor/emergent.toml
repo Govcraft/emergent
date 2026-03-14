@@ -27,6 +27,13 @@ api_port = 0
 # Sources — three independent metric collectors (fan-in)
 # =============================================================================
 
+# Static file server for dashboard (sources start last, after sinks + handlers)
+[[sources]]
+name = "webserver"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "python3 -m http.server 8080 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/system-monitor} & echo $! > /tmp/emergent-webserver.pid && echo 'Dashboard: http://localhost:8080' >&2 && echo '{\"status\":\"started\",\"pid\":'$!'}'"]
+publishes = ["webserver.started"]
+
 [[sources]]
 name = "disk"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
@@ -57,18 +64,10 @@ subscribes = ["metric.disk", "metric.memory", "metric.load"]
 publishes = ["monitor.metric"]
 
 # =============================================================================
-# Handlers — webserver lifecycle (handlers drain before sinks on shutdown)
+# Webserver lifecycle — source starts it, handler stops it
 # =============================================================================
 
-# Start web server when SSE dashboard is ready
-[[handlers]]
-name = "webserver-start"
-path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "system.started.dashboard", "--", "sh", "-c", "python3 -m http.server 8080 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/system-monitor} & echo $! > /tmp/emergent-webserver.pid && echo 'Dashboard: http://localhost:8080' >&2 && jq -nc '{status: \"started\", pid: '\"$!\"'}'"]
-subscribes = ["system.started.dashboard"]
-publishes = ["webserver.started"]
-
-# Stop web server on shutdown (handlers drain before sinks, so this runs first)
+# Stop web server on shutdown (handlers drain before sinks)
 [[handlers]]
 name = "webserver-stop"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
