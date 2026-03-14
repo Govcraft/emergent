@@ -6,13 +6,18 @@ Any command-line tool -- an LLM, a classical ML model, a curl call to an API, a 
 
 ## What Makes This Different
 
-| | LangChain / CrewAI | Bash scripts | Emergent |
-|---|---|---|---|
-| Add a new model | Learn framework abstractions | Edit fragile glue code | Add 5 lines of TOML |
-| Process crashes | Takes down the chain | Silent failure, zombie processes | Isolated -- rest of pipeline stays alive |
-| Swap LLM provider | Rewrite integration layer | Change one command | Change one `args` line |
-| Graceful shutdown | Framework-dependent | `kill -9` and hope | Three-phase drain, zero message loss |
-| Language lock-in | Python only | Bash only | Any language, any tool |
+| | LangChain / CrewAI | N8N / Make.com / Zapier | Bash scripts | Emergent |
+|---|---|---|---|---|
+| Add a new tool | Learn framework abstractions | Wait for a connector or write a custom node | Edit fragile glue code | If it has a CLI, it already works |
+| Add a new model | Write an integration class | Use their AI node (limited models) | Change one command | Change one `args` line |
+| Process crashes | Takes down the chain | Node fails, workflow retries from scratch | Silent failure, zombie processes | Isolated -- rest of pipeline stays alive |
+| Graceful shutdown | Framework-dependent | Platform-managed (no control) | `kill -9` and hope | Three-phase drain, zero message loss |
+| Language lock-in | Python only | JavaScript snippets (N8N) or none (Zapier/Make) | Bash only | Any language, any tool |
+| Persistent connections | Custom async code | Not supported (trigger-and-run) | Manual backgrounding | WebSocket handler as a marketplace primitive |
+| Feedback loops | Impossible (DAG) | Impossible (DAG) | Fragile (named pipes) | Native pub-sub routing |
+| Version control | Python files in git | JSON blobs in a database | Shell scripts in git | TOML in git -- `git diff` shows topology changes |
+| Infrastructure | Python runtime | Docker + PostgreSQL (N8N) or SaaS-only (Make/Zapier) | None, but no lifecycle | Single binary, no dependencies |
+| Cost model | Free / API costs | Per-execution pricing or seat licenses | Free | Free |
 
 ## Patterns Other Frameworks Can't Express
 
@@ -20,7 +25,7 @@ Most workflow tools are DAG-based: directed acyclic graphs where data flows one 
 
 ### Feedback Loops
 
-The [ouroboros example](config/examples/ouroboros-loop.toml) subscribes to its own output and feeds it back to the input — an infinite loop with an incrementing counter. DAG-based systems (Airflow, Step Functions, LangChain chains) forbid cycles by definition. Emergent's pub-sub routing has no such restriction: any primitive can subscribe to any message type, including those produced downstream.
+The [ouroboros example](config/examples/ouroboros-loop.toml) subscribes to its own output and feeds it back to the input — an infinite loop with an incrementing counter. DAG-based systems (Airflow, Step Functions, LangChain chains, N8N, Make.com, Zapier) forbid cycles by definition. Emergent's pub-sub routing has no such restriction: any primitive can subscribe to any message type, including those produced downstream.
 
 ```
 http-source ──> handler (increment) ──> sink (print)
@@ -38,13 +43,13 @@ In Kubernetes you'd need readiness probes, init containers, and a separate monit
 
 The [slack-bot](config/examples/slack-bot.toml) maintains a persistent WebSocket connection to Slack and bridges it into the pub-sub fabric. Inbound WebSocket frames become events. Publishing to a topic sends frames back over the same connection. This bridges WebSocket ↔ pub-sub ↔ HTTP in one TOML file.
 
-This pattern works for any persistent-connection protocol: MQTT, gRPC streams, SSE. The websocket-handler is a reusable marketplace primitive — not custom integration code. In LangChain or CrewAI you'd need a separate WebSocket server, a queue, and glue code to connect them. In Airflow or Step Functions, persistent connections are impossible — they're batch systems.
+This pattern works for any persistent-connection protocol: MQTT, gRPC streams, SSE. The websocket-handler is a reusable marketplace primitive — not custom integration code. In LangChain or CrewAI you'd need a separate WebSocket server, a queue, and glue code to connect them. In Airflow, Step Functions, N8N, Make.com, and Zapier, persistent connections are impossible — they're trigger-and-run systems that execute a workflow and exit. They cannot maintain a WebSocket that stays open across messages.
 
 ### Heterogeneous Fan-In Without Coordination
 
 The [system-monitor](config/advanced-examples/system-monitor/) runs six sources polling different metrics at different intervals (CPU every 1s, disk every 2s). All converge on one handler with no merge node, no barrier, no synchronization — just subscription matching. Add a seventh metric source by adding one `[[sources]]` block. The handler and sinks don't change.
 
-In Step Functions this requires a Parallel state with explicit branches and a join. In Airflow you need a join task. In bash you need background processes writing to named pipes. Here the engine handles routing.
+In Step Functions this requires a Parallel state with explicit branches and a join. In Airflow you need a join task. In N8N or Make.com you'd need a Merge node and carefully ordered branches. In bash you need background processes writing to named pipes. Here the engine handles routing.
 
 ### Polyglot Per-Step, Same Pipeline
 
@@ -54,7 +59,7 @@ The advanced examples use three different handler implementations in one project
 - **Python** SDK handler for stateful computation (game-of-life, system-monitor)
 - **Rust** script handler with rayon parallelism for compute-heavy simulation (reaction-diffusion)
 
-All share the same message fabric, the same lifecycle management, the same event store. Pick the right tool for each step. AI frameworks are Python-only. Container orchestrators can do polyglot but add per-step overhead (image pulls, container startup, networking). Emergent primitives are processes connected by Unix sockets — startup is instant.
+All share the same message fabric, the same lifecycle management, the same event store. Pick the right tool for each step. AI frameworks are Python-only. N8N limits custom code to JavaScript snippets inside Code nodes. Make.com and Zapier limit you to their built-in connectors — if a connector doesn't exist, you're stuck with an HTTP request node and custom parsing. Container orchestrators can do polyglot but add per-step overhead (image pulls, container startup, networking). Emergent primitives are processes connected by Unix sockets — startup is instant.
 
 ### Process Crash Isolation
 
@@ -65,6 +70,8 @@ In LangChain, a hung API call blocks the entire chain. In a bash pipeline, a hun
 ### Configuration as Complete Topology
 
 The TOML file is the entire pipeline architecture. Every source, handler, sink, subscription, and publication is declared in one file. `git diff` shows exactly what changed. Code review covers both logic and topology in the same PR. There is nothing else to check — no scattered service configs, no class hierarchies, no DAG builder API.
+
+N8N stores workflows as JSON in a PostgreSQL database. Make.com and Zapier store them in their cloud — you cannot export, diff, or version-control them meaningfully. Emergent workflows are plain text files that live in your repository alongside your code.
 
 ## Quick Start
 
