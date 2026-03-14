@@ -128,6 +128,22 @@
       <div class="detail" id="disk-detail"></div>
       <div class="bar-container"><div class="bar" id="disk-bar" style="width: 0%"></div></div>
     </div>
+
+    <div class="card">
+      <h2>Disk I/O</h2>
+      <div class="metric" id="diskio-value">—</div>
+      <div class="detail" id="diskio-detail"></div>
+      <canvas id="diskio-chart"></canvas>
+      <div class="subtitle">60s</div>
+    </div>
+
+    <div class="card">
+      <h2>Network I/O</h2>
+      <div class="metric" id="net-value">—</div>
+      <div class="detail" id="net-detail"></div>
+      <canvas id="net-chart"></canvas>
+      <div class="subtitle">60s</div>
+    </div>
   </div>
 
   <script>
@@ -139,10 +155,11 @@
       cpu: [],
       memory: [],
       load: [],
+      diskio_read: [],
+      diskio_write: [],
+      net_rx: [],
+      net_tx: [],
     };
-
-    // CPU needs two samples to compute delta
-    let prevCpu = null;
 
     function severity(pct) {
       if (pct >= 90) return "critical";
@@ -205,23 +222,56 @@
       if (history[key].length > MAX_POINTS) history[key].shift();
     }
 
+    function drawDualChart(canvasId, data1, data2, maxVal, color1, color2) {
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+
+      const w = rect.width;
+      const h = rect.height;
+      ctx.clearRect(0, 0, w, h);
+
+      [data1, data2].forEach((data, idx) => {
+        if (data.length < 2) return;
+        const color = idx === 0 ? color1 : color2;
+        const step = w / (MAX_POINTS - 1);
+        const offset = MAX_POINTS - data.length;
+
+        ctx.beginPath();
+        ctx.moveTo(offset * step, h);
+        for (let i = 0; i < data.length; i++) {
+          const x = (offset + i) * step;
+          const y = h - (data[i] / maxVal) * h;
+          ctx.lineTo(x, y);
+        }
+        ctx.lineTo((offset + data.length - 1) * step, h);
+        ctx.closePath();
+        ctx.fillStyle = color + "15";
+        ctx.fill();
+
+        ctx.beginPath();
+        for (let i = 0; i < data.length; i++) {
+          const x = (offset + i) * step;
+          const y = h - (data[i] / maxVal) * h;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
+    }
+
     // ========================================================================
     // Metric updaters
     // ========================================================================
 
     function updateCpu(payload) {
-      if (!prevCpu) {
-        prevCpu = { idle: payload.idle, total: payload.total };
-        return;
-      }
-
-      const idleDelta = payload.idle - prevCpu.idle;
-      const totalDelta = payload.total - prevCpu.total;
-      prevCpu = { idle: payload.idle, total: payload.total };
-
-      if (totalDelta === 0) return;
-
-      const pct = ((1 - idleDelta / totalDelta) * 100);
+      const pct = payload.used_pct;
       const level = severity(pct);
 
       document.getElementById("cpu-value").textContent = pct.toFixed(1) + "%";
@@ -285,6 +335,30 @@
       bar.className = "bar " + level;
     }
 
+    function updateDiskio(payload) {
+      document.getElementById("diskio-value").textContent = payload.total_rate;
+      document.getElementById("diskio-value").className = "metric ok";
+      document.getElementById("diskio-detail").textContent =
+        "R " + payload.read_rate + "  W " + payload.write_rate;
+
+      pushHistory("diskio_read", payload.read_bps);
+      pushHistory("diskio_write", payload.write_bps);
+      const maxIO = Math.max(1024, ...history.diskio_read, ...history.diskio_write) * 1.2;
+      drawDualChart("diskio-chart", history.diskio_read, history.diskio_write, maxIO, "#38bdf8", "#a78bfa");
+    }
+
+    function updateNet(payload) {
+      document.getElementById("net-value").textContent = payload.total_rate;
+      document.getElementById("net-value").className = "metric ok";
+      document.getElementById("net-detail").textContent =
+        "RX " + payload.rx_rate + "  TX " + payload.tx_rate;
+
+      pushHistory("net_rx", payload.rx_bps);
+      pushHistory("net_tx", payload.tx_bps);
+      const maxNet = Math.max(1024, ...history.net_rx, ...history.net_tx) * 1.2;
+      drawDualChart("net-chart", history.net_rx, history.net_tx, maxNet, "#34d399", "#fb923c");
+    }
+
     // ========================================================================
     // SSE connection
     // ========================================================================
@@ -306,6 +380,8 @@
         else if (p.metric === "memory") updateMemory(p);
         else if (p.metric === "load") updateLoad(p);
         else if (p.metric === "disk") updateDisk(p);
+        else if (p.metric === "diskio") updateDiskio(p);
+        else if (p.metric === "net") updateNet(p);
       };
 
       source.onerror = () => {

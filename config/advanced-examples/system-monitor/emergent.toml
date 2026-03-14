@@ -58,15 +58,27 @@ path = "~/.local/share/emergent/primitives/bin/exec-source"
 args = ["--shell", "sh", "--command", "uptime | awk -F'load average: ' '{split($2,a,\", \"); printf \"{\\\"metric\\\":\\\"load\\\",\\\"load_1m\\\":%s,\\\"load_5m\\\":%s,\\\"load_15m\\\":%s}\\n\", a[1], a[2], a[3]}'", "--interval", "1000"]
 publishes = ["metric.load"]
 
+[[sources]]
+name = "diskio"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "awk '$3 ~ /^(sd[a-z]|nvme[0-9]n[0-9]|vd[a-z])$/ {r+=$6; w+=$10} END{printf \"{\\\"metric\\\":\\\"diskio\\\",\\\"read_sectors\\\":%d,\\\"write_sectors\\\":%d}\\n\", r, w}' /proc/diskstats", "--interval", "1000"]
+publishes = ["metric.diskio"]
+
+[[sources]]
+name = "net"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "awk 'NR>2{gsub(/:/, \"\", $1); if($1 != \"lo\"){rx+=$2; tx+=$10}} END{printf \"{\\\"metric\\\":\\\"net\\\",\\\"rx_bytes\\\":%d,\\\"tx_bytes\\\":%d}\\n\", rx, tx}' /proc/net/dev", "--interval", "1000"]
+publishes = ["metric.net"]
+
 # =============================================================================
 # Handler — normalize all metrics into a common format
 # =============================================================================
 
 [[handlers]]
 name = "formatter"
-path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "metric.disk", "-s", "metric.memory", "-s", "metric.load", "-s", "metric.cpu", "--", "jq", "-c", ".stdout | fromjson // .stdout"]
-subscribes = ["metric.disk", "metric.memory", "metric.load", "metric.cpu"]
+path = "uv"
+args = ["run", "--with", "emergent-client", "config/advanced-examples/system-monitor/metric_formatter.py"]
+subscribes = ["metric.cpu", "metric.memory", "metric.load", "metric.disk", "metric.diskio", "metric.net"]
 publishes = ["monitor.metric"]
 
 # =============================================================================
@@ -96,5 +108,5 @@ subscribes = ["monitor.metric"]
 [[sinks]]
 name = "console"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "monitor.metric", "--", "jq", "-c", "select(.metric != \"cpu\") | [.metric, if .metric == \"disk\" then .used_pct elif .metric == \"memory\" then \"\\(.used_pct)%\" elif .metric == \"load\" then \"\\(.load_1m)\" else empty end] | join(\": \")"]
+args = ["-s", "monitor.metric", "--", "jq", "-c", "[.metric, if .metric == \"cpu\" then \"\\(.used_pct)%\" elif .metric == \"memory\" then \"\\(.used_pct)%\" elif .metric == \"load\" then \"\\(.load_1m)\" elif .metric == \"disk\" then .used_pct elif .metric == \"diskio\" then \"R \\(.read_rate) W \\(.write_rate)\" elif .metric == \"net\" then \"RX \\(.rx_rate) TX \\(.tx_rate)\" else empty end] | join(\": \")"]
 subscribes = ["monitor.metric"]
