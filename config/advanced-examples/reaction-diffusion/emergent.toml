@@ -13,7 +13,7 @@
 #   # Open http://localhost:8084
 #
 # Change pattern: set RD_PRESET to one of:
-#   mitosis, coral, maze, holes, waves, spots, worms
+#   mitosis, coral, maze, holes, ripple, spots, worms
 #
 #   RD_PRESET=maze emergent --config ./config/advanced-examples/reaction-diffusion/emergent.toml
 

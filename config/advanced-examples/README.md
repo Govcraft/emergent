@@ -128,7 +128,7 @@ Switch presets with an environment variable:
 RD_PRESET=maze emergent --config ./config/advanced-examples/reaction-diffusion/emergent.toml
 ```
 
-Available presets: `mitosis`, `coral`, `maze`, `holes`, `waves`, `spots`, `worms`.
+Available presets: `mitosis`, `coral`, `maze`, `holes`, `ripple`, `spots`, `worms`.
 
 To run from a different directory, set the dashboard path:
 
