@@ -65,7 +65,7 @@ publishes = ["monitor.metric"]
 [[sinks]]
 name = "webserver-start"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "system.started.dashboard", "--", "sh", "-c", "python3 -m http.server 8080 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/system-monitor} & echo $! > /tmp/emergent-webserver.pid && echo 'Dashboard: http://localhost:8080/dashboard.html' >&2"]
+args = ["-s", "system.started.dashboard", "--", "sh", "-c", "python3 -m http.server 8080 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/system-monitor} & echo $! > /tmp/emergent-webserver.pid && echo 'Dashboard: http://localhost:8080' >&2"]
 subscribes = ["system.started.dashboard"]
 
 # Stop the file server on shutdown

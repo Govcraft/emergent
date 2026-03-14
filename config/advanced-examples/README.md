@@ -26,7 +26,7 @@ Run from the repo root:
 emergent --config ./config/advanced-examples/system-monitor/emergent.toml
 ```
 
-The pipeline auto-starts a web server on port 8080. Open http://localhost:8080/dashboard.html to see live metrics. The SSE sink pushes updates on port 8081.
+The pipeline auto-starts a web server on port 8080. Open http://localhost:8080 to see live metrics. The SSE sink pushes updates on port 8081.
 
 To run from a different directory, set the dashboard path:
 
