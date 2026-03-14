@@ -35,6 +35,12 @@ args = ["--shell", "sh", "--command", "python3 -m http.server 8080 -d ${EMERGENT
 publishes = ["webserver.started"]
 
 [[sources]]
+name = "cpu"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--shell", "sh", "--command", "grep 'cpu ' /proc/stat | awk '{idle=$5; total=$2+$3+$4+$5+$6+$7+$8; printf \"{\\\"metric\\\":\\\"cpu\\\",\\\"idle\\\":%d,\\\"total\\\":%d}\\n\", idle, total}'", "--interval", "1000"]
+publishes = ["metric.cpu"]
+
+[[sources]]
 name = "disk"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
 args = ["--shell", "sh", "--command", "df -h --output=target,pcent,avail / | tail -1 | awk '{print \"{\\\"metric\\\":\\\"disk\\\",\\\"mount\\\":\\\"\" $1 \"\\\",\\\"used_pct\\\":\\\"\" $2 \"\\\",\\\"avail\\\":\\\"\" $3 \"\\\"}\"}'", "--interval", "2000"]
@@ -59,8 +65,8 @@ publishes = ["metric.load"]
 [[handlers]]
 name = "formatter"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "metric.disk", "-s", "metric.memory", "-s", "metric.load", "--", "jq", "-c", ".stdout | fromjson // .stdout"]
-subscribes = ["metric.disk", "metric.memory", "metric.load"]
+args = ["-s", "metric.disk", "-s", "metric.memory", "-s", "metric.load", "-s", "metric.cpu", "--", "jq", "-c", ".stdout | fromjson // .stdout"]
+subscribes = ["metric.disk", "metric.memory", "metric.load", "metric.cpu"]
 publishes = ["monitor.metric"]
 
 # =============================================================================

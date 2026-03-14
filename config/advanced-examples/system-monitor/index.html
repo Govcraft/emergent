@@ -31,7 +31,7 @@
     .status.disconnected { background: #ef4444; }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 1.5rem;
     }
     .card {
@@ -41,52 +41,55 @@
       padding: 1.5rem;
     }
     .card h2 {
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: #666;
-      margin-bottom: 1rem;
+      margin-bottom: 0.75rem;
     }
     .metric {
-      font-size: 2.4rem;
+      font-size: 2.2rem;
       font-weight: 300;
       font-variant-numeric: tabular-nums;
       line-height: 1;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.4rem;
     }
     .metric.warn { color: #f59e0b; }
     .metric.critical { color: #ef4444; }
     .metric.ok { color: #22c55e; }
     .detail {
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       color: #555;
+      margin-bottom: 0.75rem;
     }
     .bar-container {
       width: 100%;
-      height: 6px;
+      height: 4px;
       background: #222;
-      border-radius: 3px;
-      margin-top: 0.75rem;
+      border-radius: 2px;
       overflow: hidden;
+      margin-bottom: 0.75rem;
     }
     .bar {
       height: 100%;
-      border-radius: 3px;
-      transition: width 0.5s ease, background 0.5s ease;
+      border-radius: 2px;
+      transition: width 0.4s ease, background 0.4s ease;
     }
     .bar.ok { background: #22c55e; }
     .bar.warn { background: #f59e0b; }
     .bar.critical { background: #ef4444; }
-    .history {
-      margin-top: 1rem;
-      font-size: 0.75rem;
-      color: #444;
-      font-family: monospace;
-      max-height: 4rem;
-      overflow: hidden;
+    canvas {
+      width: 100%;
+      height: 60px;
+      display: block;
     }
-    .history div { padding: 1px 0; }
+    .subtitle {
+      font-size: 0.65rem;
+      color: #444;
+      text-align: right;
+      margin-top: 0.25rem;
+    }
   </style>
 </head>
 <body>
@@ -94,10 +97,12 @@
 
   <div class="grid">
     <div class="card">
-      <h2>Disk Usage</h2>
-      <div class="metric" id="disk-value">—</div>
-      <div class="detail" id="disk-detail"></div>
-      <div class="bar-container"><div class="bar" id="disk-bar" style="width: 0%"></div></div>
+      <h2>CPU</h2>
+      <div class="metric" id="cpu-value">—</div>
+      <div class="detail" id="cpu-detail"></div>
+      <div class="bar-container"><div class="bar" id="cpu-bar" style="width: 0%"></div></div>
+      <canvas id="cpu-chart"></canvas>
+      <div class="subtitle">60s</div>
     </div>
 
     <div class="card">
@@ -105,17 +110,39 @@
       <div class="metric" id="mem-value">—</div>
       <div class="detail" id="mem-detail"></div>
       <div class="bar-container"><div class="bar" id="mem-bar" style="width: 0%"></div></div>
+      <canvas id="mem-chart"></canvas>
+      <div class="subtitle">60s</div>
     </div>
 
     <div class="card">
       <h2>Load Average</h2>
       <div class="metric" id="load-value">—</div>
       <div class="detail" id="load-detail"></div>
+      <canvas id="load-chart"></canvas>
+      <div class="subtitle">60s</div>
+    </div>
+
+    <div class="card">
+      <h2>Disk Usage</h2>
+      <div class="metric" id="disk-value">—</div>
+      <div class="detail" id="disk-detail"></div>
+      <div class="bar-container"><div class="bar" id="disk-bar" style="width: 0%"></div></div>
     </div>
   </div>
 
   <script>
     const SSE_URL = "http://localhost:8081/events";
+    const MAX_POINTS = 60;
+
+    // Chart data
+    const history = {
+      cpu: [],
+      memory: [],
+      load: [],
+    };
+
+    // CPU needs two samples to compute delta
+    let prevCpu = null;
 
     function severity(pct) {
       if (pct >= 90) return "critical";
@@ -123,42 +150,144 @@
       return "ok";
     }
 
-    function updateDisk(payload) {
-      const pct = parseFloat(payload.used_pct);
+    // ========================================================================
+    // Sparkline chart renderer
+    // ========================================================================
+
+    function drawChart(canvasId, data, maxVal, color) {
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+
+      const w = rect.width;
+      const h = rect.height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      if (data.length < 2) return;
+
+      const step = w / (MAX_POINTS - 1);
+      const offset = MAX_POINTS - data.length;
+
+      // Fill area
+      ctx.beginPath();
+      ctx.moveTo(offset * step, h);
+      for (let i = 0; i < data.length; i++) {
+        const x = (offset + i) * step;
+        const y = h - (data[i] / maxVal) * h;
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo((offset + data.length - 1) * step, h);
+      ctx.closePath();
+      ctx.fillStyle = color + "15";
+      ctx.fill();
+
+      // Line
+      ctx.beginPath();
+      for (let i = 0; i < data.length; i++) {
+        const x = (offset + i) * step;
+        const y = h - (data[i] / maxVal) * h;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    function pushHistory(key, value) {
+      history[key].push(value);
+      if (history[key].length > MAX_POINTS) history[key].shift();
+    }
+
+    // ========================================================================
+    // Metric updaters
+    // ========================================================================
+
+    function updateCpu(payload) {
+      if (!prevCpu) {
+        prevCpu = { idle: payload.idle, total: payload.total };
+        return;
+      }
+
+      const idleDelta = payload.idle - prevCpu.idle;
+      const totalDelta = payload.total - prevCpu.total;
+      prevCpu = { idle: payload.idle, total: payload.total };
+
+      if (totalDelta === 0) return;
+
+      const pct = ((1 - idleDelta / totalDelta) * 100);
       const level = severity(pct);
-      const el = document.getElementById("disk-value");
-      el.textContent = payload.used_pct;
-      el.className = "metric " + level;
-      document.getElementById("disk-detail").textContent = payload.avail + " available on " + payload.mount;
-      const bar = document.getElementById("disk-bar");
+
+      document.getElementById("cpu-value").textContent = pct.toFixed(1) + "%";
+      document.getElementById("cpu-value").className = "metric " + level;
+      document.getElementById("cpu-detail").textContent = navigator.hardwareConcurrency + " cores";
+
+      const bar = document.getElementById("cpu-bar");
       bar.style.width = pct + "%";
       bar.className = "bar " + level;
+
+      pushHistory("cpu", pct);
+      const color = level === "critical" ? "#ef4444" : level === "warn" ? "#f59e0b" : "#22c55e";
+      drawChart("cpu-chart", history.cpu, 100, color);
     }
 
     function updateMemory(payload) {
       const pct = payload.used_pct;
       const level = severity(pct);
-      const el = document.getElementById("mem-value");
-      el.textContent = pct.toFixed(1) + "%";
-      el.className = "metric " + level;
+
+      document.getElementById("mem-value").textContent = pct.toFixed(1) + "%";
+      document.getElementById("mem-value").className = "metric " + level;
       document.getElementById("mem-detail").textContent =
-        payload.used_mb + " MB / " + payload.total_mb + " MB (" + payload.free_mb + " MB free)";
+        payload.used_mb + " / " + payload.total_mb + " MB";
+
       const bar = document.getElementById("mem-bar");
       bar.style.width = pct + "%";
       bar.className = "bar " + level;
+
+      pushHistory("memory", pct);
+      const color = level === "critical" ? "#ef4444" : level === "warn" ? "#f59e0b" : "#22c55e";
+      drawChart("mem-chart", history.memory, 100, color);
     }
 
     function updateLoad(payload) {
-      const el = document.getElementById("load-value");
-      el.textContent = payload.load_1m.toFixed(2);
       const cores = navigator.hardwareConcurrency || 4;
       const level = payload.load_1m > cores ? "critical" : payload.load_1m > cores * 0.7 ? "warn" : "ok";
-      el.className = "metric " + level;
+
+      document.getElementById("load-value").textContent = payload.load_1m.toFixed(2);
+      document.getElementById("load-value").className = "metric " + level;
       document.getElementById("load-detail").textContent =
         "1m: " + payload.load_1m.toFixed(2) +
         "  5m: " + payload.load_5m.toFixed(2) +
         "  15m: " + payload.load_15m.toFixed(2);
+
+      pushHistory("load", payload.load_1m);
+      const maxLoad = Math.max(cores, ...history.load) * 1.2;
+      const color = level === "critical" ? "#ef4444" : level === "warn" ? "#f59e0b" : "#22c55e";
+      drawChart("load-chart", history.load, maxLoad, color);
     }
+
+    function updateDisk(payload) {
+      const pct = parseFloat(payload.used_pct);
+      const level = severity(pct);
+
+      document.getElementById("disk-value").textContent = payload.used_pct;
+      document.getElementById("disk-value").className = "metric " + level;
+      document.getElementById("disk-detail").textContent = payload.avail + " available on " + payload.mount;
+
+      const bar = document.getElementById("disk-bar");
+      bar.style.width = pct + "%";
+      bar.className = "bar " + level;
+    }
+
+    // ========================================================================
+    // SSE connection
+    // ========================================================================
 
     function connect() {
       const status = document.getElementById("conn-status");
@@ -173,9 +302,10 @@
         const p = event.payload;
         if (!p || !p.metric) return;
 
-        if (p.metric === "disk") updateDisk(p);
+        if (p.metric === "cpu") updateCpu(p);
         else if (p.metric === "memory") updateMemory(p);
         else if (p.metric === "load") updateLoad(p);
+        else if (p.metric === "disk") updateDisk(p);
       };
 
       source.onerror = () => {
