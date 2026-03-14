@@ -14,6 +14,58 @@ Any command-line tool -- an LLM, a classical ML model, a curl call to an API, a 
 | Graceful shutdown | Framework-dependent | `kill -9` and hope | Three-phase drain, zero message loss |
 | Language lock-in | Python only | Bash only | Any language, any tool |
 
+## Patterns Other Frameworks Can't Express
+
+Most workflow tools are DAG-based: directed acyclic graphs where data flows one way through a fixed sequence. Emergent uses pub-sub routing instead, which removes structural constraints that DAGs impose. Combined with process-per-primitive isolation and system event broadcasting, this enables patterns that are difficult or impossible in other tools.
+
+### Feedback Loops
+
+The [ouroboros example](config/examples/ouroboros-loop.toml) subscribes to its own output and feeds it back to the input — an infinite loop with an incrementing counter. DAG-based systems (Airflow, Step Functions, LangChain chains) forbid cycles by definition. Emergent's pub-sub routing has no such restriction: any primitive can subscribe to any message type, including those produced downstream.
+
+```
+http-source ──> handler (increment) ──> sink (print)
+     ^                                └─> sink (curl back to source)
+     └────────────────────────────────────┘
+```
+
+### System Events as Application Triggers
+
+The engine broadcasts lifecycle events (`system.started.*`, `system.stopped.*`, `system.error.*`) into the same pub-sub fabric as application messages. Primitives can subscribe to them like any other event. The ouroboros loop seeds itself from `system.started.webhook` — no manual trigger, no external scheduler, no health-check polling. A handler could start processing only after a database sink reports ready, or alert when a source fails.
+
+In Kubernetes you'd need readiness probes, init containers, and a separate monitoring stack. In Airflow you'd need an ExternalTaskSensor. Here it's one subscription line.
+
+### Bidirectional Protocol Bridging
+
+The [slack-bot](config/examples/slack-bot.toml) maintains a persistent WebSocket connection to Slack and bridges it into the pub-sub fabric. Inbound WebSocket frames become events. Publishing to a topic sends frames back over the same connection. This bridges WebSocket ↔ pub-sub ↔ HTTP in one TOML file.
+
+This pattern works for any persistent-connection protocol: MQTT, gRPC streams, SSE. The websocket-handler is a reusable marketplace primitive — not custom integration code. In LangChain or CrewAI you'd need a separate WebSocket server, a queue, and glue code to connect them. In Airflow or Step Functions, persistent connections are impossible — they're batch systems.
+
+### Heterogeneous Fan-In Without Coordination
+
+The [system-monitor](config/advanced-examples/system-monitor/) runs six sources polling different metrics at different intervals (CPU every 1s, disk every 2s). All converge on one handler with no merge node, no barrier, no synchronization — just subscription matching. Add a seventh metric source by adding one `[[sources]]` block. The handler and sinks don't change.
+
+In Step Functions this requires a Parallel state with explicit branches and a join. In Airflow you need a join task. In bash you need background processes writing to named pipes. Here the engine handles routing.
+
+### Polyglot Per-Step, Same Pipeline
+
+The advanced examples use three different handler implementations in one project:
+
+- **jq** via exec-handler for trivial JSON transforms (basic-pipeline)
+- **Python** SDK handler for stateful computation (game-of-life, system-monitor)
+- **Rust** script handler with rayon parallelism for compute-heavy simulation (reaction-diffusion)
+
+All share the same message fabric, the same lifecycle management, the same event store. Pick the right tool for each step. AI frameworks are Python-only. Container orchestrators can do polyglot but add per-step overhead (image pulls, container startup, networking). Emergent primitives are processes connected by Unix sockets — startup is instant.
+
+### Process Crash Isolation
+
+Each primitive runs as its own process. If step 7 (the LLM call) in the slack-bot hangs for 60 seconds, steps 1–6 and 8 keep running. The WebSocket stays connected. Slack envelopes keep getting acknowledged. Other messages queue up. When the LLM responds, the pipeline resumes.
+
+In LangChain, a hung API call blocks the entire chain. In a bash pipeline, a hung command blocks the pipe. In Emergent, crash isolation is structural — you get it for free from the process-per-primitive model.
+
+### Configuration as Complete Topology
+
+The TOML file is the entire pipeline architecture. Every source, handler, sink, subscription, and publication is declared in one file. `git diff` shows exactly what changed. Code review covers both logic and topology in the same PR. There is nothing else to check — no scattered service configs, no class hierarchies, no DAG builder API.
+
 ## Quick Start
 
 ```bash
