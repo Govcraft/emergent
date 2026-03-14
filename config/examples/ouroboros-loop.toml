@@ -23,7 +23,7 @@ publishes = ["http.request"]
 [[handlers]]
 name = "enrich"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "http.request", "--publish-as", "loop.iteration", "--", "jq", "-c", ".body |= (fromjson? // {count: 0}) | .body.count += 1 | .body.timestamp = now | .body |= tojson"]
+args = ["-s", "http.request", "--publish-as", "loop.iteration", "--", "jq", "-c", ".body.count += 1 | .body.timestamp = now"]
 subscribes = ["http.request"]
 publishes = ["loop.iteration"]
 
@@ -38,5 +38,5 @@ subscribes = ["loop.iteration"]
 [[sinks]]
 name = "loopback"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "loop.iteration", "-s", "system.started.webhook", "--", "sh", "-c", "body=$(jq -r '.body // empty') && payload=${body:-'{\"count\":0,\"message\":\"hello ouroboros\"}'} && sleep 1 && echo $payload | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:8088"]
+args = ["-s", "loop.iteration", "-s", "system.started.webhook", "--", "sh", "-c", "payload=$(jq -c '.body // {count:0, message:\"hello ouroboros\"}') && sleep 1 && echo \"$payload\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:8088"]
 subscribes = ["loop.iteration", "system.started.webhook"]
