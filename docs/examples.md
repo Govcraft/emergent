@@ -111,6 +111,8 @@ emergent --config ./config/advanced-examples/system-monitor/emergent.toml
 # Open http://localhost:8080 to see live metrics with sparkline charts
 ```
 
+![System Monitor Dashboard](images/system-monitor.png)
+
 **What this demonstrates:**
 
 - **Fan-in**: Six independent sources converge on one handler. No routing logic — they all publish metric types, the handler subscribes to all of them.
@@ -133,6 +135,8 @@ exec-source (clock, 150ms)   ──┘                                        �
 emergent --config ./config/advanced-examples/game-of-life/emergent.toml
 # Open http://localhost:8082 to watch
 ```
+
+![Game of Life](images/game-of-life.png)
 
 Switch patterns with an environment variable:
 
@@ -163,6 +167,8 @@ exec-source (clock, 30ms)    ──┘
 emergent --config ./config/advanced-examples/reaction-diffusion/emergent.toml
 # Open http://localhost:8084 to watch patterns emerge
 ```
+
+![Reaction-Diffusion](images/reaction-diffusion.png)
 
 Switch presets:
 

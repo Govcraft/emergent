@@ -226,6 +226,15 @@ Pipelines demonstrating fan-in, fan-out, stateful transformation, and real-time 
 | [game-of-life](config/advanced-examples/game-of-life/) | Conway's Game of Life as a pub-sub pipeline — gliders, oscillators, and spaceships emerge from four rules applied to a message stream |
 | [reaction-diffusion](config/advanced-examples/reaction-diffusion/) | Gray-Scott Turing patterns computed by a Rust script handler with rayon parallelism, streamed to a browser canvas via SSE |
 
+![System Monitor Dashboard](docs/images/system-monitor.png)
+*System monitor: six metric sources fan into a stateful handler, fan out to a live SSE dashboard*
+
+![Game of Life](docs/images/game-of-life.png)
+*Game of Life: gliders and oscillators emerge from four rules applied to a pub-sub message stream*
+
+![Reaction-Diffusion](docs/images/reaction-diffusion.png)
+*Reaction-diffusion: Gray-Scott Turing patterns computed by a parallel Rust script handler*
+
 ```bash
 # Install prerequisites and run
 emergent marketplace install exec-source exec-sink sse-sink
