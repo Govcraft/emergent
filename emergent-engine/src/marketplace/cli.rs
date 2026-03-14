@@ -158,7 +158,7 @@ pub async fn execute(args: MarketplaceArgs) -> Result<()> {
             handle_remove(&installer, name, yes).await?;
         }
         MarketplaceCommand::Update { name, dry_run } => {
-            handle_update(&installer, name, dry_run).await?;
+            handle_update(&installer, &registry, name, dry_run).await?;
         }
         MarketplaceCommand::Info { name, json } => {
             handle_info(&registry, name, json).await?;
@@ -274,7 +274,15 @@ async fn handle_remove(installer: &Installer, name: String, yes: bool) -> Result
     Ok(())
 }
 
-async fn handle_update(installer: &Installer, name: Option<String>, dry_run: bool) -> Result<()> {
+async fn handle_update(
+    installer: &Installer,
+    registry: &Registry,
+    name: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    // Refresh the registry once before checking versions
+    let _ = registry.fetch_index().await;
+
     if let Some(name) = name {
         installer.update(&name, dry_run).await?;
     } else {
