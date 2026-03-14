@@ -60,20 +60,14 @@ publishes = ["monitor.metric"]
 # Sinks — fan-out to multiple destinations
 # =============================================================================
 
-# Static file server for dashboard HTML — must start before dashboard
-# so it's subscribed to system.started.dashboard when that event fires
+# Static file server for dashboard HTML — blocks on the server process.
+# When the engine shuts down, SIGTERM kills exec-sink and its child (the server).
+# Must start before dashboard so it catches system.started.dashboard.
 [[sinks]]
-name = "webserver-start"
+name = "webserver"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "system.started.dashboard", "--", "sh", "-c", "python3 -m http.server 8080 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/system-monitor} & echo $! > /tmp/emergent-webserver.pid && echo 'Dashboard: http://localhost:8080' >&2"]
+args = ["-s", "system.started.dashboard", "--", "sh", "-c", "echo 'Dashboard: http://localhost:8080' >&2 && exec python3 -m http.server 8080 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/system-monitor}"]
 subscribes = ["system.started.dashboard"]
-
-# Stop the file server on shutdown
-[[sinks]]
-name = "webserver-stop"
-path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "system.shutdown", "--", "sh", "-c", "kill $(cat /tmp/emergent-webserver.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/emergent-webserver.pid"]
-subscribes = ["system.shutdown"]
 
 # Live browser dashboard via SSE
 [[sinks]]
