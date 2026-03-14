@@ -25,15 +25,10 @@ emergent --config ./config/examples/basic-pipeline.toml
 
 ### ouroboros-loop.toml
 
-An infinite loop. POST once to seed it, and the message circulates forever with an incrementing counter. Demonstrates how a sink can feed back into a source.
+A self-seeding infinite loop. The loopback sink subscribes to `system.started.webhook` to seed the first iteration, then `loop.iteration` keeps it going. The counter increments on every pass.
 
 ```bash
 emergent --config ./config/examples/ouroboros-loop.toml
-
-# Seed the loop from another terminal:
-curl -X POST -H "Content-Type: application/json" \
-  -d '{"count": 0, "message": "hello ouroboros"}' \
-  http://localhost:8088
 ```
 
 ### websocket-echo.toml
@@ -58,4 +53,6 @@ emergent --config ./config/examples/slack-bot.toml
 
 ## Secrets
 
-Pass secrets as environment variables. The engine forwards the parent process environment to all primitives, so `export` before running or use a `.env` file with `source .env`. Never hardcode tokens in TOML.
+Never hardcode tokens in TOML. Use environment variables — the engine forwards the parent process environment to all primitives. Set secrets via `export` or `source .env` before running.
+
+For production deployments, see [docs/configuration.md](../../docs/configuration.md#secrets) for systemd-creds (Linux) and Keychain (macOS) patterns.
