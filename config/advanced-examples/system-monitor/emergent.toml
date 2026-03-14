@@ -60,6 +60,21 @@ publishes = ["monitor.metric"]
 # Sinks — fan-out to multiple destinations
 # =============================================================================
 
+# Static file server for dashboard HTML — must start before dashboard
+# so it's subscribed to system.started.dashboard when that event fires
+[[sinks]]
+name = "webserver-start"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "system.started.dashboard", "--", "sh", "-c", "python3 -m http.server 8080 -d config/advanced-examples/system-monitor & echo $! > /tmp/emergent-webserver.pid && echo 'Dashboard: http://localhost:8080/dashboard.html' >&2"]
+subscribes = ["system.started.dashboard"]
+
+# Stop the file server on shutdown
+[[sinks]]
+name = "webserver-stop"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "system.shutdown", "--", "sh", "-c", "kill $(cat /tmp/emergent-webserver.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/emergent-webserver.pid"]
+subscribes = ["system.shutdown"]
+
 # Live browser dashboard via SSE
 [[sinks]]
 name = "dashboard"
@@ -73,17 +88,3 @@ name = "console"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "monitor.metric", "--", "jq", "-c", "[.metric, if .metric == \"disk\" then .used_pct elif .metric == \"memory\" then \"\\(.used_pct)%\" elif .metric == \"load\" then \"\\(.load_1m)\" else \"\" end] | join(\": \")"]
 subscribes = ["monitor.metric"]
-
-# Static file server for dashboard HTML — starts when sse-sink is ready
-[[sinks]]
-name = "webserver-start"
-path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "system.started.dashboard", "--", "sh", "-c", "python3 -m http.server 8080 -d config/advanced-examples/system-monitor & echo $! > /tmp/emergent-webserver.pid"]
-subscribes = ["system.started.dashboard"]
-
-# Stop the file server on shutdown
-[[sinks]]
-name = "webserver-stop"
-path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "system.shutdown", "--", "sh", "-c", "kill $(cat /tmp/emergent-webserver.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/emergent-webserver.pid"]
-subscribes = ["system.shutdown"]
