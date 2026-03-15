@@ -198,6 +198,16 @@ systemctl --user start emergent.service
 systemctl --user start emergent-config-watcher.path
 ```
 
+### Run at Boot (Unattended)
+
+By default, user services only run while you have an active login session. To keep emergent running after logout and start it at boot (without logging in), enable lingering:
+
+```bash
+loginctl enable-linger $USER
+```
+
+This is recommended for any pipeline that should run unattended, such as a Slack bot or webhook listener.
+
 ## Administration Commands
 
 ### Service Control
