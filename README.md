@@ -76,7 +76,13 @@ N8N stores workflows as JSON in a PostgreSQL database. Make.com and Zapier store
 ## Quick Start
 
 ```bash
-# Install the engine (single binary, no runtime dependencies)
+# Arch Linux (AUR)
+yay -S emergent-bin
+
+# Cargo (any platform with Rust toolchain)
+cargo install emergent-engine
+
+# Or download a pre-built binary (Linux, macOS)
 curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-x86_64-unknown-linux-gnu.tar.gz
 tar xzf emergent-x86_64-unknown-linux-gnu.tar.gz
 sudo mv emergent /usr/local/bin/

@@ -15,7 +15,7 @@ version = "0.10.5"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/govcraft/emergent"
-authors = ["Govcraft <info@govcraft.ai>"]
+authors = ["Roland Rodriguez <roland@govcraft.ai>"]
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

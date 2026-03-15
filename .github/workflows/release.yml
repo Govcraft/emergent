@@ -82,9 +82,19 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create checksums file
+      - name: Import GPG key
+        env:
+          GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: echo "$GPG_KEY" | gpg --batch --import
+
+      - name: Sign tarballs and create checksums
+        env:
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
         run: |
           cd artifacts
+          for f in *.tar.gz; do
+            gpg --batch --yes --local-user "$GPG_FINGERPRINT" --detach-sign --armor "$f"
+          done
           cat *.sha256 > checksums.txt
           mv checksums.txt ..
 
@@ -93,9 +103,122 @@ jobs:
         with:
           files: |
             artifacts/*.tar.gz
+            artifacts/*.tar.gz.asc
             artifacts/*.sha256
             checksums.txt
           generate_release_notes: true
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  crates-io:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish emergent-engine
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p emergent-engine
+
+  aur:
+    name: Update AUR package
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract version
+        env:
+          REF: ${{ github.ref }}
+        run: echo "VERSION=${REF#refs/tags/v}" >> $GITHUB_ENV
+
+      - name: Download checksums
+        run: |
+          curl -sL "https://github.com/Govcraft/emergent/releases/download/v${VERSION}/checksums.txt" -o checksums.txt
+          echo "SHA256_X86_64=$(grep x86_64-unknown-linux-gnu checksums.txt | awk '{print $1}')" >> $GITHUB_ENV
+          echo "SHA256_AARCH64=$(grep aarch64-unknown-linux-gnu checksums.txt | awk '{print $1}')" >> $GITHUB_ENV
+
+      - name: Configure SSH
+        env:
+          AUR_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$AUR_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<EOF
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+          EOF
+
+      - name: Clone and update AUR package
+        run: |
+          git clone ssh://aur@aur.archlinux.org/emergent-bin.git aur-pkg
+          cd aur-pkg
+
+          T=$(printf '\t')
+
+          cat > PKGBUILD <<PKGBUILD_EOF
+          # Maintainer: Roland Rodriguez <roland@govcraft.ai>
+          pkgname=emergent-bin
+          pkgver=${VERSION}
+          pkgrel=1
+          pkgdesc="Event-driven workflow engine using publish-subscribe primitives"
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/Govcraft/emergent"
+          license=('MIT' 'Apache-2.0')
+          provides=('emergent')
+          conflicts=('emergent')
+
+          validpgpkeys=('EDAAD3730AB9855765E57445965785C9F837377C')
+
+          source_x86_64=("\${url}/releases/download/v\${pkgver}/emergent-\${pkgver}-x86_64-unknown-linux-gnu.tar.gz"
+                         "\${url}/releases/download/v\${pkgver}/emergent-\${pkgver}-x86_64-unknown-linux-gnu.tar.gz.asc")
+          source_aarch64=("\${url}/releases/download/v\${pkgver}/emergent-\${pkgver}-aarch64-unknown-linux-gnu.tar.gz"
+                          "\${url}/releases/download/v\${pkgver}/emergent-\${pkgver}-aarch64-unknown-linux-gnu.tar.gz.asc")
+          sha256sums_x86_64=('${SHA256_X86_64}' 'SKIP')
+          sha256sums_aarch64=('${SHA256_AARCH64}' 'SKIP')
+
+          package() {
+              install -Dm755 emergent "\${pkgdir}/usr/bin/emergent"
+          }
+          PKGBUILD_EOF
+
+          cat > .SRCINFO <<SRCINFO_EOF
+          pkgbase = emergent-bin
+          ${T}pkgdesc = Event-driven workflow engine using publish-subscribe primitives
+          ${T}pkgver = ${VERSION}
+          ${T}pkgrel = 1
+          ${T}url = https://github.com/Govcraft/emergent
+          ${T}arch = x86_64
+          ${T}arch = aarch64
+          ${T}license = MIT
+          ${T}license = Apache-2.0
+          ${T}provides = emergent
+          ${T}conflicts = emergent
+          ${T}validpgpkeys = EDAAD3730AB9855765E57445965785C9F837377C
+          ${T}source_x86_64 = https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+          ${T}source_x86_64 = https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.asc
+          ${T}sha256sums_x86_64 = ${SHA256_X86_64}
+          ${T}sha256sums_x86_64 = SKIP
+          ${T}source_aarch64 = https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
+          ${T}source_aarch64 = https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz.asc
+          ${T}sha256sums_aarch64 = ${SHA256_AARCH64}
+          ${T}sha256sums_aarch64 = SKIP
+
+          pkgname = emergent-bin
+          SRCINFO_EOF
+
+          git config user.name "Roland Rodriguez"
+          git config user.email "roland@govcraft.ai"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${VERSION}"
+          git push origin master

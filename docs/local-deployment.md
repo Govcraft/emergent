@@ -4,29 +4,40 @@ This guide covers deploying the Emergent engine as a systemd user service on Lin
 
 ## Installation
 
-### Download a Pre-built Binary (Recommended)
+### Arch Linux (AUR) (Recommended)
+
+```bash
+yay -S emergent-bin
+```
+
+This installs the engine to `/usr/bin/emergent` and updates automatically with `yay -Syu`.
+
+### Cargo
+
+```bash
+cargo install emergent-engine
+```
+
+### Download a Pre-built Binary
 
 Download the latest release from [GitHub Releases](https://github.com/Govcraft/emergent/releases/latest) for your platform:
 
 ```bash
-# Set the version (check the releases page for the latest)
-VERSION=0.7.0
-
 # Linux (x86_64)
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
-tar xzf emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-x86_64-unknown-linux-gnu.tar.gz
+tar xzf emergent-x86_64-unknown-linux-gnu.tar.gz
 
 # Linux (aarch64 / ARM64)
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
-tar xzf emergent-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-aarch64-unknown-linux-gnu.tar.gz
+tar xzf emergent-aarch64-unknown-linux-gnu.tar.gz
 
 # macOS (Apple Silicon)
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-aarch64-apple-darwin.tar.gz
-tar xzf emergent-${VERSION}-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-aarch64-apple-darwin.tar.gz
+tar xzf emergent-aarch64-apple-darwin.tar.gz
 
 # macOS (Intel)
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-apple-darwin.tar.gz
-tar xzf emergent-${VERSION}-x86_64-apple-darwin.tar.gz
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-x86_64-apple-darwin.tar.gz
+tar xzf emergent-x86_64-apple-darwin.tar.gz
 ```
 
 Install to your user bin directory:

@@ -10,7 +10,21 @@ Emergent turns CLI tools into composable pipeline building blocks. You declare t
 
 The engine is a single binary. No Rust toolchain, no runtime dependencies.
 
-### Download a Pre-built Binary (Recommended)
+### Arch Linux (AUR)
+
+```bash
+yay -S emergent-bin
+```
+
+### Cargo
+
+If you have a Rust toolchain installed:
+
+```bash
+cargo install emergent-engine
+```
+
+### Download a Pre-built Binary
 
 Download the latest release from [GitHub Releases](https://github.com/Govcraft/emergent/releases/latest):
 
