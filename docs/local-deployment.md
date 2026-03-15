@@ -103,12 +103,13 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/emergent --config %h/.config/emergent/emergent.toml
+ExecStart=/usr/bin/emergent --config %h/.config/emergent/emergent.toml
 Restart=on-failure
 RestartSec=5
 
 # Environment
-Environment=RUST_LOG=info
+Environment=RUST_LOG=info,acton_reactive=off
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin:%h/.cargo/bin
 
 # Hardening
 NoNewPrivileges=true
@@ -117,6 +118,41 @@ PrivateTmp=true
 [Install]
 WantedBy=default.target
 ```
+
+If you installed via manual download to `~/.local/bin/`, change `ExecStart` to `%h/.local/bin/emergent`.
+
+### Secrets with systemd-creds
+
+If your pipeline uses secrets (API tokens, credentials), encrypt them with `systemd-creds` and load them via `LoadCredentialEncrypted`. This encrypts secrets to your machine's TPM or host key -- they cannot be decrypted on another machine.
+
+**Step 1: Encrypt each secret:**
+
+```bash
+mkdir -p ~/.config/emergent/secrets
+echo -n "xoxb-your-token" | systemd-creds encrypt --user --name=SLACK_BOT_TOKEN - ~/.config/emergent/secrets/slack-bot-token.cred
+echo -n "xapp-your-token" | systemd-creds encrypt --user --name=SLACK_APP_TOKEN - ~/.config/emergent/secrets/slack-app-token.cred
+```
+
+**Step 2: Add `LoadCredentialEncrypted` to the service unit:**
+
+```ini
+[Service]
+LoadCredentialEncrypted=SLACK_BOT_TOKEN:%h/.config/emergent/secrets/slack-bot-token.cred
+LoadCredentialEncrypted=SLACK_APP_TOKEN:%h/.config/emergent/secrets/slack-app-token.cred
+```
+
+**Step 3: Read credentials from `$CREDENTIALS_DIRECTORY` in your TOML config.**
+
+The engine forwards `$CREDENTIALS_DIRECTORY` to all child primitives. Use `$(cat $CREDENTIALS_DIRECTORY/...)` in `sh -c` commands instead of environment variables:
+
+```toml
+args = [
+    "--shell", "sh",
+    "--command", "curl -s -X POST https://slack.com/api/apps.connections.open -H \"Authorization: Bearer $(cat $CREDENTIALS_DIRECTORY/SLACK_APP_TOKEN)\" | jq -c '{url: .url}'"
+]
+```
+
+Secrets never appear in environment variables, shell history, or plaintext on disk. The decrypted values exist only as files in a tmpfs mount scoped to the service lifetime.
 
 ### Create the Config Watcher (Optional)
 
@@ -208,15 +244,28 @@ systemctl --user restart emergent
 
 ## Updating the Engine
 
-### From GitHub Releases (Recommended)
+### AUR (Recommended)
 
 ```bash
-# Download the new release (example for Linux x86_64)
-VERSION=0.7.0  # check https://github.com/Govcraft/emergent/releases/latest
-curl -LO https://github.com/Govcraft/emergent/releases/download/v${VERSION}/emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
-tar xzf emergent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+yay -Syu
+# The service restarts automatically if the config watcher is enabled,
+# or restart manually:
+systemctl --user restart emergent
+```
 
-# Stop, install, start
+### Cargo
+
+```bash
+cargo install emergent-engine
+systemctl --user restart emergent
+```
+
+### From GitHub Releases
+
+```bash
+curl -LO https://github.com/Govcraft/emergent/releases/latest/download/emergent-x86_64-unknown-linux-gnu.tar.gz
+tar xzf emergent-x86_64-unknown-linux-gnu.tar.gz
+
 systemctl --user stop emergent
 mv emergent ~/.local/bin/emergent
 chmod +x ~/.local/bin/emergent
@@ -237,8 +286,10 @@ systemctl --user start emergent
 
 | Purpose | Path |
 |---------|------|
-| Binary | `~/.local/bin/emergent` |
+| Binary (AUR) | `/usr/bin/emergent` |
+| Binary (manual) | `~/.local/bin/emergent` |
 | Configuration | `~/.config/emergent/emergent.toml` |
+| Encrypted secrets | `~/.config/emergent/secrets/` |
 | Event logs (JSON) | `~/.local/share/emergent/logs/` |
 | Event database | `~/.local/share/emergent/events.db` |
 | IPC socket | `/run/user/<uid>/emergent.sock` |

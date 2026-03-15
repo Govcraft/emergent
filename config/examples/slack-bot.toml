@@ -25,7 +25,7 @@
 #     source .env
 #
 #   Production (Linux): use systemd-creds to encrypt secrets to the
-#   machine's TPM, then read via $(cat /run/credentials/...) in args.
+#   machine's TPM, then read via $(cat $CREDENTIALS_DIRECTORY/...) in args.
 #
 #   Production (macOS): use Keychain via
 #     $(security find-generic-password -s SLACK_BOT_TOKEN -w)

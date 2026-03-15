@@ -343,21 +343,37 @@ emergent --config ./emergent.toml
 
 ### Production: systemd credentials
 
-For unattended services on Linux, use `systemd-creds` to encrypt secrets to the machine's TPM or host key. Decrypted values are mounted at runtime and scoped to the service:
+For unattended services on Linux, use `systemd-creds` to encrypt secrets to the machine's TPM or host key. Decrypted values exist only as files in a tmpfs mount scoped to the service lifetime -- they never appear in environment variables or on disk.
+
+Encrypt each secret to a credential file:
+
+```bash
+# For user services (--user)
+echo -n "xoxb-..." | systemd-creds encrypt --user --name=SLACK_BOT_TOKEN - ~/.config/emergent/secrets/slack-bot-token.cred
+echo -n "xapp-..." | systemd-creds encrypt --user --name=SLACK_APP_TOKEN - ~/.config/emergent/secrets/slack-app-token.cred
+
+# For system services (omit --user)
+echo -n "xoxb-..." | systemd-creds encrypt --name=SLACK_BOT_TOKEN - /etc/emergent/secrets/slack-bot-token.cred
+```
+
+Load the credentials in your service unit:
 
 ```ini
-# /etc/systemd/system/emergent.service
 [Service]
-ExecStart=/usr/local/bin/emergent --config /etc/emergent/pipeline.toml
-LoadCredentialEncrypted=SLACK_BOT_TOKEN:/etc/emergent/secrets/slack-bot-token.cred
-LoadCredentialEncrypted=SLACK_APP_TOKEN:/etc/emergent/secrets/slack-app-token.cred
+LoadCredentialEncrypted=SLACK_BOT_TOKEN:%h/.config/emergent/secrets/slack-bot-token.cred
+LoadCredentialEncrypted=SLACK_APP_TOKEN:%h/.config/emergent/secrets/slack-app-token.cred
 ```
 
-Primitives read the decrypted values from files at runtime:
+The engine forwards `$CREDENTIALS_DIRECTORY` to all child primitives. Read secrets from credential files in your TOML args using `$(cat ...)`:
 
 ```toml
-args = ["--", "sh", "-c", "... -H \"Authorization: Bearer $(cat /run/credentials/emergent.service/SLACK_BOT_TOKEN)\" ..."]
+args = [
+    "--shell", "sh",
+    "--command", "curl -s -X POST https://slack.com/api/apps.connections.open -H \"Authorization: Bearer $(cat $CREDENTIALS_DIRECTORY/SLACK_APP_TOKEN)\" | jq -c '{url: .url}'"
+]
 ```
+
+See [Local Deployment](local-deployment.md) for the complete systemd setup.
 
 ### Production: macOS Keychain
 
