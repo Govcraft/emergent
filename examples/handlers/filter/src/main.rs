@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect to the Emergent engine
     // The SDK automatically handles system.shutdown for graceful shutdown
-    let handler = match EmergentHandler::connect(&name).await {
+    let mut handler = match EmergentHandler::connect(&name).await {
         Ok(h) => h,
         Err(e) => {
             eprintln!("Failed to connect to Emergent engine: {e}");

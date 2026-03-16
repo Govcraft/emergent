@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let name = std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "exec_handler".to_string());
 
     // Connect to the Emergent engine
-    let handler = match EmergentHandler::connect(&name).await {
+    let mut handler = match EmergentHandler::connect(&name).await {
         Ok(h) => h,
         Err(e) => {
             eprintln!("Failed to connect to Emergent engine: {e}");
@@ -343,9 +343,7 @@ mod tests {
         assert!(result.is_err());
 
         if let Err(ExecError::Failed {
-            exit_code,
-            command,
-            ..
+            exit_code, command, ..
         }) = result
         {
             assert_eq!(exit_code, 1);

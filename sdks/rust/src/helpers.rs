@@ -327,7 +327,7 @@ where
 {
     let resolved_name = resolve_name(name, "handler");
 
-    let handler = EmergentHandler::connect(&resolved_name)
+    let mut handler = EmergentHandler::connect(&resolved_name)
         .await
         .map_err(|e| HelperError::ConnectionFailed {
             name: resolved_name.clone(),
@@ -414,7 +414,7 @@ where
 {
     let resolved_name = resolve_name(name, "sink");
 
-    let sink =
+    let mut sink =
         EmergentSink::connect(&resolved_name)
             .await
             .map_err(|e| HelperError::ConnectionFailed {

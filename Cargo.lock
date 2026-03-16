@@ -16,9 +16,9 @@ dependencies = [
 
 [[package]]
 name = "acton-macro"
-version = "8.0.2"
+version = "8.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a083e63aa4d15ae850fd669cef39fee8f55a57853be56d389d2159f28f2f7c86"
+checksum = "f712230fd49be1f9ec623970bf6bb81528e363994382138e56f9dd869e12d4c0"
 dependencies = [
  "quote",
  "syn",
@@ -26,9 +26,9 @@ dependencies = [
 
 [[package]]
 name = "acton-reactive"
-version = "8.0.2"
+version = "8.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d377be67e0dec120698e4840cea02919eba1fd56e77c31db90e24768f32d00f"
+checksum = "f9ff59f647a4a2208db4358e742e190b6038cc33807fe89776b386ee079b66df"
 dependencies = [
  "acton-ern",
  "acton-macro",
@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "console"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "clap",
@@ -727,7 +727,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "emergent-client"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "acton-reactive",
  "directories 6.0.0",
@@ -811,7 +811,7 @@ dependencies = [
 
 [[package]]
 name = "exec-handler"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "filter"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "clap",
  "emergent-client",
@@ -1496,7 +1496,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "log"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "clap",
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "timer"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "clap",
  "emergent-client",
