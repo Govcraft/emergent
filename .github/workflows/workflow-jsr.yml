@@ -18,10 +18,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        working-directory: sdks/ts
-        run: npm install
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
 
       - name: Publish package
         working-directory: sdks/ts
-        run: npx jsr publish
+        run: deno publish
