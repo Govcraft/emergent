@@ -151,6 +151,19 @@ fn build_publish_envelope(message: EmergentMessage) -> Result<IpcEnvelope> {
     ))
 }
 
+/// Build an `IpcEnvelope` for acknowledged publish (request-response).
+///
+/// The broker processes the message and returns a reply, providing backpressure.
+fn build_publish_request_envelope(message: EmergentMessage) -> Result<IpcEnvelope> {
+    let ipc_message = IpcEmergentMessage { inner: message };
+    let payload = serde_json::to_value(&ipc_message)?;
+    Ok(IpcEnvelope::new_request(
+        "message_broker",
+        "EmergentMessage",
+        payload,
+    ))
+}
+
 /// Bridge push notifications from an `IpcClient` to a `MessageStream`.
 ///
 /// Handles `system.shutdown` detection and `EmergentMessage` extraction.
@@ -523,10 +536,46 @@ impl EmergentSource {
         })
     }
 
+    /// Publish a message with broker acknowledgment (backpressure).
+    ///
+    /// Unlike [`publish`], this waits for the engine's message broker to confirm
+    /// it has processed and forwarded the message before returning. This provides
+    /// natural backpressure — the caller cannot outpace the broker.
+    ///
+    /// Used internally by [`publish_all`] and [`publish_stream`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the broker rejects the message or times out.
+    pub async fn publish_ack(&self, mut message: EmergentMessage) -> Result<()> {
+        if message.source.is_default() {
+            message.source = PrimitiveName::new(&self.name).map_err(|e| {
+                ClientError::ConnectionFailed(format!(
+                    "invalid primitive name '{}': {}",
+                    self.name, e
+                ))
+            })?;
+        }
+
+        let envelope = build_publish_request_envelope(message)?;
+        let response = self.client.request(envelope).await.map_err(|e| {
+            error!(primitive.name = %self.name, error = %e, "publish_ack failed");
+            ClientError::ConnectionFailed(format!("publish_ack failed: {e}"))
+        })?;
+        if !response.success {
+            return Err(ClientError::PublishFailed(
+                response
+                    .error
+                    .unwrap_or_else(|| "broker error".to_string()),
+            ));
+        }
+        Ok(())
+    }
+
     /// Publish all messages from an iterator.
     ///
-    /// Sends each message individually (no batching) so subscribers begin
-    /// consuming immediately. Stops on the first error.
+    /// Sends each message individually with broker acknowledgment so subscribers
+    /// begin consuming immediately. Stops on the first error.
     ///
     /// Returns the number of messages successfully published.
     ///
@@ -539,7 +588,7 @@ impl EmergentSource {
     ) -> Result<usize> {
         let mut count = 0;
         for message in messages {
-            self.publish(message).await?;
+            self.publish_ack(message).await?;
             count += 1;
         }
         Ok(count)
@@ -547,9 +596,9 @@ impl EmergentSource {
 
     /// Publish messages from an async stream.
     ///
-    /// Consumes the stream, publishing each message individually so subscribers
-    /// begin consuming immediately. Stops on the first publish error or when
-    /// the stream ends.
+    /// Consumes the stream, publishing each message individually with broker
+    /// acknowledgment so subscribers begin consuming immediately. Stops on the
+    /// first publish error or when the stream ends.
     ///
     /// Returns the number of messages successfully published.
     ///
@@ -563,7 +612,7 @@ impl EmergentSource {
         use futures::StreamExt;
         let mut count = 0;
         while let Some(message) = stream.next().await {
-            self.publish(message).await?;
+            self.publish_ack(message).await?;
             count += 1;
         }
         Ok(count)
@@ -769,10 +818,46 @@ impl EmergentHandler {
         })
     }
 
+    /// Publish a message with broker acknowledgment (backpressure).
+    ///
+    /// Unlike [`publish`], this waits for the engine's message broker to confirm
+    /// it has processed and forwarded the message before returning. This provides
+    /// natural backpressure — the caller cannot outpace the broker.
+    ///
+    /// Used internally by [`publish_all`] and [`publish_stream`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the broker rejects the message or times out.
+    pub async fn publish_ack(&self, mut message: EmergentMessage) -> Result<()> {
+        if message.source.is_default() {
+            message.source = PrimitiveName::new(&self.name).map_err(|e| {
+                ClientError::ConnectionFailed(format!(
+                    "invalid primitive name '{}': {}",
+                    self.name, e
+                ))
+            })?;
+        }
+
+        let envelope = build_publish_request_envelope(message)?;
+        let response = self.client.request(envelope).await.map_err(|e| {
+            error!(primitive.name = %self.name, error = %e, "publish_ack failed");
+            ClientError::ConnectionFailed(format!("publish_ack failed: {e}"))
+        })?;
+        if !response.success {
+            return Err(ClientError::PublishFailed(
+                response
+                    .error
+                    .unwrap_or_else(|| "broker error".to_string()),
+            ));
+        }
+        Ok(())
+    }
+
     /// Publish all messages from an iterator.
     ///
-    /// Sends each message individually (no batching) so subscribers begin
-    /// consuming immediately. Stops on the first error.
+    /// Sends each message individually with broker acknowledgment so subscribers
+    /// begin consuming immediately. Stops on the first error.
     ///
     /// Returns the number of messages successfully published.
     ///
@@ -785,7 +870,7 @@ impl EmergentHandler {
     ) -> Result<usize> {
         let mut count = 0;
         for message in messages {
-            self.publish(message).await?;
+            self.publish_ack(message).await?;
             count += 1;
         }
         Ok(count)
@@ -793,9 +878,9 @@ impl EmergentHandler {
 
     /// Publish messages from an async stream.
     ///
-    /// Consumes the stream, publishing each message individually so subscribers
-    /// begin consuming immediately. Stops on the first publish error or when
-    /// the stream ends.
+    /// Consumes the stream, publishing each message individually with broker
+    /// acknowledgment so subscribers begin consuming immediately. Stops on the
+    /// first publish error or when the stream ends.
     ///
     /// Returns the number of messages successfully published.
     ///
@@ -809,9 +894,157 @@ impl EmergentHandler {
         use futures::StreamExt;
         let mut count = 0;
         while let Some(message) = stream.next().await {
-            self.publish(message).await?;
+            self.publish_ack(message).await?;
             count += 1;
         }
+        Ok(count)
+    }
+
+    /// Offer items as a pull-based stream with consumer-driven backpressure.
+    ///
+    /// Publishes `stream.ready`, then serves items one at a time as the
+    /// consumer sends `stream.pull` requests. Publishes `stream.end`
+    /// when exhausted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream times out or the pull stream closes.
+    pub async fn stream_offer(
+        &self,
+        message_type: &str,
+        items: impl IntoIterator<Item = serde_json::Value>,
+        pull_stream: &mut MessageStream,
+        timeout: std::time::Duration,
+    ) -> Result<usize> {
+        let stream_id = CorrelationId::new().to_string();
+        let mut items = items.into_iter();
+
+        self.publish(
+            EmergentMessage::new("stream.ready").with_payload(serde_json::json!({
+                "stream_id": stream_id,
+                "message_type": message_type,
+            })),
+        )
+        .await?;
+
+        let mut published = 0usize;
+
+        loop {
+            let msg = tokio::time::timeout(timeout, pull_stream.next())
+                .await
+                .map_err(|_| ClientError::Timeout)?
+                .ok_or_else(|| {
+                    ClientError::ConnectionFailed(
+                        "pull stream closed during stream_offer".to_string(),
+                    )
+                })?;
+
+            let is_pull = msg.message_type.as_str() == "stream.pull"
+                && msg.payload.get("stream_id").and_then(|v| v.as_str())
+                    == Some(stream_id.as_str());
+
+            if is_pull {
+                if let Some(item) = items.next() {
+                    self.publish(
+                        EmergentMessage::new(message_type)
+                            .with_payload(item)
+                            .with_metadata(serde_json::json!({"stream_id": stream_id})),
+                    )
+                    .await?;
+                    published += 1;
+                } else {
+                    self.publish(
+                        EmergentMessage::new("stream.end")
+                            .with_payload(serde_json::json!({"stream_id": stream_id})),
+                    )
+                    .await?;
+                    break;
+                }
+            }
+        }
+
+        Ok(published)
+    }
+
+    /// Consume a pull-based stream, yielding items via callback.
+    ///
+    /// Waits for `stream.ready`, then sends `stream.pull` requests
+    /// automatically after each item is consumed. Stops on `stream.end`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream times out or the source stream closes.
+    pub async fn stream_consume(
+        &self,
+        message_type: &str,
+        source_stream: &mut MessageStream,
+        timeout: std::time::Duration,
+        mut on_item: impl FnMut(EmergentMessage),
+    ) -> Result<usize> {
+        let stream_id = loop {
+            let msg = tokio::time::timeout(timeout, source_stream.next())
+                .await
+                .map_err(|_| ClientError::Timeout)?
+                .ok_or_else(|| {
+                    ClientError::ConnectionFailed(
+                        "source stream closed before stream.ready".to_string(),
+                    )
+                })?;
+
+            if msg.message_type.as_str() == "stream.ready"
+                && let (Some(mt), Some(sid)) = (
+                    msg.payload.get("message_type").and_then(|v| v.as_str()),
+                    msg.payload.get("stream_id").and_then(|v| v.as_str()),
+                )
+                    && mt == message_type {
+                        break sid.to_string();
+                    }
+        };
+
+        self.publish(
+            EmergentMessage::new("stream.pull")
+                .with_payload(serde_json::json!({"stream_id": stream_id})),
+        )
+        .await?;
+
+        let mut count = 0usize;
+
+        loop {
+            let msg = tokio::time::timeout(timeout, source_stream.next())
+                .await
+                .map_err(|_| ClientError::Timeout)?
+                .ok_or_else(|| {
+                    ClientError::ConnectionFailed(
+                        "source stream closed during stream_consume".to_string(),
+                    )
+                })?;
+
+            if msg.message_type.as_str() == "stream.end"
+                && msg.payload.get("stream_id").and_then(|v| v.as_str())
+                    == Some(stream_id.as_str())
+            {
+                break;
+            }
+
+            let is_item = msg.message_type.as_str() == message_type
+                && msg
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("stream_id"))
+                    .and_then(|v| v.as_str())
+                    == Some(stream_id.as_str());
+
+            if is_item {
+                on_item(msg);
+                count += 1;
+                self.publish(
+                    EmergentMessage::new("stream.pull")
+                        .with_payload(serde_json::json!({"stream_id": stream_id})),
+                )
+                .await?;
+            }
+        }
+
         Ok(count)
     }
 

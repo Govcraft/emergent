@@ -112,6 +112,14 @@ struct IpcEmergentMessage {
     inner: EmergentMessage,
 }
 
+/// Acknowledgment reply sent back to publishers using request-response mode.
+///
+/// When a client publishes with `expects_reply: true`, the broker sends this
+/// back after storing and forwarding the message, providing backpressure.
+#[acton_message]
+struct PublishAck;
+
+
 impl From<EmergentMessage> for IpcEmergentMessage {
     fn from(msg: EmergentMessage) -> Self {
         Self { inner: msg }
@@ -537,6 +545,11 @@ async fn main() -> Result<()> {
         );
 
         sub_mgr.forward_to_subscribers(&notification);
+
+        // Send ACK reply for request-response publishers (backpressure support).
+        // For fire-and-forget publishers this is a no-op (reply goes nowhere).
+        let reply_envelope = envelope.reply_envelope();
+        let _ = reply_envelope.reply(PublishAck);
 
         Reply::ready()
     });

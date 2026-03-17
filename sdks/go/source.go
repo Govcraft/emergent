@@ -22,13 +22,20 @@ func (s *EmergentSource) Publish(message *EmergentMessage) error {
 	return s.publishInternal(message)
 }
 
+// PublishAck publishes a message and waits for broker acknowledgment.
+// Unlike Publish, this provides backpressure by waiting for the engine's
+// message broker to confirm it has processed and forwarded the message.
+func (s *EmergentSource) PublishAck(ctx context.Context, message *EmergentMessage) error {
+	return s.publishInternalAck(ctx, message)
+}
+
 // PublishAll publishes all messages from a slice.
 // Sends each message individually so subscribers begin consuming
 // immediately. Stops on the first error.
 // Returns the number of messages successfully published.
 func (s *EmergentSource) PublishAll(messages []*EmergentMessage) (int, error) {
 	for i, msg := range messages {
-		if err := s.Publish(msg); err != nil {
+		if err := s.PublishAck(context.Background(), msg); err != nil {
 			return i, err
 		}
 	}
@@ -49,7 +56,7 @@ func (s *EmergentSource) PublishStream(ctx context.Context, ch <-chan *EmergentM
 			if !ok {
 				return count, nil
 			}
-			if err := s.Publish(msg); err != nil {
+			if err := s.PublishAck(ctx, msg); err != nil {
 				return count, err
 			}
 			count++

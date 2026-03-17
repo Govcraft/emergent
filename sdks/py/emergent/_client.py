@@ -401,6 +401,58 @@ class BaseClient:
             wire_dict.get("id"),
         )
 
+    async def _publish_ack(self, message: EmergentMessage) -> None:
+        """
+        Publish a message with broker acknowledgment (backpressure).
+
+        Unlike ``_publish``, this waits for the engine's message broker to
+        confirm it has processed and forwarded the message before returning.
+
+        Args:
+            message: The message to publish
+        """
+        self._ensure_connected()
+
+        wire_dict = message.to_wire().model_dump(exclude_none=True)
+        wire_dict["source"] = self.name
+
+        ipc_message = {"inner": wire_dict}
+
+        correlation_id = generate_correlation_id("pub")
+        envelope = IpcEnvelope(
+            correlation_id=correlation_id,
+            target="message_broker",
+            message_type="EmergentMessage",
+            payload=ipc_message,
+            expects_reply=True,
+        )
+
+        logger.debug(
+            "publishing message (ack) primitive=%s message_type=%s",
+            self.name,
+            wire_dict.get("message_type"),
+        )
+
+        response = await self._send_request(
+            MessageType.REQUEST,
+            envelope.model_dump(),
+            correlation_id,
+        )
+
+        if not response.success:
+            from .errors import PublishError
+
+            raise PublishError(
+                response.error or "Broker returned error",
+                message_type=wire_dict.get("message_type", ""),
+            )
+
+        logger.debug(
+            "publish_ack succeeded primitive=%s message_type=%s",
+            self.name,
+            wire_dict.get("message_type"),
+        )
+
     async def _discover(self) -> DiscoveryInfo:
         """
         Discover available message types and primitives.

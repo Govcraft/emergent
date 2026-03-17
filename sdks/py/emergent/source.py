@@ -139,6 +139,30 @@ class EmergentSource(BaseClient):
 
         await self._publish(message)
 
+    async def publish_ack(
+        self,
+        message_or_type: EmergentMessage | MessageBuilder | str,
+        payload: Any = None,
+    ) -> None:
+        """
+        Publish a message with broker acknowledgment (backpressure).
+
+        Unlike :meth:`publish`, this waits for the engine's message broker to
+        confirm it has processed and forwarded the message before returning.
+
+        Used internally by :meth:`publish_all` and :meth:`publish_stream`.
+        """
+        message: EmergentMessage
+
+        if isinstance(message_or_type, str):
+            message = create_message(message_or_type).payload(payload).build()
+        elif isinstance(message_or_type, MessageBuilder):
+            message = message_or_type.build()
+        else:
+            message = message_or_type
+
+        await self._publish_ack(message)
+
     async def publish_all(
         self,
         messages: Iterable[EmergentMessage | MessageBuilder],
@@ -164,7 +188,7 @@ class EmergentSource(BaseClient):
         """
         count = 0
         for message in messages:
-            await self.publish(message)
+            await self.publish_ack(message)
             count += 1
         return count
 
@@ -193,7 +217,7 @@ class EmergentSource(BaseClient):
         """
         count = 0
         async for message in messages:
-            await self.publish(message)
+            await self.publish_ack(message)
             count += 1
         return count
 

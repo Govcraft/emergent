@@ -119,6 +119,16 @@ class DisposedError(EmergentError):
         )
 
 
+class StreamError(EmergentError):
+    """Error thrown during stream_offer or stream_consume operations."""
+
+    code = "STREAM_ERROR"
+
+    def __init__(self, message: str, stream_id: str = "") -> None:
+        super().__init__(message, self.code)
+        self.stream_id = stream_id
+
+
 class ValidationError(EmergentError):
     """Error thrown when validation fails."""
 

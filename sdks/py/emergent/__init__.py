@@ -41,6 +41,7 @@ from emergent.errors import (
     ProtocolError,
     PublishError,
     SocketNotFoundError,
+    StreamError,
     SubscriptionError,
     TimeoutError,
     ValidationError,
@@ -99,6 +100,7 @@ __all__ = [
     "ProtocolError",
     "PublishError",
     "SocketNotFoundError",
+    "StreamError",
     "SubscriptionError",
     # System Event Types
     "SystemEventPayload",

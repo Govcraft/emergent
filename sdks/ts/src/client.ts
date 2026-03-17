@@ -329,6 +329,53 @@ export class BaseClient {
   }
 
   /**
+   * Publish a message with broker acknowledgment (backpressure).
+   *
+   * Unlike `publishInternal`, this waits for the engine's message broker to
+   * confirm it has processed and forwarded the message before returning.
+   *
+   * @internal
+   */
+  protected async publishInternalAck(message: EmergentMessage): Promise<void> {
+    this.#ensureConnected();
+
+    this.#logger.debug("publishing message (ack)", { messageType: message.messageType, messageId: message.id });
+
+    const wireMessage: WireMessage = {
+      id: message.id,
+      message_type: message.messageType,
+      source: this.name,
+      correlation_id: message.correlationId,
+      causation_id: message.causationId,
+      timestamp_ms: message.timestampMs,
+      payload: message.payload,
+      metadata: message.metadata,
+    };
+
+    const correlationId = generateCorrelationId("pub");
+    const envelope: IpcEnvelope = {
+      correlation_id: correlationId,
+      target: "message_broker",
+      message_type: "EmergentMessage",
+      payload: { inner: wireMessage },
+      expects_reply: true,
+    };
+
+    const response = await this.#sendRequest<IpcEnvelope>(
+      MSG_TYPE_REQUEST,
+      envelope,
+      correlationId,
+    );
+
+    if (!response.success) {
+      this.#logger.error("publish_ack failed", { messageType: message.messageType, error: response.error });
+      throw new ConnectionError(response.error ?? "Broker returned error");
+    }
+
+    this.#logger.debug("publish_ack succeeded", { messageType: message.messageType, messageId: message.id });
+  }
+
+  /**
    * Discover available message types and primitives.
    * @internal
    */

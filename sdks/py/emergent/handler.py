@@ -6,16 +6,21 @@ A Handler can both subscribe to and publish messages (bidirectional).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Iterable
+import asyncio
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Any
 
 from ._client import BaseClient
-from ._protocol import Format
+from ._protocol import Format, generate_correlation_id
 from .message import MessageBuilder, create_message
 
 if TYPE_CHECKING:
     from .stream import MessageStream
     from .types import DiscoveryInfo, EmergentMessage
+
+_STREAM_READY = "stream.ready"
+_STREAM_PULL = "stream.pull"
+_STREAM_END = "stream.end"
 
 
 class EmergentHandler(BaseClient):
@@ -190,6 +195,30 @@ class EmergentHandler(BaseClient):
 
         await self._publish(message)
 
+    async def publish_ack(
+        self,
+        message_or_type: EmergentMessage | MessageBuilder | str,
+        payload: Any = None,
+    ) -> None:
+        """
+        Publish a message with broker acknowledgment (backpressure).
+
+        Unlike :meth:`publish`, this waits for the engine's message broker to
+        confirm it has processed and forwarded the message before returning.
+
+        Used internally by :meth:`publish_all` and :meth:`publish_stream`.
+        """
+        message: EmergentMessage
+
+        if isinstance(message_or_type, str):
+            message = create_message(message_or_type).payload(payload).build()
+        elif isinstance(message_or_type, MessageBuilder):
+            message = message_or_type.build()
+        else:
+            message = message_or_type
+
+        await self._publish_ack(message)
+
     async def publish_all(
         self,
         messages: Iterable[EmergentMessage | MessageBuilder],
@@ -217,7 +246,7 @@ class EmergentHandler(BaseClient):
         """
         count = 0
         for message in messages:
-            await self.publish(message)
+            await self.publish_ack(message)
             count += 1
         return count
 
@@ -246,9 +275,218 @@ class EmergentHandler(BaseClient):
         """
         count = 0
         async for message in messages:
-            await self.publish(message)
+            await self.publish_ack(message)
             count += 1
         return count
+
+    async def stream_offer(
+        self,
+        message_type: str,
+        items: Iterable[Any] | AsyncIterable[Any],
+        pull_stream: MessageStream,
+        *,
+        timeout: float = 30.0,
+    ) -> int:
+        """
+        Offer items as a pull-based stream with consumer-driven backpressure.
+
+        Publishes ``stream.ready``, then serves items one at a time as the
+        consumer sends ``stream.pull`` requests. Publishes ``stream.end``
+        when exhausted. Non-stream messages that arrive during the offer
+        are buffered and replayed after.
+
+        Args:
+            message_type: Message type for data items (e.g. "classify.result")
+            items: Iterable or async iterable of payload values to stream
+            pull_stream: The MessageStream to read pull requests from
+            timeout: Seconds to wait for each pull request
+
+        Returns:
+            Number of items published
+        """
+        from .errors import StreamError
+
+        stream_id = generate_correlation_id("strm")
+        buffered: list[EmergentMessage] = []
+
+        # Determine count if possible
+        count_hint: int | None = None
+        if hasattr(items, "__len__"):
+            count_hint = len(items)  # type: ignore[arg-type]
+
+        # Create iterator — handle both sync and async iterables
+        if isinstance(items, AsyncIterable):
+            items_aiter = items.__aiter__()
+            is_async = True
+        else:
+            items_iter = iter(items)
+            is_async = False
+
+        def _next_sync() -> tuple[Any, bool]:
+            try:
+                return next(items_iter), True  # type: ignore[arg-type]
+            except StopIteration:
+                return None, False
+
+        async def _next_async() -> tuple[Any, bool]:
+            try:
+                return await items_aiter.__anext__(), True  # type: ignore[union-attr]
+            except StopAsyncIteration:
+                return None, False
+
+        try:
+            # Announce stream
+            await self.publish(
+                create_message(_STREAM_READY).payload(
+                    {"stream_id": stream_id, "message_type": message_type, "count": count_hint}
+                )
+            )
+
+            published = 0
+
+            while True:
+                # Wait for pull request
+                try:
+                    msg = await asyncio.wait_for(pull_stream.next(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    raise StreamError(
+                        f"Timed out waiting for stream.pull after {timeout}s",
+                        stream_id=stream_id,
+                    ) from None
+
+                if msg is None:
+                    raise StreamError(
+                        "Pull stream closed during stream_offer",
+                        stream_id=stream_id,
+                    )
+
+                # Check if it's a pull request for this stream
+                if (
+                    msg.message_type == _STREAM_PULL
+                    and isinstance(msg.payload, dict)
+                    and msg.payload.get("stream_id") == stream_id
+                ):
+                    # Get next item
+                    if is_async:
+                        item, has_item = await _next_async()
+                    else:
+                        item, has_item = _next_sync()
+
+                    if has_item:
+                        await self.publish(
+                            create_message(message_type)
+                                .payload(item)
+                                .metadata({"stream_id": stream_id})
+                        )
+                        published += 1
+                    else:
+                        # Stream exhausted
+                        await self.publish(
+                            create_message(_STREAM_END).payload({"stream_id": stream_id})
+                        )
+                        break
+                else:
+                    # Not a pull for this stream — buffer it
+                    buffered.append(msg)
+
+            return published
+        finally:
+            # Replay buffered messages
+            for msg in buffered:
+                pull_stream.push(msg)
+
+    async def stream_consume(
+        self,
+        message_type: str,
+        source_stream: MessageStream,
+        *,
+        timeout: float = 30.0,
+    ) -> AsyncIterator[EmergentMessage]:
+        """
+        Consume a pull-based stream, yielding items one at a time.
+
+        Waits for ``stream.ready``, then sends ``stream.pull`` requests
+        automatically after each item is consumed. Iteration stops on
+        ``stream.end``.
+
+        Args:
+            message_type: Message type to consume (e.g. "classify.result")
+            source_stream: The MessageStream to read items from
+            timeout: Seconds to wait for each item
+
+        Yields:
+            EmergentMessage instances containing stream items
+        """
+        from .errors import StreamError
+
+        buffered: list[EmergentMessage] = []
+
+        try:
+            # Wait for stream.ready
+            stream_id: str | None = None
+            while stream_id is None:
+                try:
+                    msg = await asyncio.wait_for(source_stream.next(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    raise StreamError(
+                        f"Timed out waiting for stream.ready after {timeout}s",
+                    ) from None
+
+                if msg is None:
+                    raise StreamError("Source stream closed before stream.ready")
+
+                if (
+                    msg.message_type == _STREAM_READY
+                    and isinstance(msg.payload, dict)
+                    and msg.payload.get("message_type") == message_type
+                ):
+                    stream_id = msg.payload["stream_id"]
+                else:
+                    buffered.append(msg)
+
+            # Send initial pull
+            await self.publish(
+                create_message(_STREAM_PULL).payload({"stream_id": stream_id})
+            )
+
+            # Yield items until stream.end
+            while True:
+                try:
+                    msg = await asyncio.wait_for(source_stream.next(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    raise StreamError(
+                        f"Timed out waiting for stream item after {timeout}s",
+                        stream_id=stream_id,
+                    ) from None
+
+                if msg is None:
+                    raise StreamError(
+                        "Source stream closed during stream_consume",
+                        stream_id=stream_id,
+                    )
+
+                if (
+                    msg.message_type == _STREAM_END
+                    and isinstance(msg.payload, dict)
+                    and msg.payload.get("stream_id") == stream_id
+                ):
+                    break
+
+                if (
+                    msg.message_type == message_type
+                    and isinstance(msg.metadata, dict)
+                    and msg.metadata.get("stream_id") == stream_id
+                ):
+                    yield msg
+                    # Request next item
+                    await self.publish(
+                        create_message(_STREAM_PULL).payload({"stream_id": stream_id})
+                    )
+                else:
+                    buffered.append(msg)
+        finally:
+            for msg in buffered:
+                source_stream.push(msg)
 
     async def discover(self) -> DiscoveryInfo:
         """

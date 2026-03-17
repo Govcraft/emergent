@@ -159,27 +159,46 @@ export class EmergentHandler extends BaseClient
   }
 
   /**
+   * Publish a message with broker acknowledgment (backpressure).
+   *
+   * Unlike {@link publish}, this waits for the engine's message broker to
+   * confirm it has processed and forwarded the message before returning.
+   *
+   * Used internally by {@link publishAll} and {@link publishStream}.
+   */
+  async publishAck(
+    messageOrType: EmergentMessage | MessageBuilder | string,
+    payload?: unknown,
+  ): Promise<void> {
+    let message: EmergentMessage;
+
+    if (typeof messageOrType === "string") {
+      message = createMessage(messageOrType).payload(payload).build();
+    } else if (
+      "build" in messageOrType && typeof messageOrType.build === "function"
+    ) {
+      message = messageOrType.build();
+    } else {
+      message = messageOrType as EmergentMessage;
+    }
+
+    await this.publishInternalAck(message);
+  }
+
+  /**
    * Publish all messages from an iterable.
    *
-   * Sends each message individually so subscribers begin consuming
-   * immediately. Stops on the first error.
+   * Sends each message individually with broker acknowledgment so
+   * subscribers begin consuming immediately. Stops on the first error.
    *
    * @returns The number of messages successfully published.
-   *
-   * @example
-   * ```typescript
-   * const messages = records.map(r =>
-   *   createMessage("record.processed").causedBy(originalMsg.id).payload(r)
-   * );
-   * const count = await handler.publishAll(messages);
-   * ```
    */
   async publishAll(
     messages: Iterable<EmergentMessage | MessageBuilder>,
   ): Promise<number> {
     let count = 0;
     for (const msg of messages) {
-      await this.publish(msg);
+      await this.publishAck(msg);
       count++;
     }
     return count;
@@ -188,31 +207,173 @@ export class EmergentHandler extends BaseClient
   /**
    * Publish messages from an async iterable (stream).
    *
-   * Consumes the async iterable, publishing each message individually so
-   * subscribers begin consuming immediately. Stops on the first publish
-   * error or when the iterable ends.
+   * Consumes the async iterable, publishing each message individually with
+   * broker acknowledgment so subscribers begin consuming immediately.
+   * Stops on the first publish error or when the iterable ends.
    *
    * @returns The number of messages successfully published.
-   *
-   * @example
-   * ```typescript
-   * async function* generateMessages() {
-   *   for (let i = 0; i < 100; i++) {
-   *     yield createMessage("batch.item").payload({ index: i });
-   *   }
-   * }
-   * const count = await handler.publishStream(generateMessages());
-   * ```
    */
   async publishStream(
     messages: AsyncIterable<EmergentMessage | MessageBuilder>,
   ): Promise<number> {
     let count = 0;
     for await (const msg of messages) {
-      await this.publish(msg);
+      await this.publishAck(msg);
       count++;
     }
     return count;
+  }
+
+  /**
+   * Offer items as a pull-based stream with consumer-driven backpressure.
+   *
+   * Publishes `stream.ready`, then serves items one at a time as the
+   * consumer sends `stream.pull` requests. Publishes `stream.end`
+   * when exhausted.
+   *
+   * @returns The number of items published
+   */
+  async streamOffer(
+    messageType: string,
+    items: Iterable<unknown> | AsyncIterable<unknown>,
+    pullStream: MessageStream,
+    timeout = 30000,
+  ): Promise<number> {
+    const streamId = `strm_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+    // Announce stream
+    await this.publish(
+      createMessage("stream.ready").payload({
+        stream_id: streamId,
+        message_type: messageType,
+      }),
+    );
+
+    // Create iterator
+    const isAsync = Symbol.asyncIterator in Object(items);
+    const iter = isAsync
+      ? (items as AsyncIterable<unknown>)[Symbol.asyncIterator]()
+      : (items as Iterable<unknown>)[Symbol.iterator]();
+
+    let published = 0;
+
+    while (true) {
+      // Wait for pull request
+      const msg = await Promise.race([
+        pullStream.next(),
+        new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error("stream_offer timed out waiting for pull")), timeout)
+        ),
+      ]);
+
+      if (msg === null) break;
+
+      const isPull =
+        msg.messageType === "stream.pull" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).stream_id === streamId;
+
+      if (isPull) {
+        const next = isAsync
+          ? await (iter as AsyncIterator<unknown>).next()
+          : (iter as Iterator<unknown>).next();
+
+        if (!next.done) {
+          await this.publish(
+            createMessage(messageType)
+              .payload(next.value)
+              .metadata({ stream_id: streamId }),
+          );
+          published++;
+        } else {
+          await this.publish(
+            createMessage("stream.end").payload({ stream_id: streamId }),
+          );
+          break;
+        }
+      }
+    }
+
+    return published;
+  }
+
+  /**
+   * Consume a pull-based stream, yielding items one at a time.
+   *
+   * Waits for `stream.ready`, then sends `stream.pull` requests
+   * automatically after each item is consumed. Iteration stops on
+   * `stream.end`.
+   */
+  async *streamConsume(
+    messageType: string,
+    sourceStream: MessageStream,
+    timeout = 30000,
+  ): AsyncIterable<EmergentMessage> {
+    // Wait for stream.ready
+    let streamId: string | null = null;
+    while (streamId === null) {
+      const msg = await Promise.race([
+        sourceStream.next(),
+        new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error("stream_consume timed out waiting for stream.ready")), timeout)
+        ),
+      ]);
+
+      if (msg === null) {
+        throw new Error("Source stream closed before stream.ready");
+      }
+
+      if (
+        msg.messageType === "stream.ready" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).message_type === messageType
+      ) {
+        streamId = (msg.payload as Record<string, unknown>).stream_id as string;
+      }
+    }
+
+    // Send initial pull
+    await this.publish(
+      createMessage("stream.pull").payload({ stream_id: streamId }),
+    );
+
+    // Yield items
+    while (true) {
+      const msg = await Promise.race([
+        sourceStream.next(),
+        new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error("stream_consume timed out waiting for item")), timeout)
+        ),
+      ]);
+
+      if (msg === null) break;
+
+      // Check for stream.end
+      if (
+        msg.messageType === "stream.end" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).stream_id === streamId
+      ) {
+        break;
+      }
+
+      // Check for matching data item
+      if (
+        msg.messageType === messageType &&
+        typeof msg.metadata === "object" &&
+        msg.metadata !== null &&
+        (msg.metadata as Record<string, unknown>).stream_id === streamId
+      ) {
+        yield msg;
+        // Request next
+        await this.publish(
+          createMessage("stream.pull").payload({ stream_id: streamId }),
+        );
+      }
+    }
   }
 
   /**

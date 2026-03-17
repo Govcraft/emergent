@@ -299,6 +299,47 @@ func (c *baseClient) publishInternal(message *EmergentMessage) error {
 	return nil
 }
 
+func (c *baseClient) publishInternalAck(ctx context.Context, message *EmergentMessage) error {
+	c.mu.Lock()
+	if c.disposed {
+		c.mu.Unlock()
+		return &DisposedError{ClientType: string(c.primitiveKind)}
+	}
+	if c.conn == nil {
+		c.mu.Unlock()
+		return &ConnectionError{Msg: "not connected"}
+	}
+	c.mu.Unlock()
+
+	wireMsg := message.ToWire()
+	wireMsg["source"] = c.name
+
+	correlationID := generateCorrelationID("pub")
+	envelope := &IpcEnvelope{
+		CorrelationID: correlationID,
+		Target:        "message_broker",
+		MessageType:   "EmergentMessage",
+		Payload:       map[string]any{"inner": wireMsg},
+		ExpectsReply:  true,
+	}
+
+	resp, err := c.sendRequest(ctx, MsgTypeRequest, envelope, correlationID)
+	if err != nil {
+		c.logger.Error("publish_ack failed", "message_type", message.MessageType, "error", err)
+		return &PublishError{Msg: fmt.Sprintf("publish_ack failed: %v", err), MessageType: string(message.MessageType)}
+	}
+	if !resp.Success {
+		errMsg := resp.Error
+		if errMsg == "" {
+			errMsg = "broker returned error"
+		}
+		return &PublishError{Msg: errMsg, MessageType: string(message.MessageType)}
+	}
+
+	c.logger.Debug("publish_ack succeeded", "message_type", message.MessageType, "id", message.ID)
+	return nil
+}
+
 func (c *baseClient) discoverInternal(ctx context.Context) (*DiscoveryInfo, error) {
 	c.mu.Lock()
 	if c.disposed {
