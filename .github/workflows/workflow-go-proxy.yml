@@ -1,0 +1,32 @@
+name: Publish Go SDK to Go Module Proxy
+
+on:
+  push:
+    tags:
+      - 'sdks/go/v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Publish to Go Module Proxy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Verify module
+        working-directory: sdks/go
+        run: go mod verify
+
+      - name: Request module from proxy
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#sdks/go/}"
+          GOPROXY=https://proxy.golang.org go list -m "github.com/govcraft/emergent/sdks/go@${VERSION}"

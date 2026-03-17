@@ -1,0 +1,23 @@
+name: Publish TypeScript SDK to JSR
+
+on:
+  push:
+    tags:
+      - 'sdks/ts/v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Publish to JSR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish package
+        working-directory: sdks/ts
+        run: npx jsr publish
