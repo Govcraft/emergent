@@ -6,6 +6,7 @@ A Handler can both subscribe to and publish messages (bidirectional).
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from ._client import BaseClient
@@ -188,6 +189,66 @@ class EmergentHandler(BaseClient):
             message = message_or_type
 
         await self._publish(message)
+
+    async def publish_all(
+        self,
+        messages: Iterable[EmergentMessage | MessageBuilder],
+    ) -> int:
+        """
+        Publish all messages from an iterable.
+
+        Sends each message individually so subscribers begin consuming
+        immediately. Stops on the first error.
+
+        Args:
+            messages: Iterable of messages to publish
+
+        Returns:
+            The number of messages successfully published.
+
+        Example:
+            >>> messages = [
+            ...     create_message("record.processed")
+            ...     .caused_by(original_msg.id)
+            ...     .payload(record)
+            ...     for record in records
+            ... ]
+            >>> count = await handler.publish_all(messages)
+        """
+        count = 0
+        for message in messages:
+            await self.publish(message)
+            count += 1
+        return count
+
+    async def publish_stream(
+        self,
+        messages: AsyncIterable[EmergentMessage | MessageBuilder],
+    ) -> int:
+        """
+        Publish messages from an async iterable (stream).
+
+        Consumes the async iterable, publishing each message individually so
+        subscribers begin consuming immediately. Stops on the first publish
+        error or when the iterable ends.
+
+        Args:
+            messages: Async iterable of messages to publish
+
+        Returns:
+            The number of messages successfully published.
+
+        Example:
+            >>> async def generate_messages():
+            ...     for i in range(100):
+            ...         yield create_message("batch.item").payload({"index": i})
+            >>> count = await handler.publish_stream(generate_messages())
+        """
+        count = 0
+        async for message in messages:
+            await self.publish(message)
+            count += 1
+        return count
 
     async def discover(self) -> DiscoveryInfo:
         """

@@ -22,6 +22,41 @@ func (s *EmergentSource) Publish(message *EmergentMessage) error {
 	return s.publishInternal(message)
 }
 
+// PublishAll publishes all messages from a slice.
+// Sends each message individually so subscribers begin consuming
+// immediately. Stops on the first error.
+// Returns the number of messages successfully published.
+func (s *EmergentSource) PublishAll(messages []*EmergentMessage) (int, error) {
+	for i, msg := range messages {
+		if err := s.Publish(msg); err != nil {
+			return i, err
+		}
+	}
+	return len(messages), nil
+}
+
+// PublishStream reads messages from a channel and publishes each one.
+// Stops when the channel is closed, the context is cancelled, or
+// a publish error occurs.
+// Returns the number of messages successfully published.
+func (s *EmergentSource) PublishStream(ctx context.Context, ch <-chan *EmergentMessage) (int, error) {
+	count := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return count, ctx.Err()
+		case msg, ok := <-ch:
+			if !ok {
+				return count, nil
+			}
+			if err := s.Publish(msg); err != nil {
+				return count, err
+			}
+			count++
+		}
+	}
+}
+
 // Discover queries the engine for available message types and primitives.
 func (s *EmergentSource) Discover(ctx context.Context) (*DiscoveryInfo, error) {
 	return s.discoverInternal(ctx)

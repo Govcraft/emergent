@@ -159,6 +159,63 @@ export class EmergentHandler extends BaseClient
   }
 
   /**
+   * Publish all messages from an iterable.
+   *
+   * Sends each message individually so subscribers begin consuming
+   * immediately. Stops on the first error.
+   *
+   * @returns The number of messages successfully published.
+   *
+   * @example
+   * ```typescript
+   * const messages = records.map(r =>
+   *   createMessage("record.processed").causedBy(originalMsg.id).payload(r)
+   * );
+   * const count = await handler.publishAll(messages);
+   * ```
+   */
+  async publishAll(
+    messages: Iterable<EmergentMessage | MessageBuilder>,
+  ): Promise<number> {
+    let count = 0;
+    for (const msg of messages) {
+      await this.publish(msg);
+      count++;
+    }
+    return count;
+  }
+
+  /**
+   * Publish messages from an async iterable (stream).
+   *
+   * Consumes the async iterable, publishing each message individually so
+   * subscribers begin consuming immediately. Stops on the first publish
+   * error or when the iterable ends.
+   *
+   * @returns The number of messages successfully published.
+   *
+   * @example
+   * ```typescript
+   * async function* generateMessages() {
+   *   for (let i = 0; i < 100; i++) {
+   *     yield createMessage("batch.item").payload({ index: i });
+   *   }
+   * }
+   * const count = await handler.publishStream(generateMessages());
+   * ```
+   */
+  async publishStream(
+    messages: AsyncIterable<EmergentMessage | MessageBuilder>,
+  ): Promise<number> {
+    let count = 0;
+    for await (const msg of messages) {
+      await this.publish(msg);
+      count++;
+    }
+    return count;
+  }
+
+  /**
    * Discover available message types and primitives.
    *
    * @example

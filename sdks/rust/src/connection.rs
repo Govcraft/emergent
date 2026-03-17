@@ -14,11 +14,11 @@ use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
 use tracing::{debug, error, info, warn};
 
+use acton_reactive::ipc::protocol::Format;
 use acton_reactive::ipc::{
     IpcClient, IpcClientConfig, IpcConfig, IpcEnvelope, IpcPushNotification, socket_exists,
     socket_is_alive,
 };
-use acton_reactive::ipc::protocol::Format;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -97,9 +97,18 @@ fn init_tracing(name: &str) {
 }
 
 /// Connect to the engine socket with health checks, returning an `IpcClient`.
-async fn connect_to_engine(name: &str) -> Result<IpcClient> {
+///
+/// If `socket_override` is `Some`, uses that path directly. Otherwise resolves
+/// the socket path from `EMERGENT_SOCKET` env var or XDG default.
+async fn connect_to_engine(
+    name: &str,
+    socket_override: Option<&std::path::Path>,
+) -> Result<IpcClient> {
     init_tracing(name);
-    let socket_path = resolve_socket_path(name)?;
+    let socket_path = match socket_override {
+        Some(path) => path.to_path_buf(),
+        None => resolve_socket_path(name)?,
+    };
     debug!(path = %socket_path.display(), "resolved socket path");
 
     info!(primitive.name = %name, path = %socket_path.display(), "connecting to engine");
@@ -135,7 +144,11 @@ async fn connect_to_engine(name: &str) -> Result<IpcClient> {
 fn build_publish_envelope(message: EmergentMessage) -> Result<IpcEnvelope> {
     let ipc_message = IpcEmergentMessage { inner: message };
     let payload = serde_json::to_value(&ipc_message)?;
-    Ok(IpcEnvelope::new("message_broker", "EmergentMessage", payload))
+    Ok(IpcEnvelope::new(
+        "message_broker",
+        "EmergentMessage",
+        payload,
+    ))
 }
 
 /// Bridge push notifications from an `IpcClient` to a `MessageStream`.
@@ -186,12 +199,7 @@ async fn push_to_message_stream(
         } else {
             // Fallback: create EmergentMessage from push notification fields
             EmergentMessage::new(&notification.message_type)
-                .with_source(
-                    notification
-                        .source_actor
-                        .as_deref()
-                        .unwrap_or("unknown"),
-                )
+                .with_source(notification.source_actor.as_deref().unwrap_or("unknown"))
                 .with_payload(notification.payload)
         };
 
@@ -230,13 +238,16 @@ async fn subscribe_and_stream(
     }
 
     // Subscribe via IpcClient (single connection, no new socket)
-    let sub_response = client.subscribe(all_types).await.map_err(|e| {
-        ClientError::SubscriptionFailed(format!("subscribe failed: {e}"))
-    })?;
+    let sub_response = client
+        .subscribe(all_types)
+        .await
+        .map_err(|e| ClientError::SubscriptionFailed(format!("subscribe failed: {e}")))?;
 
     if !sub_response.success {
         return Err(ClientError::SubscriptionFailed(
-            sub_response.error.unwrap_or_else(|| "unknown error".to_string()),
+            sub_response
+                .error
+                .unwrap_or_else(|| "unknown error".to_string()),
         ));
     }
 
@@ -273,7 +284,7 @@ async fn subscribe_and_stream(
 async fn get_my_subscriptions_via_pubsub(name: &str) -> Result<Vec<String>> {
     debug!("querying configured subscriptions");
 
-    let client = connect_to_engine(name).await?;
+    let client = connect_to_engine(name, None).await?;
     let correlation_id = CorrelationId::new();
 
     // Subscribe to response type
@@ -293,9 +304,10 @@ async fn get_my_subscriptions_via_pubsub(name: &str) -> Result<Vec<String>> {
         .with_correlation_id(correlation_id.clone())
         .with_payload(json!({ "name": name }));
     let envelope = build_publish_envelope(request)?;
-    client.send(envelope).await.map_err(|e| {
-        ClientError::ConnectionFailed(format!("publish failed: {e}"))
-    })?;
+    client
+        .send(envelope)
+        .await
+        .map_err(|e| ClientError::ConnectionFailed(format!("publish failed: {e}")))?;
 
     // Wait for response with matching correlation_id
     let subs = tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -305,8 +317,7 @@ async fn get_my_subscriptions_via_pubsub(name: &str) -> Result<Vec<String>> {
                 if msg.correlation_id.as_ref().map(|c| c.to_string())
                     == Some(correlation_id.to_string())
                 {
-                    let subs_response: SubscriptionsResponse =
-                        serde_json::from_value(msg.payload)?;
+                    let subs_response: SubscriptionsResponse = serde_json::from_value(msg.payload)?;
                     return Ok(subs_response.subscribes);
                 }
             }
@@ -328,7 +339,7 @@ async fn get_my_subscriptions_via_pubsub(name: &str) -> Result<Vec<String>> {
 async fn get_topology_via_pubsub(name: &str) -> Result<TopologyState> {
     debug!("querying topology");
 
-    let client = connect_to_engine(name).await?;
+    let client = connect_to_engine(name, None).await?;
     let correlation_id = CorrelationId::new();
 
     client
@@ -345,9 +356,10 @@ async fn get_topology_via_pubsub(name: &str) -> Result<TopologyState> {
         .with_correlation_id(correlation_id.clone())
         .with_payload(json!({}));
     let envelope = build_publish_envelope(request)?;
-    client.send(envelope).await.map_err(|e| {
-        ClientError::ConnectionFailed(format!("publish failed: {e}"))
-    })?;
+    client
+        .send(envelope)
+        .await
+        .map_err(|e| ClientError::ConnectionFailed(format!("publish failed: {e}")))?;
 
     let state = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(notification) = push_rx.recv().await {
@@ -459,7 +471,25 @@ impl EmergentSource {
     ///
     /// Returns an error if the connection fails or the engine is not running.
     pub async fn connect(name: &str) -> Result<Self> {
-        let client = connect_to_engine(name).await?;
+        let client = connect_to_engine(name, None).await?;
+
+        info!(primitive.name = %name, primitive.kind = "source", "connected to engine");
+
+        Ok(Self {
+            name: name.to_string(),
+            client,
+        })
+    }
+
+    /// Connect to the Emergent engine at a specific socket path.
+    ///
+    /// This is useful for testing or when connecting to a non-default socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection fails or the engine is not running.
+    pub async fn connect_to(name: &str, socket_path: &std::path::Path) -> Result<Self> {
+        let client = connect_to_engine(name, Some(socket_path)).await?;
 
         info!(primitive.name = %name, primitive.kind = "source", "connected to engine");
 
@@ -493,6 +523,52 @@ impl EmergentSource {
         })
     }
 
+    /// Publish all messages from an iterator.
+    ///
+    /// Sends each message individually (no batching) so subscribers begin
+    /// consuming immediately. Stops on the first error.
+    ///
+    /// Returns the number of messages successfully published.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first publish error encountered.
+    pub async fn publish_all(
+        &self,
+        messages: impl IntoIterator<Item = EmergentMessage>,
+    ) -> Result<usize> {
+        let mut count = 0;
+        for message in messages {
+            self.publish(message).await?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Publish messages from an async stream.
+    ///
+    /// Consumes the stream, publishing each message individually so subscribers
+    /// begin consuming immediately. Stops on the first publish error or when
+    /// the stream ends.
+    ///
+    /// Returns the number of messages successfully published.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first publish error encountered.
+    pub async fn publish_stream<S>(&self, mut stream: S) -> Result<usize>
+    where
+        S: futures::Stream<Item = EmergentMessage> + Unpin,
+    {
+        use futures::StreamExt;
+        let mut count = 0;
+        while let Some(message) = stream.next().await {
+            self.publish(message).await?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Discover available message types and primitives.
     ///
     /// # Errors
@@ -500,14 +576,17 @@ impl EmergentSource {
     /// Returns an error if the discovery request fails.
     pub async fn discover(&self) -> Result<DiscoveryInfo> {
         // Discovery uses a separate connection (request-response pattern)
-        let client = connect_to_engine(&self.name).await?;
-        let response = client.discover().await.map_err(|e| {
-            ClientError::ConnectionFailed(format!("discover failed: {e}"))
-        })?;
+        let client = connect_to_engine(&self.name, None).await?;
+        let response = client
+            .discover()
+            .await
+            .map_err(|e| ClientError::ConnectionFailed(format!("discover failed: {e}")))?;
 
         if !response.success {
             return Err(ClientError::DiscoveryFailed(
-                response.error.unwrap_or_else(|| "unknown error".to_string()),
+                response
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string()),
             ));
         }
 
@@ -542,9 +621,10 @@ impl EmergentSource {
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
         info!(primitive.name = %self.name, "disconnecting from engine");
-        self.client.disconnect().await.map_err(|e| {
-            ClientError::ConnectionFailed(format!("disconnect failed: {e}"))
-        })?;
+        self.client
+            .disconnect()
+            .await
+            .map_err(|e| ClientError::ConnectionFailed(format!("disconnect failed: {e}")))?;
         info!(primitive.name = %self.name, "disconnected from engine");
         Ok(())
     }
@@ -590,7 +670,26 @@ impl EmergentHandler {
     ///
     /// Returns an error if the connection fails.
     pub async fn connect(name: &str) -> Result<Self> {
-        let client = connect_to_engine(name).await?;
+        let client = connect_to_engine(name, None).await?;
+
+        info!(primitive.name = %name, primitive.kind = "handler", "connected to engine");
+
+        Ok(Self {
+            name: name.to_string(),
+            client: Arc::new(client),
+            subscribed_types: Vec::new(),
+        })
+    }
+
+    /// Connect to the Emergent engine at a specific socket path.
+    ///
+    /// This is useful for testing or when connecting to a non-default socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection fails.
+    pub async fn connect_to(name: &str, socket_path: &std::path::Path) -> Result<Self> {
+        let client = connect_to_engine(name, Some(socket_path)).await?;
 
         info!(primitive.name = %name, primitive.kind = "handler", "connected to engine");
 
@@ -670,20 +769,69 @@ impl EmergentHandler {
         })
     }
 
+    /// Publish all messages from an iterator.
+    ///
+    /// Sends each message individually (no batching) so subscribers begin
+    /// consuming immediately. Stops on the first error.
+    ///
+    /// Returns the number of messages successfully published.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first publish error encountered.
+    pub async fn publish_all(
+        &self,
+        messages: impl IntoIterator<Item = EmergentMessage>,
+    ) -> Result<usize> {
+        let mut count = 0;
+        for message in messages {
+            self.publish(message).await?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Publish messages from an async stream.
+    ///
+    /// Consumes the stream, publishing each message individually so subscribers
+    /// begin consuming immediately. Stops on the first publish error or when
+    /// the stream ends.
+    ///
+    /// Returns the number of messages successfully published.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first publish error encountered.
+    pub async fn publish_stream<S>(&self, mut stream: S) -> Result<usize>
+    where
+        S: futures::Stream<Item = EmergentMessage> + Unpin,
+    {
+        use futures::StreamExt;
+        let mut count = 0;
+        while let Some(message) = stream.next().await {
+            self.publish(message).await?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Discover available message types and primitives.
     ///
     /// # Errors
     ///
     /// Returns an error if the discovery request fails.
     pub async fn discover(&self) -> Result<DiscoveryInfo> {
-        let client = connect_to_engine(&self.name).await?;
-        let response = client.discover().await.map_err(|e| {
-            ClientError::ConnectionFailed(format!("discover failed: {e}"))
-        })?;
+        let client = connect_to_engine(&self.name, None).await?;
+        let response = client
+            .discover()
+            .await
+            .map_err(|e| ClientError::ConnectionFailed(format!("discover failed: {e}")))?;
 
         if !response.success {
             return Err(ClientError::DiscoveryFailed(
-                response.error.unwrap_or_else(|| "unknown error".to_string()),
+                response
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string()),
             ));
         }
 
@@ -732,9 +880,10 @@ impl EmergentHandler {
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
         info!(primitive.name = %self.name, "disconnecting from engine");
-        self.client.disconnect().await.map_err(|e| {
-            ClientError::ConnectionFailed(format!("disconnect failed: {e}"))
-        })?;
+        self.client
+            .disconnect()
+            .await
+            .map_err(|e| ClientError::ConnectionFailed(format!("disconnect failed: {e}")))?;
         info!(primitive.name = %self.name, "disconnected from engine");
         Ok(())
     }
@@ -778,7 +927,26 @@ impl EmergentSink {
     ///
     /// Returns an error if the connection fails.
     pub async fn connect(name: &str) -> Result<Self> {
-        let client = connect_to_engine(name).await?;
+        let client = connect_to_engine(name, None).await?;
+
+        info!(primitive.name = %name, primitive.kind = "sink", "connected to engine");
+
+        Ok(Self {
+            name: name.to_string(),
+            client: Arc::new(client),
+            subscribed_types: Vec::new(),
+        })
+    }
+
+    /// Connect to the Emergent engine at a specific socket path.
+    ///
+    /// This is useful for testing or when connecting to a non-default socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection fails.
+    pub async fn connect_to(name: &str, socket_path: &std::path::Path) -> Result<Self> {
+        let client = connect_to_engine(name, Some(socket_path)).await?;
 
         info!(primitive.name = %name, primitive.kind = "sink", "connected to engine");
 
@@ -860,14 +1028,17 @@ impl EmergentSink {
     ///
     /// Returns an error if the discovery request fails.
     pub async fn discover(&self) -> Result<DiscoveryInfo> {
-        let client = connect_to_engine(&self.name).await?;
-        let response = client.discover().await.map_err(|e| {
-            ClientError::ConnectionFailed(format!("discover failed: {e}"))
-        })?;
+        let client = connect_to_engine(&self.name, None).await?;
+        let response = client
+            .discover()
+            .await
+            .map_err(|e| ClientError::ConnectionFailed(format!("discover failed: {e}")))?;
 
         if !response.success {
             return Err(ClientError::DiscoveryFailed(
-                response.error.unwrap_or_else(|| "unknown error".to_string()),
+                response
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string()),
             ));
         }
 
@@ -925,9 +1096,10 @@ impl EmergentSink {
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
         info!(primitive.name = %self.name, "disconnecting from engine");
-        self.client.disconnect().await.map_err(|e| {
-            ClientError::ConnectionFailed(format!("disconnect failed: {e}"))
-        })?;
+        self.client
+            .disconnect()
+            .await
+            .map_err(|e| ClientError::ConnectionFailed(format!("disconnect failed: {e}")))?;
         info!(primitive.name = %self.name, "disconnected from engine");
         Ok(())
     }

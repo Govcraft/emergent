@@ -536,11 +536,10 @@ func (c *baseClient) close() error {
 		c.readCancel()
 	}
 
-	// Close message stream
-	if c.messageStream != nil {
-		c.messageStream.Close()
-		c.messageStream = nil
-	}
+	// Capture stream reference under lock, then close outside lock
+	// to avoid deadlock with the stream's onClose callback.
+	stream := c.messageStream
+	c.messageStream = nil
 
 	// Close connection
 	if c.conn != nil {
@@ -587,6 +586,11 @@ func (c *baseClient) close() error {
 	c.subscribedTypes = make(map[string]struct{})
 	c.disposed = true
 	c.mu.Unlock()
+
+	// Close message stream outside lock to avoid deadlock with onClose callback
+	if stream != nil {
+		stream.Close()
+	}
 
 	// Wait for read loop to finish
 	select {
