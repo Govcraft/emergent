@@ -119,6 +119,31 @@ await source.publish(
 await source.publish(message);
 ```
 
+## Streaming Publish
+
+Publish a collection or async stream of messages. Each message is sent
+individually so subscribers begin consuming immediately. Both methods return
+the count of successfully published messages and stop on the first error.
+
+```typescript
+// From an array or any Iterable
+const messages = records.map(r =>
+  createMessage("record.imported").payload(r)
+);
+const count = await source.publishAll(messages);
+
+// From an async generator or any AsyncIterable
+async function* generateMessages() {
+  for (let i = 0; i < 100; i++) {
+    yield createMessage("batch.item").payload({ index: i });
+  }
+}
+const count = await source.publishStream(generateMessages());
+```
+
+Both `publishAll` and `publishStream` are available on `EmergentSource` and
+`EmergentHandler`.
+
 ## Building Messages
 
 `createMessage` returns a fluent builder for constructing immutable

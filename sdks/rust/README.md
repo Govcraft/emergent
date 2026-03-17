@@ -140,6 +140,31 @@ source.publish(
 ).await?;
 ```
 
+## Streaming Publish
+
+Publish a collection or async stream of messages. Each message is sent
+individually so subscribers begin consuming immediately. Both methods return
+the count of successfully published messages and stop on the first error.
+
+```rust
+// From a Vec or any IntoIterator
+let messages: Vec<EmergentMessage> = records.iter().map(|r| {
+    EmergentMessage::new("record.imported").with_payload(json!(r))
+}).collect();
+
+let count = source.publish_all(messages).await?;
+
+// From an async stream (e.g., tokio channel)
+use tokio_stream::wrappers::ReceiverStream;
+
+let (tx, rx) = tokio::sync::mpsc::channel(32);
+// ... spawn producer that sends messages into tx ...
+let count = source.publish_stream(ReceiverStream::new(rx)).await?;
+```
+
+Both `publish_all` and `publish_stream` are available on `EmergentSource` and
+`EmergentHandler`.
+
 ## Building Messages
 
 `EmergentMessage::new` and `create_message` return a builder with fluent

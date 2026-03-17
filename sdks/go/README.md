@@ -91,6 +91,38 @@ emergent.RunHandler("order_processor", []string{"order.created"}, func(msg *emer
 })
 ```
 
+## Streaming Publish
+
+Publish a batch or channel of messages. Each message is sent individually so
+subscribers begin consuming immediately. Both methods return the count of
+successfully published messages and stop on the first error.
+
+```go
+// From a slice
+messages := make([]*emergent.EmergentMessage, len(records))
+for i, r := range records {
+    msg, _ := emergent.NewMessage("record.imported")
+    msg.WithPayload(r)
+    messages[i] = msg
+}
+count, err := source.PublishAll(messages)
+
+// From a channel
+ch := make(chan *emergent.EmergentMessage, 32)
+go func() {
+    defer close(ch)
+    for i := 0; i < 100; i++ {
+        msg, _ := emergent.NewMessage("batch.item")
+        msg.WithPayload(map[string]any{"index": i})
+        ch <- msg
+    }
+}()
+count, err := source.PublishStream(ctx, ch)
+```
+
+Both `PublishAll` and `PublishStream` are available on `EmergentSource` and
+`EmergentHandler`.
+
 ## Building Messages
 
 `NewMessage` creates a message with a generated ID and timestamp. Chain `With*`

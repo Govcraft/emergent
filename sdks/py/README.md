@@ -113,6 +113,31 @@ await source.publish(
 await source.publish(message)
 ```
 
+## Streaming Publish
+
+Publish a collection or async stream of messages. Each message is sent
+individually so subscribers begin consuming immediately. Both methods return
+the count of successfully published messages and stop on the first error.
+
+```python
+# From a list or any Iterable
+messages = [
+    create_message("record.imported").payload(record)
+    for record in records
+]
+count = await source.publish_all(messages)
+
+# From an async generator or any AsyncIterable
+async def generate_messages():
+    for i in range(100):
+        yield create_message("batch.item").payload({"index": i})
+
+count = await source.publish_stream(generate_messages())
+```
+
+Both `publish_all` and `publish_stream` are available on `EmergentSource` and
+`EmergentHandler`.
+
 ## Building Messages
 
 `create_message` returns a fluent builder for constructing immutable
