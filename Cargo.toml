@@ -48,7 +48,7 @@ thiserror = "2"
 anyhow = "1"
 
 # acton-reactive
-acton-reactive = { version = "8.1.0", features = ["ipc", "ipc-messagepack"] }
+acton-reactive = { version = "8.1.1", features = ["ipc", "ipc-messagepack"] }
 
 # =============================================================================
 # Release Profile - Optimized for minimal binary size
