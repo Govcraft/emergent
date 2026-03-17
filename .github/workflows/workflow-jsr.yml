@@ -21,6 +21,10 @@ jobs:
       - name: Install Deno
         uses: denoland/setup-deno@v2
 
+      - name: Install dependencies
+        working-directory: sdks/ts
+        run: deno install
+
       - name: Publish package
         working-directory: sdks/ts
         run: deno publish
