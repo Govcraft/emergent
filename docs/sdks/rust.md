@@ -142,7 +142,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Method | Description |
 |--------|-------------|
 | `connect(name)` | Connect to engine |
+| `connect_to(name, socket_path)` | Connect to engine at a specific socket path |
 | `publish(message)` | Send a message (fire-and-forget) |
+| `publish_all(messages)` | Publish all messages from an iterator, return count |
+| `publish_stream(stream)` | Publish messages from an async stream, return count |
 | `discover()` | Query available message types and primitives |
 | `disconnect()` | Graceful disconnection |
 | `name()` | Get this source's name |
@@ -183,8 +186,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Method | Description |
 |--------|-------------|
 | `connect(name)` | Connect to engine |
+| `connect_to(name, socket_path)` | Connect to engine at a specific socket path |
 | `subscribe(types)` | Subscribe and get message stream |
 | `publish(message)` | Send a message |
+| `publish_all(messages)` | Publish all messages from an iterator, return count |
+| `publish_stream(stream)` | Publish messages from an async stream, return count |
 | `unsubscribe(types)` | Remove subscriptions |
 | `discover()` | Query available message types |
 | `disconnect()` | Graceful disconnection |
@@ -270,6 +276,40 @@ while let Some(msg) = stream.next().await {
 }
 // Stream ends on graceful shutdown
 ```
+
+## Streaming Publish
+
+Publish a batch or async stream of messages. Each message is sent individually so subscribers begin consuming immediately. Both methods return the count of successfully published messages and stop on the first error.
+
+### From a collection
+
+```rust
+let messages: Vec<EmergentMessage> = records.iter().map(|r| {
+    EmergentMessage::new("record.imported")
+        .with_payload(json!(r))
+}).collect();
+
+let count = source.publish_all(messages).await?;
+```
+
+### From an async stream
+
+```rust
+use tokio_stream::wrappers::ReceiverStream;
+
+let (tx, rx) = tokio::sync::mpsc::channel(32);
+tokio::spawn(async move {
+    for i in 0..100 {
+        let msg = EmergentMessage::new("batch.item")
+            .with_payload(json!({"index": i}));
+        let _ = tx.send(msg).await;
+    }
+});
+
+let count = source.publish_stream(ReceiverStream::new(rx)).await?;
+```
+
+Both `publish_all` and `publish_stream` are available on `EmergentSource` and `EmergentHandler`.
 
 ## Error Handling
 

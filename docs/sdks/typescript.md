@@ -68,6 +68,28 @@ await runSource("my_source", async (source, shutdown) => {
 });
 ```
 
+## Streaming Publish
+
+Publish a batch or async stream of messages. Each message is sent individually so subscribers begin consuming immediately.
+
+```typescript
+// From an array
+const messages = records.map(r =>
+  createMessage("record.imported").payload(r)
+);
+const count = await source.publishAll(messages);
+
+// From an async generator
+async function* generateMessages() {
+  for (let i = 0; i < 100; i++) {
+    yield createMessage("batch.item").payload({ index: i });
+  }
+}
+const count = await source.publishStream(generateMessages());
+```
+
+Both `publishAll` and `publishStream` are available on `EmergentSource` and `EmergentHandler`.
+
 ## Full Documentation
 
 See the complete SDK README for the full API reference, advanced patterns, error handling, and configuration examples:

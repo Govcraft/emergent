@@ -150,6 +150,8 @@ emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) 
 |--------|-------------|
 | `ConnectSource(name, opts)` | Connect to engine |
 | `Publish(message)` | Send a message (fire-and-forget) |
+| `PublishAll(messages)` | Publish all messages from a slice, return count |
+| `PublishStream(ctx, ch)` | Publish messages from a channel, return count |
 | `Discover(ctx)` | Query available message types and primitives |
 | `Close()` | Graceful disconnection |
 | `Name()` | Get this source's name |
@@ -161,6 +163,8 @@ emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) 
 | `ConnectHandler(name, opts)` | Connect to engine |
 | `Subscribe(ctx, types)` | Subscribe and get message stream |
 | `Publish(message)` | Send a message |
+| `PublishAll(messages)` | Publish all messages from a slice, return count |
+| `PublishStream(ctx, ch)` | Publish messages from a channel, return count |
 | `Unsubscribe(ctx, types)` | Remove subscriptions |
 | `Discover(ctx)` | Query available message types |
 | `Close()` | Graceful disconnection |
@@ -196,6 +200,39 @@ msg := stream.Next() // nil when closed
 // Non-blocking receive
 msg := stream.TryNext() // nil if nothing available
 ```
+
+## Streaming Publish
+
+Publish a batch or channel of messages. Each message is sent individually so subscribers begin consuming immediately. Both methods return the count of successfully published messages and stop on the first error.
+
+### From a slice
+
+```go
+messages := make([]*emergent.EmergentMessage, len(records))
+for i, r := range records {
+    msg, _ := emergent.NewMessage("record.imported")
+    msg.WithPayload(r)
+    messages[i] = msg
+}
+count, err := source.PublishAll(messages)
+```
+
+### From a channel
+
+```go
+ch := make(chan *emergent.EmergentMessage, 32)
+go func() {
+    defer close(ch)
+    for i := 0; i < 100; i++ {
+        msg, _ := emergent.NewMessage("batch.item")
+        msg.WithPayload(map[string]any{"index": i})
+        ch <- msg
+    }
+}()
+count, err := source.PublishStream(ctx, ch)
+```
+
+Both `PublishAll` and `PublishStream` are available on `EmergentSource` and `EmergentHandler`.
 
 ## Error Handling
 

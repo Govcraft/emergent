@@ -66,6 +66,28 @@ import asyncio
 asyncio.run(run_source("my_timer", timer_logic))
 ```
 
+## Streaming Publish
+
+Publish a batch or async stream of messages. Each message is sent individually so subscribers begin consuming immediately.
+
+```python
+# From a list
+messages = [
+    create_message("record.imported").payload(record)
+    for record in records
+]
+count = await source.publish_all(messages)
+
+# From an async generator
+async def generate_messages():
+    for i in range(100):
+        yield create_message("batch.item").payload({"index": i})
+
+count = await source.publish_stream(generate_messages())
+```
+
+Both `publish_all` and `publish_stream` are available on `EmergentSource` and `EmergentHandler`.
+
 ## Full Documentation
 
 See the complete SDK README for the full API reference, advanced patterns, error handling, and configuration examples:
