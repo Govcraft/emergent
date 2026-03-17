@@ -1,6 +1,6 @@
 {
   "name": "@emergent/client",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "TypeScript client SDK for Emergent workflow engine",
   "type": "module",
   "main": "./dist/mod.js",
