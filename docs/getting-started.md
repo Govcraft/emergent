@@ -153,7 +153,8 @@ publishes = ["exec.output"]
 [[handlers]]
 name = "transform"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "exec.output", "--publish-as", "data.transformed", "--", "jq", "-c", "{date: .stdout, processed: true}"]
+args = ["-s", "exec.output", "--publish-as", "data.transformed", "--", "jq", "-c", ". + {processed: true}"]
+unwrap_stdout = true
 subscribes = ["exec.output"]
 publishes = ["data.transformed"]
 
@@ -211,7 +212,8 @@ publishes = ["analysis.result"]
 [[sinks]]
 name = "output"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "analysis.result", "--", "jq", "-r", ".stdout // ."]
+args = ["-s", "analysis.result", "--", "jq", "-r", "."]
+unwrap_stdout = true
 subscribes = ["analysis.result"]
 ```
 
@@ -242,7 +244,6 @@ The model or tool behind the handler is your choice. Emergent does not know or c
 [engine]
 name = "emergent"
 socket_path = "auto"              # XDG-compliant default
-wire_format = "messagepack"       # or "json" for debugging
 api_port = 8891                   # HTTP topology API (0 to disable)
 ```
 

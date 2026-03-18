@@ -79,7 +79,6 @@ subscribes = ["timer.filtered", "filter.processed", "system.started.*"]
 [engine]
 name = "emergent"              # Instance name (used in socket path)
 socket_path = "auto"           # Socket location
-wire_format = "messagepack"    # IPC wire format
 api_port = 8891                # HTTP API port (0 to disable)
 ```
 
@@ -87,7 +86,6 @@ api_port = 8891                # HTTP API port (0 to disable)
 |--------|---------|-------------|
 | `name` | `"emergent"` | Engine instance name |
 | `socket_path` | `"auto"` | `"auto"` for XDG-compliant path, or explicit path like `"/tmp/emergent.sock"` |
-| `wire_format` | `"messagepack"` | `"messagepack"` (binary) or `"json"` (human-readable, useful for debugging) |
 | `api_port` | `8891` | HTTP API port for topology queries. Set to `0` to disable. |
 
 **Socket path resolution:**
@@ -157,6 +155,8 @@ publishes = ["timer.filtered"]
 | `enabled` | No | `true` (default) or `false` |
 | `subscribes` | Yes | Message types to receive |
 | `publishes` | Yes | Message types this handler will emit |
+| `unwrap_stdout` | No | When `true`, the SDK automatically extracts and parses the `.stdout` field from exec-source's `{command, stdout, exit_code}` envelope before delivering messages. Eliminates the need for a dedicated unwrap handler. |
+| `env` | No | Extra environment variables (key-value map) |
 
 ## Sinks
 
@@ -178,6 +178,8 @@ subscribes = ["timer.filtered", "system.started.*"]
 | `args` | No | Command-line arguments |
 | `enabled` | No | `true` (default) or `false` |
 | `subscribes` | Yes | Message types to receive |
+| `unwrap_stdout` | No | When `true`, the SDK automatically extracts and parses the `.stdout` field from exec-source's envelope before delivering messages. |
+| `env` | No | Extra environment variables (key-value map) |
 
 ## Subscription Patterns
 

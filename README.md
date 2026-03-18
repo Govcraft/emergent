@@ -189,6 +189,7 @@ emergent marketplace info exec-handler
 | `exec-source` | Source | Run any shell command on an interval, emit output as events |
 | `http-source` | Source | Receive HTTP webhooks |
 | `exec-handler` | Handler | Pipe event payloads through any executable |
+| `stream-runner` | Handler | Emit a JSON collection one item at a time with ack-based flow control |
 | `websocket-handler` | Handler | Bidirectional WebSocket bridge |
 | `exec-sink` | Sink | Pipe event payloads through any executable (fire-and-forget) |
 | `sse-sink` | Sink | Push events to browsers via Server-Sent Events |

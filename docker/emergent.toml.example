@@ -24,9 +24,6 @@ name = "emergent"
 # Use explicit path for container environment
 socket_path = "/run/emergent/emergent.sock"
 
-# Wire format for IPC communication
-wire_format = "messagepack"
-
 # =============================================================================
 # Event Store Settings
 # =============================================================================

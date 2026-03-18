@@ -135,9 +135,10 @@ Types are in `sdks/rust/src/types/` — `MessageId`, `MessageType`, `PrimitiveNa
 
 TOML-based configuration in `config/emergent.toml`:
 
-- `[engine]` — `name`, `socket_path` ("auto" for XDG default), `wire_format` (messagepack/json), `api_port`
+- `[engine]` — `name`, `socket_path` ("auto" for XDG default), `api_port`
 - `[event_store]` — `json_log_dir`, `sqlite_path`, `retention_days` (paths support "auto" for XDG data dir)
-- `[[sources]]` / `[[handlers]]` / `[[sinks]]` — `name`, `path`, `args`, `enabled`, `subscribes`, `publishes`, `env`
+- `[[sources]]` — `name`, `path`, `args`, `enabled`, `publishes`, `env`
+- `[[handlers]]` / `[[sinks]]` — `name`, `path`, `args`, `enabled`, `subscribes`, `publishes`, `env`, `unwrap_stdout`
 
 Path resolution: tilde expansion (`~/bin/app`), bare command lookup via PATH (`path = "uv"`), and "auto" XDG paths.
 

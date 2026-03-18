@@ -46,10 +46,6 @@ mod tests {
         let config: crate::config::EmergentConfig = toml::from_str(&output)?;
         assert_eq!(config.engine.name, "emergent");
         assert_eq!(config.engine.socket_path, "auto");
-        assert_eq!(
-            config.engine.wire_format,
-            crate::config::WireFormat::Messagepack
-        );
         assert_eq!(config.event_store.json_log_dir.to_string_lossy(), "auto");
         assert_eq!(config.event_store.sqlite_path.to_string_lossy(), "auto");
         assert_eq!(config.event_store.retention_days, 30);

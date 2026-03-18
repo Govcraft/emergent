@@ -36,7 +36,6 @@ Copy `emergent.toml.example` to `config/emergent.toml` and customize:
 [engine]
 name = "emergent"
 socket_path = "/run/emergent/emergent.sock"
-wire_format = "messagepack"
 
 [event_store]
 json_log_dir = "/var/lib/emergent/logs"

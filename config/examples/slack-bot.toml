@@ -62,7 +62,8 @@ publishes = ["exec.output"]
 [[handlers]]
 name = "url-extractor"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "exec.output", "--", "jq", "-c", ".stdout | fromjson"]
+args = ["-s", "exec.output", "--", "cat"]
+unwrap_stdout = true
 subscribes = ["exec.output"]
 publishes = ["slack.connect"]
 

@@ -13,7 +13,6 @@
 [engine]
 name = "emergent"
 socket_path = "auto"
-wire_format = "messagepack"
 
 [event_store]
 json_log_dir = "./logs"

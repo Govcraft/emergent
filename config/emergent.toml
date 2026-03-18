@@ -27,11 +27,6 @@ name = "emergent"
 # Or specify an explicit path like "/tmp/emergent.sock"
 socket_path = "auto"
 
-# Wire format for IPC communication
-# "messagepack" - Binary format, more efficient (default)
-# "json" - Human-readable, useful for debugging
-wire_format = "messagepack"
-
 # HTTP API port for topology queries (0 to disable)
 # api_port = 8891
 

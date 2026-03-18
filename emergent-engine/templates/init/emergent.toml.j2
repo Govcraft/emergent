@@ -21,12 +21,6 @@ name = "{{ name }}"
 # Or specify an explicit path like "/tmp/emergent.sock"
 socket_path = "auto"
 
-# Wire format for IPC communication
-# "messagepack" - Binary format, more efficient (default)
-# "json" - Human-readable, useful for debugging
-# Tip: use "json" while developing to inspect messages in logs, switch to "messagepack" for production
-wire_format = "messagepack"
-
 # HTTP API port for topology queries (0 to disable)
 # api_port = 8891
 
