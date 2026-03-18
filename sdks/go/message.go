@@ -75,6 +75,41 @@ func (m *EmergentMessage) WithMetadata(metadata any) *EmergentMessage {
 	return m
 }
 
+// HasStdoutPayload checks whether this message has an exec-source payload shape.
+// Returns true if the payload is a map with a "stdout" key that is a string.
+func (m *EmergentMessage) HasStdoutPayload() bool {
+	payloadMap, ok := m.Payload.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = payloadMap["stdout"].(string)
+	return ok
+}
+
+// UnwrapStdout extracts and parses the stdout field from an exec-source payload.
+// If the payload is a map with a "stdout" string key, attempts to parse it as JSON.
+// On success, the payload is replaced with the parsed value; on failure, the
+// payload is replaced with the raw stdout string.
+// If the payload doesn't match the exec-source shape, it is left unchanged.
+// Returns self for chaining.
+func (m *EmergentMessage) UnwrapStdout() *EmergentMessage {
+	payloadMap, ok := m.Payload.(map[string]any)
+	if !ok {
+		return m
+	}
+	stdoutStr, ok := payloadMap["stdout"].(string)
+	if !ok {
+		return m
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(stdoutStr), &parsed); err != nil {
+		m.Payload = stdoutStr
+	} else {
+		m.Payload = parsed
+	}
+	return m
+}
+
 // PayloadAs unmarshals the payload into the given target.
 // Uses JSON re-marshaling to support typed deserialization from map[string]any.
 func (m *EmergentMessage) PayloadAs(target any) error {

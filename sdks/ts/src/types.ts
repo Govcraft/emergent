@@ -59,6 +59,52 @@ export class EmergentMessage {
   }
 
   /**
+   * Check if the payload has the exec-source shape (`{ stdout: string }`).
+   *
+   * Useful for detecting messages from the `exec` primitive before unwrapping.
+   */
+  hasStdoutPayload(): boolean {
+    return typeof this.payload === "object" && this.payload !== null &&
+      typeof (this.payload as Record<string, unknown>).stdout === "string";
+  }
+
+  /**
+   * Unwrap an exec-source payload, extracting and parsing the `stdout` field.
+   *
+   * If the payload has `{ stdout: string }`, the stdout value is JSON-parsed
+   * and a new `EmergentMessage` is returned with the parsed result as its
+   * payload. If JSON parsing fails, the raw stdout string becomes the payload.
+   *
+   * If the payload does not have the exec-source shape, `this` is returned
+   * unchanged.
+   */
+  unwrapStdout(): EmergentMessage {
+    if (!this.hasStdoutPayload()) {
+      return this;
+    }
+
+    const stdout = (this.payload as Record<string, unknown>).stdout as string;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      parsed = stdout;
+    }
+
+    return new EmergentMessage({
+      id: this.id,
+      messageType: this.messageType,
+      source: this.source,
+      correlationId: this.correlationId,
+      causationId: this.causationId,
+      timestampMs: this.timestampMs,
+      payload: parsed,
+      metadata: this.metadata,
+    });
+  }
+
+  /**
    * Convert to JSON-serializable object.
    * @internal
    */

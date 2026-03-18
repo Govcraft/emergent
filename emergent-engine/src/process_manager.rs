@@ -102,7 +102,11 @@ impl ProcessManager {
             config.subscribes.clone(),
             config.publishes.clone(),
         );
-        self.register_primitive(runtime, info, &config.path, &config.args, &config.env)
+        let mut env = config.env.clone();
+        if config.unwrap_stdout {
+            env.insert("EMERGENT_UNWRAP_STDOUT".into(), "true".into());
+        }
+        self.register_primitive(runtime, info, &config.path, &config.args, &env)
             .await
     }
 
@@ -113,7 +117,11 @@ impl ProcessManager {
         config: &SinkConfig,
     ) -> Result<(), ProcessManagerError> {
         let info = PrimitiveInfo::sink(&config.name, config.subscribes.clone());
-        self.register_primitive(runtime, info, &config.path, &config.args, &config.env)
+        let mut env = config.env.clone();
+        if config.unwrap_stdout {
+            env.insert("EMERGENT_UNWRAP_STDOUT".into(), "true".into());
+        }
+        self.register_primitive(runtime, info, &config.path, &config.args, &env)
             .await
     }
 

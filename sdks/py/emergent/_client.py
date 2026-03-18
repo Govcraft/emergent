@@ -170,6 +170,9 @@ class BaseClient:
     timeout: float = DEFAULT_TIMEOUT
     format: Format = Format.JSON
 
+    # Auto-unwrap stdout payloads (read once from EMERGENT_UNWRAP_STDOUT)
+    _unwrap_stdout: bool = field(default=False, init=False, repr=False)
+
     # Connection state
     _reader: asyncio.StreamReader | None = field(default=None, init=False, repr=False)
     _writer: asyncio.StreamWriter | None = field(default=None, init=False, repr=False)
@@ -187,6 +190,11 @@ class BaseClient:
     _subscribed_types: set[str] = field(default_factory=set, init=False, repr=False)
     _read_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _disposed: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Read env-based configuration once at construction time."""
+        env_val = os.environ.get("EMERGENT_UNWRAP_STDOUT", "")
+        object.__setattr__(self, "_unwrap_stdout", env_val != "")
 
     def subscribed_types(self) -> list[str]:
         """Get the list of currently subscribed message types."""
@@ -928,6 +936,14 @@ class BaseClient:
                 # The notification.payload IS the serialized EmergentMessage
                 wire_message = WireMessage.model_validate(notification.payload)
                 message = EmergentMessage.from_wire(wire_message)
+
+                # Auto-unwrap exec-source stdout payloads when enabled
+                if (
+                    self._unwrap_stdout
+                    and not message.message_type.startswith("system.")
+                ):
+                    message = message.unwrap_stdout()
+
                 self._message_stream.push(message)
 
     def _on_stream_close(self) -> None:

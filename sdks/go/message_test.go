@@ -200,6 +200,100 @@ func TestMessageFromWire(t *testing.T) {
 	}
 }
 
+func TestUnwrapStdoutJSON(t *testing.T) {
+	msg, _ := NewMessage("exec.output")
+	msg.WithPayload(map[string]any{
+		"stdout": `{"temperature":72,"unit":"F"}`,
+	})
+
+	result := msg.UnwrapStdout()
+
+	// Should return same pointer for chaining
+	if result != msg {
+		t.Error("UnwrapStdout should return same pointer")
+	}
+
+	parsed, ok := msg.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected parsed JSON map, got %T", msg.Payload)
+	}
+	if parsed["temperature"] != float64(72) {
+		t.Errorf("expected temperature=72, got: %v", parsed["temperature"])
+	}
+	if parsed["unit"] != "F" {
+		t.Errorf("expected unit=F, got: %v", parsed["unit"])
+	}
+}
+
+func TestUnwrapStdoutPlainText(t *testing.T) {
+	msg, _ := NewMessage("exec.output")
+	msg.WithPayload(map[string]any{
+		"stdout": "hello world",
+	})
+
+	msg.UnwrapStdout()
+
+	text, ok := msg.Payload.(string)
+	if !ok {
+		t.Fatalf("expected plain string payload, got %T", msg.Payload)
+	}
+	if text != "hello world" {
+		t.Errorf("expected 'hello world', got: %s", text)
+	}
+}
+
+func TestUnwrapStdoutNoField(t *testing.T) {
+	msg, _ := NewMessage("exec.output")
+	original := map[string]any{"stderr": "error output"}
+	msg.WithPayload(original)
+
+	msg.UnwrapStdout()
+
+	payload, ok := msg.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected unchanged map payload, got %T", msg.Payload)
+	}
+	if payload["stderr"] != "error output" {
+		t.Errorf("expected stderr='error output', got: %v", payload["stderr"])
+	}
+}
+
+func TestHasStdoutPayload(t *testing.T) {
+	// Positive case: payload has stdout string
+	msg, _ := NewMessage("exec.output")
+	msg.WithPayload(map[string]any{"stdout": `{"key":"value"}`})
+	if !msg.HasStdoutPayload() {
+		t.Error("expected HasStdoutPayload to return true")
+	}
+
+	// Negative case: payload has no stdout
+	msg2, _ := NewMessage("timer.tick")
+	msg2.WithPayload(map[string]any{"count": 42})
+	if msg2.HasStdoutPayload() {
+		t.Error("expected HasStdoutPayload to return false for payload without stdout")
+	}
+
+	// Negative case: stdout is not a string
+	msg3, _ := NewMessage("exec.output")
+	msg3.WithPayload(map[string]any{"stdout": 123})
+	if msg3.HasStdoutPayload() {
+		t.Error("expected HasStdoutPayload to return false when stdout is not a string")
+	}
+
+	// Negative case: payload is not a map
+	msg4, _ := NewMessage("exec.output")
+	msg4.WithPayload("just a string")
+	if msg4.HasStdoutPayload() {
+		t.Error("expected HasStdoutPayload to return false for non-map payload")
+	}
+
+	// Negative case: nil payload
+	msg5, _ := NewMessage("exec.output")
+	if msg5.HasStdoutPayload() {
+		t.Error("expected HasStdoutPayload to return false for nil payload")
+	}
+}
+
 func TestMessageFromWire_Float64Timestamp(t *testing.T) {
 	// JSON deserialization produces float64 for numbers
 	wire := map[string]any{

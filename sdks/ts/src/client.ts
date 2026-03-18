@@ -128,11 +128,14 @@ export class BaseClient {
   #subscribedTypes: Set<string> = new Set();
   #timeoutMs: number;
 
+  #unwrapStdout: boolean;
+
   constructor(name: string, kind: PrimitiveKind, options?: ConnectOptions) {
     this.name = name;
     this.primitiveKind = kind;
     this.#timeoutMs = options?.timeout ?? DEFAULT_TIMEOUT_MS;
     this.#logger = createLogger(name);
+    this.#unwrapStdout = Deno.env.get("EMERGENT_UNWRAP_STDOUT") === "true";
   }
 
   /**
@@ -802,7 +805,12 @@ export class BaseClient {
           const wireMessage = notification.payload as WireMessage;
 
           // Convert from wire format (snake_case) to EmergentMessage class
-          const message = EmergentMessage.fromWire(wireMessage);
+          let message = EmergentMessage.fromWire(wireMessage);
+
+          // Auto-unwrap stdout payloads when enabled (skip system messages)
+          if (this.#unwrapStdout && !message.messageType.startsWith("system.")) {
+            message = message.unwrapStdout();
+          }
 
           this.#logger.debug("received message", { messageType: message.messageType, source: message.source });
 

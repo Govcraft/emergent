@@ -119,7 +119,6 @@ struct IpcEmergentMessage {
 #[acton_message]
 struct PublishAck;
 
-
 impl From<EmergentMessage> for IpcEmergentMessage {
     fn from(msg: EmergentMessage) -> Self {
         Self { inner: msg }

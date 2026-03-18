@@ -1,6 +1,6 @@
 [project]
 name = "emergent-client"
-version = "0.13.0"
+version = "0.13.1"
 description = "Python SDK for the Emergent event-driven workflow platform"
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }

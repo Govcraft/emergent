@@ -183,6 +183,14 @@ pub struct HandlerConfig {
     /// Environment variables to set.
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+
+    /// Automatically unwrap exec-source stdout payloads before delivery.
+    ///
+    /// When `true`, the SDK extracts and parses the `.stdout` field from
+    /// exec-source's `{command, stdout, exit_code}` envelope, so handlers
+    /// receive the raw data directly without needing a dedicated unwrap step.
+    #[serde(default)]
+    pub unwrap_stdout: bool,
 }
 
 /// Configuration for a Sink primitive.
@@ -209,6 +217,14 @@ pub struct SinkConfig {
     /// Environment variables to set.
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+
+    /// Automatically unwrap exec-source stdout payloads before delivery.
+    ///
+    /// When `true`, the SDK extracts and parses the `.stdout` field from
+    /// exec-source's `{command, stdout, exit_code}` envelope, so sinks
+    /// receive the raw data directly without needing a dedicated unwrap step.
+    #[serde(default)]
+    pub unwrap_stdout: bool,
 }
 
 const fn default_enabled() -> bool {
@@ -696,6 +712,7 @@ wire_format = "messagepack"
                 subscribes: vec![],
                 publishes: vec![],
                 env: std::collections::HashMap::new(),
+                unwrap_stdout: false,
             }],
             sinks: vec![SinkConfig {
                 name: "sink1".to_string(),
@@ -704,6 +721,7 @@ wire_format = "messagepack"
                 enabled: true,
                 subscribes: vec![],
                 env: std::collections::HashMap::new(),
+                unwrap_stdout: false,
             }],
             ..Default::default()
         };
@@ -760,6 +778,7 @@ wire_format = "messagepack"
                 enabled: true,
                 subscribes: vec![],
                 env: std::collections::HashMap::new(),
+                unwrap_stdout: false,
             }],
             ..Default::default()
         };
@@ -907,6 +926,7 @@ wire_format = "messagepack"
                 subscribes: vec![],
                 publishes: vec![],
                 env: std::collections::HashMap::new(),
+                unwrap_stdout: false,
             }],
             sinks: vec![SinkConfig {
                 name: "sink1".to_string(),
@@ -915,6 +935,7 @@ wire_format = "messagepack"
                 enabled: true,
                 subscribes: vec![],
                 env: std::collections::HashMap::new(),
+                unwrap_stdout: false,
             }],
             ..Default::default()
         };

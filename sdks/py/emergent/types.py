@@ -6,6 +6,7 @@ This module defines the public and internal types used throughout the SDK.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -110,6 +111,30 @@ class EmergentMessage(BaseModel):
             payload=wire.payload,
             metadata=wire.metadata if isinstance(wire.metadata, dict) else None,
         )
+
+    def has_stdout_payload(self) -> bool:
+        """Check whether this message has an exec-source payload shape."""
+        return isinstance(self.payload, dict) and isinstance(
+            self.payload.get("stdout"), str
+        )
+
+    def unwrap_stdout(self) -> EmergentMessage:
+        """Unwrap an exec-source payload by extracting and parsing the stdout field.
+
+        If the payload is a dict with a ``stdout`` string key, parses the string
+        as JSON.  Returns a new message with the parsed payload, or the original
+        message unchanged if the payload doesn't have the exec-source shape.
+        """
+        if not self.has_stdout_payload():
+            return self
+
+        raw: str = self.payload["stdout"]
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = raw
+
+        return self.model_copy(update={"payload": parsed})
 
 
 class PrimitiveInfo(BaseModel):

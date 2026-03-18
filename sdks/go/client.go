@@ -69,6 +69,7 @@ type baseClient struct {
 	pendingSubscriptionRequests map[string]*pendingPubSubRequest
 	messageStream               *MessageStream
 	subscribedTypes             map[string]struct{}
+	unwrapStdout                bool
 
 	writeMu    sync.Mutex
 	readCancel context.CancelFunc
@@ -81,6 +82,9 @@ func newBaseClient(name string, kind PrimitiveKind, opts *ConnectOptions) *baseC
 		timeout = opts.Timeout
 	}
 
+	envUnwrap := os.Getenv("EMERGENT_UNWRAP_STDOUT")
+	autoUnwrap := envUnwrap == "true" || envUnwrap == "1"
+
 	return &baseClient{
 		name:                        name,
 		primitiveKind:               kind,
@@ -91,6 +95,7 @@ func newBaseClient(name string, kind PrimitiveKind, opts *ConnectOptions) *baseC
 		pendingTopologyRequests:     make(map[string]*pendingPubSubRequest),
 		pendingSubscriptionRequests: make(map[string]*pendingPubSubRequest),
 		subscribedTypes:             make(map[string]struct{}),
+		unwrapStdout:                autoUnwrap,
 		readDone:                    make(chan struct{}),
 	}
 }
@@ -807,6 +812,10 @@ func (c *baseClient) handlePush(payload any) {
 		wirePayload, ok := payloadMap["payload"].(map[string]any)
 		if ok {
 			msg := MessageFromWire(wirePayload)
+			// Auto-unwrap exec-source stdout payloads when configured
+			if c.unwrapStdout && !strings.HasPrefix(string(msg.MessageType), "system.") {
+				msg.UnwrapStdout()
+			}
 			c.logger.Debug("received message", "message_type", msg.MessageType, "source", msg.Source)
 			c.messageStream.push(msg)
 		}

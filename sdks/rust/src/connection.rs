@@ -177,6 +177,9 @@ async fn push_to_message_stream(
 ) {
     debug!(primitive.name = %name, "push bridge started");
 
+    let auto_unwrap = std::env::var("EMERGENT_UNWRAP_STDOUT")
+        .is_ok_and(|v| v == "true" || v == "1");
+
     while let Some(notification) = push_rx.recv().await {
         // Check for shutdown signal
         if notification.message_type == "system.shutdown" {
@@ -214,6 +217,13 @@ async fn push_to_message_stream(
             EmergentMessage::new(&notification.message_type)
                 .with_source(notification.source_actor.as_deref().unwrap_or("unknown"))
                 .with_payload(notification.payload)
+        };
+
+        // Auto-unwrap exec-source stdout payloads when configured
+        let msg = if auto_unwrap && !msg.message_type.as_str().starts_with("system.") {
+            msg.unwrap_stdout()
+        } else {
+            msg
         };
 
         debug!(
@@ -564,9 +574,7 @@ impl EmergentSource {
         })?;
         if !response.success {
             return Err(ClientError::PublishFailed(
-                response
-                    .error
-                    .unwrap_or_else(|| "broker error".to_string()),
+                response.error.unwrap_or_else(|| "broker error".to_string()),
             ));
         }
         Ok(())
@@ -846,9 +854,7 @@ impl EmergentHandler {
         })?;
         if !response.success {
             return Err(ClientError::PublishFailed(
-                response
-                    .error
-                    .unwrap_or_else(|| "broker error".to_string()),
+                response.error.unwrap_or_else(|| "broker error".to_string()),
             ));
         }
         Ok(())
@@ -996,9 +1002,10 @@ impl EmergentHandler {
                     msg.payload.get("message_type").and_then(|v| v.as_str()),
                     msg.payload.get("stream_id").and_then(|v| v.as_str()),
                 )
-                    && mt == message_type {
-                        break sid.to_string();
-                    }
+                && mt == message_type
+            {
+                break sid.to_string();
+            }
         };
 
         self.publish(
@@ -1020,8 +1027,7 @@ impl EmergentHandler {
                 })?;
 
             if msg.message_type.as_str() == "stream.end"
-                && msg.payload.get("stream_id").and_then(|v| v.as_str())
-                    == Some(stream_id.as_str())
+                && msg.payload.get("stream_id").and_then(|v| v.as_str()) == Some(stream_id.as_str())
             {
                 break;
             }

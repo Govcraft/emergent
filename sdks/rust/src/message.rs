@@ -214,6 +214,45 @@ impl EmergentMessage {
         serde_json::from_value(self.payload.clone())
     }
 
+    /// Check whether this message has an exec-source payload shape.
+    ///
+    /// Returns `true` if the payload is a JSON object with a `stdout` string field,
+    /// which is the envelope format produced by the `exec-source` primitive.
+    #[must_use]
+    pub fn has_stdout_payload(&self) -> bool {
+        self.payload
+            .as_object()
+            .and_then(|obj| obj.get("stdout"))
+            .is_some_and(serde_json::Value::is_string)
+    }
+
+    /// Unwrap an exec-source payload by extracting and parsing the `stdout` field.
+    ///
+    /// If the payload is an object with a `stdout` string field (the envelope format
+    /// produced by `exec-source`), extracts that string and attempts to parse it as
+    /// JSON. If parsing succeeds, the payload is replaced with the parsed value. If
+    /// `stdout` is not valid JSON, the payload is replaced with the raw string value.
+    ///
+    /// If the payload does not have the exec-source shape, the message is returned
+    /// unchanged.
+    ///
+    /// This eliminates the need for a dedicated exec-handler running
+    /// `jq -c '.stdout | fromjson'` in the pipeline.
+    #[must_use]
+    pub fn unwrap_stdout(mut self) -> Self {
+        if let Some(stdout) = self
+            .payload
+            .as_object()
+            .and_then(|obj| obj.get("stdout"))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from)
+        {
+            self.payload = serde_json::from_str(&stdout)
+                .unwrap_or(serde_json::Value::String(stdout));
+        }
+        self
+    }
+
     /// Serialize the message to JSON bytes.
     ///
     /// # Errors
@@ -317,6 +356,51 @@ mod tests {
             Some(original.id().to_string())
         );
         assert!(response.correlation_id.is_some());
+    }
+
+    #[test]
+    fn test_unwrap_stdout_json() {
+        let msg = EmergentMessage::new("batch.raw").with_payload(json!({
+            "command": "jq -s .",
+            "stdout": "{\"transactions\":[1,2,3]}",
+            "exit_code": 0
+        }));
+
+        assert!(msg.has_stdout_payload());
+        let unwrapped = msg.unwrap_stdout();
+        assert_eq!(unwrapped.payload(), &json!({"transactions": [1, 2, 3]}));
+    }
+
+    #[test]
+    fn test_unwrap_stdout_plain_text() {
+        let msg = EmergentMessage::new("exec.output").with_payload(json!({
+            "command": "echo hello",
+            "stdout": "hello world",
+            "exit_code": 0
+        }));
+
+        let unwrapped = msg.unwrap_stdout();
+        assert_eq!(unwrapped.payload(), &json!("hello world"));
+    }
+
+    #[test]
+    fn test_unwrap_stdout_no_stdout_field() {
+        let msg = EmergentMessage::new("timer.tick")
+            .with_payload(json!({"count": 42}));
+
+        assert!(!msg.has_stdout_payload());
+        let unwrapped = msg.unwrap_stdout();
+        assert_eq!(unwrapped.payload(), &json!({"count": 42}));
+    }
+
+    #[test]
+    fn test_unwrap_stdout_system_event_passthrough() {
+        let msg = EmergentMessage::new("system.started.foo")
+            .with_payload(json!({"kind": "handler"}));
+
+        assert!(!msg.has_stdout_payload());
+        let unwrapped = msg.unwrap_stdout();
+        assert_eq!(unwrapped.payload(), &json!({"kind": "handler"}));
     }
 
     #[test]
