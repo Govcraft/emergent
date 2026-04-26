@@ -1,15 +1,15 @@
 # Game of Life — emergent behavior from simple rules
 #
-# A one-shot seed source initializes the grid, a timer ticks generations,
-# and a stateful Python handler evolves the world. Two sinks render output:
-# a browser canvas via SSE and ASCII art on the console.
+# A timer ticks generations and a stateful Python handler evolves the
+# world, self-seeding from LIFE_PATTERN on its first tick. Two sinks
+# render output: a browser canvas via SSE and ASCII art on the console.
 #
 # Prerequisites:
 #   emergent marketplace install exec-source exec-sink sse-sink
 #
 # Usage:
 #   emergent --config ./config/advanced-examples/game-of-life/emergent.toml
-#   # Open http://localhost:8080 for the browser visualization
+#   # Open http://localhost:8082 for the browser visualization
 #
 # Change pattern: set LIFE_PATTERN to one of:
 #   glider, blinker, pulsar, r-pentomino, acorn, gosper-gun
@@ -25,19 +25,21 @@ api_port = 0
 # Sources
 # =============================================================================
 
+# Banner — print the dashboard URL to the engine's terminal once at startup.
+# A bare `sh` process inherits stdio from the engine; exec-source would
+# capture stdout/stderr into exec.output/exec.error events instead.
+[[sources]]
+name = "banner"
+path = "sh"
+args = ["-c", "printf '\\n  Dashboard: http://localhost:8082\\n\\n'; exec sleep infinity"]
+publishes = []
+
 # Static file server for dashboard
 [[sources]]
 name = "webserver"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
-args = ["--shell", "sh", "--command", "python3 -m http.server 8082 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/game-of-life} & echo $! > /tmp/emergent-life-webserver.pid && echo 'Dashboard: http://localhost:8080' >&2 && echo '{\"status\":\"started\"}'"]
+args = ["--shell", "sh", "--command", "python3 -m http.server 8082 -d ${EMERGENT_DASHBOARD_DIR:-config/advanced-examples/game-of-life} & echo $! > /tmp/emergent-life-webserver.pid && echo '{\"status\":\"started\"}'"]
 publishes = ["webserver.started"]
-
-# Seed the world (one-shot, runs once then exits)
-[[sources]]
-name = "seed"
-path = "~/.local/share/emergent/primitives/bin/exec-source"
-args = ["--shell", "sh", "--command", "echo '{\"pattern\":\"'${LIFE_PATTERN:-r-pentomino}'\"}'"]
-publishes = ["life.seed"]
 
 # Generation clock
 [[sources]]
@@ -53,8 +55,8 @@ publishes = ["life.tick"]
 [[handlers]]
 name = "world"
 path = "uv"
-args = ["run", "--with", "emergent-client", "config/advanced-examples/game-of-life/world.py"]
-subscribes = ["life.seed", "life.tick"]
+args = ["run", "--python", ">=3.12", "--with", "emergent-client", "config/advanced-examples/game-of-life/world.py"]
+subscribes = ["life.tick"]
 publishes = ["life.frame"]
 
 # =============================================================================

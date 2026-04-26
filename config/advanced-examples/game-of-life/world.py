@@ -1,15 +1,17 @@
 """Game of Life world handler.
 
 Holds grid state, evolves it on each tick, publishes each generation
-for downstream sinks to render. Accepts seed patterns via life.seed.
+for downstream sinks to render. Self-seeds on the first tick using
+the LIFE_PATTERN env var, so it doesn't race a one-shot seed source.
 """
 
 import asyncio
-import json
+import os
 from emergent import run_handler, create_message
 
 ROWS = 40
 COLS = 80
+DEFAULT_PATTERN = os.environ.get("LIFE_PATTERN", "r-pentomino")
 
 # Grid state: list of living cell (row, col) tuples for sparse representation
 grid = set()
@@ -91,53 +93,27 @@ def grid_to_payload():
     }
 
 
-def unwrap_payload(payload):
-    """Unwrap exec-source stdout wrapper and parse JSON."""
-    if not payload:
-        return None
-    raw = payload.get("stdout")
-    if raw is None:
-        return payload
-    if isinstance(raw, str):
-        try:
-            return json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            return None
-    return payload
-
-
 async def process(msg, handler):
     global grid, generation
 
-    p = unwrap_payload(msg.payload)
-    if not p:
+    if msg.message_type != "life.tick":
         return
 
-    msg_type = msg.message_type
-
-    if msg_type == "life.seed":
-        pattern = p.get("pattern", "r-pentomino") if isinstance(p, dict) else "r-pentomino"
-        grid.clear()
-        generation = 0
-        seed_pattern(pattern)
-        await handler.publish(
-            create_message("life.frame").caused_by(msg.id).payload(grid_to_payload())
-        )
-
-    elif msg_type == "life.tick":
-        if not grid and generation == 0:
-            return
+    if not grid and generation == 0:
+        seed_pattern(DEFAULT_PATTERN)
+    else:
         grid = evolve()
         generation += 1
-        await handler.publish(
-            create_message("life.frame").caused_by(msg.id).payload(grid_to_payload())
-        )
+
+    await handler.publish(
+        create_message("life.frame").caused_by(msg.id).payload(grid_to_payload())
+    )
 
 
 asyncio.run(
     run_handler(
         None,
-        ["life.seed", "life.tick"],
+        ["life.tick"],
         process,
     )
 )
