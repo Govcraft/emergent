@@ -49,6 +49,9 @@ Examples:
 
   # Install a marketplace primitive
   emergent marketplace install http-source
+
+  # Install multiple marketplace primitives at once
+  emergent marketplace install exec-source exec-handler exec-sink
 ")]
 struct Args {
     /// Path to configuration file

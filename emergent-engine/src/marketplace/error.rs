@@ -55,6 +55,9 @@ pub enum MarketplaceError {
 
     /// Git operation failed
     GitError { message: String },
+
+    /// One or more items in a batch operation failed
+    BatchFailed { succeeded: usize, failed: usize },
 }
 
 impl fmt::Display for MarketplaceError {
@@ -99,6 +102,9 @@ impl fmt::Display for MarketplaceError {
             }
             Self::InvalidManifest { reason } => write!(f, "Invalid manifest: {reason}"),
             Self::GitError { message } => write!(f, "Git error: {message}"),
+            Self::BatchFailed { succeeded, failed } => {
+                write!(f, "Batch operation failed: {succeeded} succeeded, {failed} failed")
+            }
         }
     }
 }
@@ -177,6 +183,18 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Platform 'x86_64-unknown-linux-gnu' not supported for primitive 'test'"
+        );
+    }
+
+    #[test]
+    fn test_batch_failed_display() {
+        let err = MarketplaceError::BatchFailed {
+            succeeded: 2,
+            failed: 1,
+        };
+        assert_eq!(
+            err.to_string(),
+            "Batch operation failed: 2 succeeded, 1 failed"
         );
     }
 

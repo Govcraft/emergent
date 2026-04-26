@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "emergent-engine"
-version = "0.10.8"
+version = "0.10.9"
 dependencies = [
  "acton-reactive",
  "anyhow",

@@ -4,7 +4,7 @@ use clap::{Args, Subcommand};
 use dialoguer::Confirm;
 use std::io::IsTerminal;
 
-use super::error::Result;
+use super::error::{MarketplaceError, Result};
 use super::installer::{InstallOptions, Installer};
 use super::platform::TargetPlatform;
 use super::registry::Registry;
@@ -26,7 +26,10 @@ Examples:
   # Install a primitive
   emergent marketplace install http-source
 
-  # Install a specific version
+  # Install multiple primitives at once
+  emergent marketplace install exec-source exec-handler exec-sink
+
+  # Install a specific version (single primitive only)
   emergent marketplace install http-source --version 0.5.0
 
   # Show details about a primitive
@@ -35,8 +38,9 @@ Examples:
   # Update all installed primitives
   emergent marketplace update
 
-  # Remove a primitive
+  # Remove one or more primitives
   emergent marketplace remove http-source
+  emergent marketplace remove exec-source exec-handler exec-sink
 ")]
 pub struct MarketplaceArgs {
     #[command(subcommand)]
@@ -65,12 +69,13 @@ pub enum MarketplaceCommand {
         columns: Option<String>,
     },
 
-    /// Install a primitive
+    /// Install one or more primitives
     Install {
-        /// Name of the primitive
-        name: String,
+        /// Names of primitives to install
+        #[arg(value_name = "NAME", num_args = 1.., required = true)]
+        names: Vec<String>,
 
-        /// Version to install (default: latest)
+        /// Version to install (single primitive only; default: latest)
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
 
@@ -87,10 +92,11 @@ pub enum MarketplaceCommand {
         yes: bool,
     },
 
-    /// Remove an installed primitive
+    /// Remove one or more installed primitives
     Remove {
-        /// Name of the primitive
-        name: String,
+        /// Names of primitives to remove
+        #[arg(value_name = "NAME", num_args = 1.., required = true)]
+        names: Vec<String>,
 
         /// Skip confirmation prompts
         #[arg(short = 'y', long)]
@@ -146,16 +152,16 @@ pub async fn execute(args: MarketplaceArgs) -> Result<()> {
             handle_list(&installer, &registry, kind, installed, json, columns).await?;
         }
         MarketplaceCommand::Install {
-            name,
+            names,
             version,
             force,
             dry_run,
             yes,
         } => {
-            handle_install(&installer, name, version, force, dry_run, yes).await?;
+            handle_install(&installer, names, version, force, dry_run, yes).await?;
         }
-        MarketplaceCommand::Remove { name, yes } => {
-            handle_remove(&installer, name, yes).await?;
+        MarketplaceCommand::Remove { names, yes } => {
+            handle_remove(&installer, names, yes).await?;
         }
         MarketplaceCommand::Update { name, dry_run } => {
             handle_update(&installer, &registry, name, dry_run).await?;
@@ -232,45 +238,103 @@ async fn handle_list(
 
 async fn handle_install(
     installer: &Installer,
-    name: String,
+    names: Vec<String>,
     version: Option<String>,
     force: bool,
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
+    if names.is_empty() {
+        return Err(MarketplaceError::InvalidManifest {
+            reason: "at least one primitive name is required".to_string(),
+        });
+    }
+
+    if names.len() > 1 && version.is_some() {
+        return Err(MarketplaceError::InvalidManifest {
+            reason: "--version can only be used when installing a single primitive".to_string(),
+        });
+    }
+
     if !yes && !dry_run && is_tty() {
         let version_str = version
             .as_ref()
             .map(|v| format!(" (v{v})"))
             .unwrap_or_else(|| " (latest)".to_string());
-        let prompt = format!("Install {name}{version_str}?");
+        let prompt = format!("Install {}{}?", names.join(", "), version_str);
         if !confirm(&prompt)? {
             eprintln!("Installation cancelled");
             return Ok(());
         }
     }
 
-    let options = InstallOptions {
-        name,
-        version,
-        force,
-        dry_run,
-    };
+    let total = names.len();
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
 
-    installer.install(options).await?;
+    for name in names {
+        let options = InstallOptions {
+            name: name.clone(),
+            version: version.clone(),
+            force,
+            dry_run,
+        };
+
+        match installer.install(options).await {
+            Ok(_) => succeeded += 1,
+            Err(e) => {
+                eprintln!("✗ {name}: {e}");
+                failed += 1;
+            }
+        }
+    }
+
+    if total > 1 {
+        eprintln!("Installed {succeeded} of {total} primitives");
+    }
+
+    if failed > 0 {
+        return Err(MarketplaceError::BatchFailed { succeeded, failed });
+    }
     Ok(())
 }
 
-async fn handle_remove(installer: &Installer, name: String, yes: bool) -> Result<()> {
+async fn handle_remove(installer: &Installer, names: Vec<String>, yes: bool) -> Result<()> {
+    if names.is_empty() {
+        return Err(MarketplaceError::InvalidManifest {
+            reason: "at least one primitive name is required".to_string(),
+        });
+    }
+
     if !yes && is_tty() {
-        let prompt = format!("Remove {name}?");
+        let prompt = format!("Remove {}?", names.join(", "));
         if !confirm(&prompt)? {
             eprintln!("Removal cancelled");
             return Ok(());
         }
     }
 
-    installer.remove(&name).await?;
+    let total = names.len();
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+
+    for name in &names {
+        match installer.remove(name).await {
+            Ok(_) => succeeded += 1,
+            Err(e) => {
+                eprintln!("✗ {name}: {e}");
+                failed += 1;
+            }
+        }
+    }
+
+    if total > 1 {
+        eprintln!("Removed {succeeded} of {total} primitives");
+    }
+
+    if failed > 0 {
+        return Err(MarketplaceError::BatchFailed { succeeded, failed });
+    }
     Ok(())
 }
 
@@ -474,5 +538,98 @@ mod tests {
         ];
         format_table(headers, rows);
         // Visual test - should print formatted table to stdout
+    }
+
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    struct TestCli {
+        #[command(subcommand)]
+        command: MarketplaceCommand,
+    }
+
+    fn parse(args: &[&str]) -> clap::error::Result<MarketplaceCommand> {
+        let mut argv = vec!["test"];
+        argv.extend_from_slice(args);
+        TestCli::try_parse_from(argv).map(|c| c.command)
+    }
+
+    #[test]
+    fn test_install_parses_single_name() {
+        let Ok(MarketplaceCommand::Install { names, .. }) = parse(&["install", "exec-source"])
+        else {
+            panic!("expected Install with single name");
+        };
+        assert_eq!(names, vec!["exec-source".to_string()]);
+    }
+
+    #[test]
+    fn test_install_parses_multiple_names() {
+        let Ok(MarketplaceCommand::Install { names, .. }) =
+            parse(&["install", "exec-source", "exec-handler", "exec-sink"])
+        else {
+            panic!("expected Install with multiple names");
+        };
+        assert_eq!(
+            names,
+            vec![
+                "exec-source".to_string(),
+                "exec-handler".to_string(),
+                "exec-sink".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_install_requires_at_least_one_name() {
+        assert!(parse(&["install"]).is_err());
+    }
+
+    #[test]
+    fn test_remove_parses_multiple_names() {
+        let Ok(MarketplaceCommand::Remove { names, yes }) =
+            parse(&["remove", "a", "b", "c", "-y"])
+        else {
+            panic!("expected Remove with multiple names");
+        };
+        assert_eq!(
+            names,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+        assert!(yes);
+    }
+
+    #[tokio::test]
+    async fn test_handle_install_rejects_version_with_multiple_names() {
+        // Build an installer; we never actually call it because validation
+        // fails before any network/disk work happens.
+        let Ok(storage) = MarketplaceStorage::new() else {
+            panic!("failed to construct MarketplaceStorage");
+        };
+        let registry = Registry::new(
+            storage.cache_dir().to_path_buf(),
+            "https://example.invalid".to_string(),
+        );
+        let installer = Installer::new(storage, registry, TargetPlatform::detect());
+
+        let result = handle_install(
+            &installer,
+            vec!["a".to_string(), "b".to_string()],
+            Some("1.0.0".to_string()),
+            false,
+            false,
+            true,
+        )
+        .await;
+
+        match result {
+            Err(MarketplaceError::InvalidManifest { reason }) => {
+                assert!(
+                    reason.contains("--version"),
+                    "expected --version in error, got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidManifest error, got {other:?}"),
+        }
     }
 }
