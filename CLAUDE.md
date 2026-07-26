@@ -219,6 +219,6 @@ Workspace-level clippy configuration denies `unwrap_used` and `expect_used`. Use
 
 ## Dependencies
 
-- **acton-reactive**: Published crate (version 8.0.2) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
+- **acton-reactive**: Published crate (version 8.1.1) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
 - Uses Rust 2024 edition
 - Release profile optimized for binary size: `opt-level = "z"`, LTO, single codegen unit, panic = abort, stripped
