@@ -1,0 +1,5 @@
+{
+	"dependencies": {
+		"@honcho-ai/sdk": "^2.1.0"
+	}
+}
