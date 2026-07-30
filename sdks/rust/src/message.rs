@@ -247,8 +247,8 @@ impl EmergentMessage {
             .and_then(serde_json::Value::as_str)
             .map(String::from)
         {
-            self.payload = serde_json::from_str(&stdout)
-                .unwrap_or(serde_json::Value::String(stdout));
+            self.payload =
+                serde_json::from_str(&stdout).unwrap_or(serde_json::Value::String(stdout));
         }
         self
     }
@@ -385,8 +385,7 @@ mod tests {
 
     #[test]
     fn test_unwrap_stdout_no_stdout_field() {
-        let msg = EmergentMessage::new("timer.tick")
-            .with_payload(json!({"count": 42}));
+        let msg = EmergentMessage::new("timer.tick").with_payload(json!({"count": 42}));
 
         assert!(!msg.has_stdout_payload());
         let unwrapped = msg.unwrap_stdout();
@@ -395,8 +394,8 @@ mod tests {
 
     #[test]
     fn test_unwrap_stdout_system_event_passthrough() {
-        let msg = EmergentMessage::new("system.started.foo")
-            .with_payload(json!({"kind": "handler"}));
+        let msg =
+            EmergentMessage::new("system.started.foo").with_payload(json!({"kind": "handler"}));
 
         assert!(!msg.has_stdout_payload());
         let unwrapped = msg.unwrap_stdout();

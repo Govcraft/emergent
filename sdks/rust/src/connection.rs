@@ -177,8 +177,8 @@ async fn push_to_message_stream(
 ) {
     debug!(primitive.name = %name, "push bridge started");
 
-    let auto_unwrap = std::env::var("EMERGENT_UNWRAP_STDOUT")
-        .is_ok_and(|v| v == "true" || v == "1");
+    let auto_unwrap =
+        std::env::var("EMERGENT_UNWRAP_STDOUT").is_ok_and(|v| v == "true" || v == "1");
 
     while let Some(notification) = push_rx.recv().await {
         // Check for shutdown signal

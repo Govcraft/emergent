@@ -587,8 +587,7 @@ mod tests {
 
     #[test]
     fn test_remove_parses_multiple_names() {
-        let Ok(MarketplaceCommand::Remove { names, yes }) =
-            parse(&["remove", "a", "b", "c", "-y"])
+        let Ok(MarketplaceCommand::Remove { names, yes }) = parse(&["remove", "a", "b", "c", "-y"])
         else {
             panic!("expected Remove with multiple names");
         };

@@ -103,7 +103,10 @@ impl fmt::Display for MarketplaceError {
             Self::InvalidManifest { reason } => write!(f, "Invalid manifest: {reason}"),
             Self::GitError { message } => write!(f, "Git error: {message}"),
             Self::BatchFailed { succeeded, failed } => {
-                write!(f, "Batch operation failed: {succeeded} succeeded, {failed} failed")
+                write!(
+                    f,
+                    "Batch operation failed: {succeeded} succeeded, {failed} failed"
+                )
             }
         }
     }
