@@ -13,6 +13,37 @@ import type { MessageStream } from "./stream.ts";
 import { BaseClient } from "./client.ts";
 
 /**
+ * Report whether the engine must be asked for the configured subscribe list.
+ *
+ * {@link EmergentSink.messages} only falls back to the engine's configuration
+ * when the caller requested no topics of their own.
+ *
+ * @param requested - Topics the caller asked for
+ * @returns True when the configured list is needed
+ */
+export function needsConfiguredTopics(requested: string[]): boolean {
+  return requested.length === 0;
+}
+
+/**
+ * Resolve which topics to subscribe to.
+ *
+ * Explicitly requested topics always win. The configured list is the fallback
+ * for callers that pass nothing, which keeps the engine's TOML the source of
+ * truth for sinks that do not hard-code their own subscriptions.
+ *
+ * @param requested - Topics the caller asked for
+ * @param configured - Topics the engine has configured for this primitive
+ * @returns The topics to subscribe to
+ */
+export function resolveTopics(
+  requested: string[],
+  configured: string[],
+): string[] {
+  return requested.length > 0 ? requested : configured;
+}
+
+/**
  * A Sink can only subscribe to messages (no publishing).
  *
  * Use this for egress components that send data out of the Emergent system,
@@ -72,11 +103,14 @@ export class EmergentSink extends BaseClient
    * Connects, subscribes, and yields messages. Automatically cleans up
    * when the iteration completes or breaks.
    *
-   * The SDK queries the engine for configured subscriptions before subscribing.
-   * The `types` parameter is ignored - the engine's config is the source of truth.
+   * The `types` you pass win. Pass an empty array to defer to the engine
+   * instead: the sink then queries its configured `subscribes` list from the
+   * engine's TOML and subscribes to that. The engine is only consulted when
+   * `types` is empty.
    *
    * @param name - Unique name for this sink
-   * @param types - Message types (ignored - engine config determines subscriptions)
+   * @param types - Message types to subscribe to; empty falls back to the
+   *   engine's configured subscriptions
    * @param options - Connection options
    *
    * @example
@@ -93,20 +127,29 @@ export class EmergentSink extends BaseClient
    * })) {
    *   processMessage(msg);
    * }
+   *
+   * // Defer to the engine's configured `subscribes` list
+   * for await (const msg of EmergentSink.messages("my_sink", [])) {
+   *   processMessage(msg);
+   * }
    * ```
    */
   static async *messages(
     name: string,
-    _types: string[],
+    types: string[],
     options?: ConnectOptions,
   ): AsyncGenerator<EmergentMessage, void, unknown> {
     const sink = await EmergentSink.connect(name, options);
 
     try {
-      // Query engine for configured subscriptions (config is source of truth)
-      const configuredTypes = await sink.getMySubscriptions();
+      // Only ask the engine when the caller requested nothing.
+      const configuredTypes = needsConfiguredTopics(types)
+        ? await sink.getMySubscriptions()
+        : [];
 
-      const stream = await sink.subscribe(configuredTypes);
+      const stream = await sink.subscribe(
+        resolveTopics(types, configuredTypes),
+      );
 
       try {
         for await (const msg of stream) {

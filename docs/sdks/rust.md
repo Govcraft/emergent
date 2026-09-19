@@ -247,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Method | Description |
 |--------|-------------|
 | `connect(name)` | Connect to engine |
-| `messages(name, types)` | Connect, get config subscriptions, return stream |
+| `messages(name, types)` | Connect, subscribe to `types`, return stream. Empty `types` falls back to the config's `subscribes` |
 | `subscribe(types)` | Subscribe and get message stream |
 | `get_my_subscriptions()` | Query configured subscriptions from engine |
 | `unsubscribe(types)` | Remove subscriptions |
@@ -257,11 +257,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Convenience Method
 
 ```rust
+// Subscribe to exactly these topics
 let mut stream = EmergentSink::messages("console", ["timer.tick"]).await?;
 
 while let Some(msg) = stream.next().await {
     println!("{}", msg.payload());
 }
+```
+
+Pass an empty list to defer to the engine instead. The sink then queries its
+configured `subscribes` list from the engine's TOML and subscribes to that:
+
+```rust
+let mut stream = EmergentSink::messages("console", Vec::<String>::new()).await?;
 ```
 
 ## MessageStream

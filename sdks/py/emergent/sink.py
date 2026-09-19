@@ -18,6 +18,40 @@ if TYPE_CHECKING:
     from .types import DiscoveryInfo, EmergentMessage, TopologyState
 
 
+def needs_configured_topics(requested: list[str]) -> bool:
+    """
+    Report whether the engine must be asked for the configured subscribe list.
+
+    `EmergentSink.messages` only falls back to the engine's configuration when
+    the caller requested no topics of their own.
+
+    Args:
+        requested: Topics the caller asked for
+
+    Returns:
+        True when the configured list is needed
+    """
+    return not requested
+
+
+def resolve_topics(requested: list[str], configured: list[str]) -> list[str]:
+    """
+    Resolve which topics to subscribe to.
+
+    Explicitly requested topics always win. The configured list is the fallback
+    for callers that pass nothing, which keeps the engine's TOML the source of
+    truth for sinks that do not hard-code their own subscriptions.
+
+    Args:
+        requested: Topics the caller asked for
+        configured: Topics the engine has configured for this primitive
+
+    Returns:
+        The topics to subscribe to
+    """
+    return requested if requested else configured
+
+
 class EmergentSink(BaseClient):
     """
     A Sink can only subscribe to messages (no publishing).
@@ -113,12 +147,15 @@ class EmergentSink(BaseClient):
         Connects, subscribes, and yields messages. Automatically cleans up
         when the iteration completes or breaks.
 
-        The SDK queries the engine for configured subscriptions before subscribing.
-        The `types` parameter is ignored - the engine's config is the source of truth.
+        The `types` you pass win. Pass an empty list to defer to the engine
+        instead: the sink then queries its configured `subscribes` list from the
+        engine's TOML and subscribes to that. The engine is only consulted when
+        `types` is empty.
 
         Args:
             name: Unique name for this sink
-            types: Message types (ignored - engine config determines subscriptions)
+            types: Message types to subscribe to; empty falls back to the
+                engine's configured subscriptions
             socket_path: Custom socket path (overrides EMERGENT_SOCKET env var)
             timeout: Request timeout in seconds
             format_: Serialization format
@@ -136,6 +173,10 @@ class EmergentSink(BaseClient):
             >>> # With options
             >>> async for msg in EmergentSink.messages("my_sink", ["event.*"], timeout=60.0):
             ...     process_message(msg)
+
+            >>> # Defer to the engine's configured `subscribes` list
+            >>> async for msg in EmergentSink.messages("my_sink", []):
+            ...     process_message(msg)
         """
         sink = await cls.connect(
             name,
@@ -145,10 +186,13 @@ class EmergentSink(BaseClient):
         )
 
         try:
-            # Query engine for configured subscriptions (config is source of truth)
-            configured_types = await sink.get_my_subscriptions()
+            # Only ask the engine when the caller requested nothing.
+            configured_types = (
+                await sink.get_my_subscriptions() if needs_configured_topics(types) else []
+            )
+            topics = resolve_topics(types, configured_types)
 
-            stream = await sink.subscribe(configured_types)
+            stream = await sink.subscribe(topics)
             try:
                 async for msg in stream:
                     yield msg

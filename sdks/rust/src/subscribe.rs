@@ -94,9 +94,73 @@ impl IntoSubscription for &Vec<&str> {
     }
 }
 
+/// Decide whether the engine must be asked for the configured subscription list.
+///
+/// The convenience constructors (`EmergentHandler::messages`,
+/// `EmergentSink::messages`) only fall back to the engine's configuration when
+/// the caller requested no topics of their own.
+#[must_use]
+pub(crate) fn needs_configured_topics(requested: &[String]) -> bool {
+    requested.is_empty()
+}
+
+/// Resolve the topics to subscribe to from what the caller asked for and what
+/// the engine has configured.
+///
+/// Explicitly requested topics always win. The configured list is the fallback
+/// for callers that pass nothing, which keeps the engine's TOML the source of
+/// truth for primitives that do not hard-code their own subscriptions.
+#[must_use]
+pub(crate) fn resolve_topics(requested: Vec<String>, configured: Vec<String>) -> Vec<String> {
+    if requested.is_empty() {
+        configured
+    } else {
+        requested
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn topics(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn requested_topics_win_over_configured() {
+        let resolved = resolve_topics(topics(&["a.b"]), topics(&["c.d", "e.f"]));
+        assert_eq!(resolved, topics(&["a.b"]));
+    }
+
+    #[test]
+    fn empty_request_falls_back_to_configured() {
+        let resolved = resolve_topics(Vec::new(), topics(&["c.d", "e.f"]));
+        assert_eq!(resolved, topics(&["c.d", "e.f"]));
+    }
+
+    #[test]
+    fn empty_request_and_empty_config_resolve_to_nothing() {
+        assert!(resolve_topics(Vec::new(), Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn requested_topics_survive_an_empty_config() {
+        let resolved = resolve_topics(topics(&["a.b", "a.c"]), Vec::new());
+        assert_eq!(resolved, topics(&["a.b", "a.c"]));
+    }
+
+    #[test]
+    fn requested_order_and_duplicates_are_preserved() {
+        let resolved = resolve_topics(topics(&["b", "a", "b"]), topics(&["z"]));
+        assert_eq!(resolved, topics(&["b", "a", "b"]));
+    }
+
+    #[test]
+    fn configured_list_is_only_needed_when_nothing_was_requested() {
+        assert!(needs_configured_topics(&[]));
+        assert!(!needs_configured_topics(&topics(&["a.b"])));
+    }
 
     #[test]
     fn test_str_into_subscription() {

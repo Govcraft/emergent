@@ -8,7 +8,7 @@
 use crate::error::ClientError;
 use crate::message::EmergentMessage;
 use crate::stream::MessageStream;
-use crate::subscribe::IntoSubscription;
+use crate::subscribe::{IntoSubscription, needs_configured_topics, resolve_topics};
 use crate::types::{CorrelationId, PrimitiveName};
 use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
@@ -787,19 +787,42 @@ impl EmergentHandler {
         Ok(stream)
     }
 
-    /// Convenience method that connects, gets configured subscriptions, and returns
+    /// Convenience method that connects, subscribes, and returns
     /// (handler, stream) for the common one-liner pattern.
+    ///
+    /// # Which topics are subscribed to
+    ///
+    /// The `types` you pass win. Pass an empty list to defer to the engine
+    /// instead: the handler then queries its configured `subscribes` list from
+    /// the engine's TOML and subscribes to that. The engine is only consulted
+    /// when `types` is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Subscribe to exactly these topics
+    /// let (handler, stream) = EmergentHandler::messages("filter", ["timer.tick"]).await?;
+    ///
+    /// // Defer to the engine's configured `subscribes` list
+    /// let (handler, stream) = EmergentHandler::messages("filter", Vec::<String>::new()).await?;
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns an error if connection or subscription fails.
     pub async fn messages(
         name: impl Into<String>,
-        _types: impl IntoSubscription,
+        types: impl IntoSubscription,
     ) -> Result<(Self, MessageStream)> {
         let name = name.into();
+        let requested = types.into_topics();
+        let configured = if needs_configured_topics(&requested) {
+            get_my_subscriptions_via_pubsub(&name).await?
+        } else {
+            Vec::new()
+        };
+        let topics = resolve_topics(requested, configured);
         let mut handler = Self::connect(&name).await?;
-        let topics = get_my_subscriptions_via_pubsub(&name).await?;
         let stream = handler.subscribe(topics).await?;
         Ok((handler, stream))
     }
@@ -1196,26 +1219,34 @@ impl EmergentSink {
         })
     }
 
-    /// Convenience method that connects, gets configured subscriptions, and returns a stream.
+    /// Convenience method that connects, subscribes, and returns a stream.
     ///
     /// This is a one-liner for the common pattern of:
     /// 1. Connect to the engine
-    /// 2. Query configured subscriptions from the engine's config
+    /// 2. Decide which topics to subscribe to
     /// 3. Subscribe to those topics
     /// 4. Return the message stream
     ///
-    /// The `types` parameter is for API consistency but is ignored - the engine's
-    /// configuration is the source of truth for what this sink should subscribe to.
+    /// # Which topics are subscribed to
+    ///
+    /// The `types` you pass win. Pass an empty list to defer to the engine
+    /// instead: the sink then queries its configured `subscribes` list from the
+    /// engine's TOML and subscribes to that. The engine is only consulted when
+    /// `types` is empty.
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// use futures::StreamExt;
     ///
+    /// // Subscribe to exactly these topics
     /// let mut stream = EmergentSink::messages("console", ["timer.tick"]).await?;
     /// while let Some(msg) = stream.next().await {
     ///     println!("{}", msg.payload);
     /// }
+    ///
+    /// // Defer to the engine's configured `subscribes` list
+    /// let mut stream = EmergentSink::messages("console", Vec::<String>::new()).await?;
     /// ```
     ///
     /// # Errors
@@ -1223,11 +1254,17 @@ impl EmergentSink {
     /// Returns an error if connection or subscription fails.
     pub async fn messages(
         name: impl Into<String>,
-        _types: impl IntoSubscription,
+        types: impl IntoSubscription,
     ) -> Result<MessageStream> {
         let name = name.into();
+        let requested = types.into_topics();
         let mut sink = Self::connect(&name).await?;
-        let topics = sink.get_my_subscriptions().await?;
+        let configured = if needs_configured_topics(&requested) {
+            sink.get_my_subscriptions().await?
+        } else {
+            Vec::new()
+        };
+        let topics = resolve_topics(requested, configured);
         sink.subscribe(topics).await
     }
 
