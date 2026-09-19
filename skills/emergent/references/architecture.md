@@ -181,7 +181,11 @@ The engine starts primitives in dependency order:
 2. **Handlers second**: Ready to transform messages
 3. **Sources last**: Begin emitting messages
 
-Within each tier, primitives start in config order with a fixed 50 ms pause after each one. That ordering is the whole guarantee. There is no readiness handshake, so a subscriber that takes longer than that to connect and subscribe can miss early messages. A source that publishes the instant it starts (an `exec-source` with no interval) is the usual way to find this out.
+Within each tier, primitives start in config order. After 0.10.10 the engine then waits for that tier before starting the next: it holds until every primitive in it that declares `subscribes` has reached the engine over IPC, so a slow-starting consumer no longer misses a source's first event. A primitive that declares no `subscribes`, every source among them, is never waited on. `[engine].startup_ready_timeout_ms` (default 5000) bounds the wait; at the deadline the engine logs a warning naming the primitives it never heard from and starts the next tier anyway, and a primitive that exits or fails during the wait releases its tier at once.
+
+The wait is an inference, not a handshake. acton-reactive exposes no per-connection identity and no subscribe callback, so the engine reads readiness from IPC traffic carrying the primitive's name (the SDK asking for its configured `subscribes`, plus a short settle) and from a subscribed IPC connection whose kernel peer pid is the primitive's child. Either is enough. A primitive that publishes nothing, hard-codes its topics rather than deferring to the config, and runs behind a wrapper that forks (so its pid is not the one the engine spawned) is still invisible and costs its tier the deadline.
+
+On 0.10.10 and earlier there was no wait at all: a fixed 50 ms pause after each primitive and then the next tier regardless, so any subscriber slower than that missed early messages (Govcraft/emergent#66). A source that publishes the instant it starts (an `exec-source` with no interval) is the usual way to find this out there.
 
 A primitive whose `path` does not exist stops the engine at config load. A spawn that fails later does not: the engine emits `system.error.<name>` and carries on with the rest.
 

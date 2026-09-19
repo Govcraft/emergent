@@ -162,6 +162,8 @@ The engine starts primitives in a specific order to ensure consumers are ready b
 
 Within each tier, primitives start in the order they appear in the configuration file. This matters when one primitive depends on another's `system.started.*` event.
 
+After engine 0.10.10 the engine waits for each tier before starting the next: it holds until every primitive in the tier that declares `subscribes` has reached it over IPC, bounded by `[engine].startup_ready_timeout_ms`. So "consumers are ready before producers" is now enforced rather than hoped for. See [Configuration](configuration.md#startup-order). On 0.10.10 and earlier the engine slept 50 ms per primitive and moved on regardless, so a slow-starting subscriber missed the first events (Govcraft/emergent#66).
+
 ### Three-Phase Shutdown
 
 When the engine receives SIGTERM or Ctrl+C:
