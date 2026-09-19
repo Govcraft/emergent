@@ -402,12 +402,49 @@ a primitive by hand or wonder where its logs went.
 | `EMERGENT_SOCKET` | all four SDKs | Engine socket path. Rust falls back to the XDG default path when it is unset; Python, TypeScript, and Go fail to connect with an error naming the variable |
 | `EMERGENT_NAME` | the `run_*` helpers in all four SDKs | The primitive's name when the helper is given none (`None`, `undefined`, `""`). The low-level `connect(name)` does not read it |
 | `EMERGENT_LOG` | all four SDKs | `stderr` sends SDK logs to stderr. Otherwise they go to `~/.local/share/emergent/<name>/primitive.log`, which is why a managed primitive looks silent. Any other value is a log level (Rust takes a full tracing filter such as `emergent_client=trace`); TypeScript and Go also accept `off` |
-| `EMERGENT_UNWRAP_STDOUT` | all four SDKs | `true` replaces an exec-source `{command, stdout, exit_code}` payload with its parsed `stdout` before your code sees it. The engine sets it to `true` only when the config has `unwrap_stdout = true`. By hand: TypeScript needs exactly `true`, Rust and Go also take `1`, and Python treats any non-empty value (including `false`) as on |
+| `EMERGENT_UNWRAP_STDOUT` | all four SDKs | `true` replaces an exec-source `{command, stdout, exit_code}` payload with its parsed `stdout` before your code sees it. The engine sets it to `true` only when the config has `unwrap_stdout = true`. By hand: all four SDKs take `true` or `1` and treat anything else, including `false`, as off. Python and TypeScript trim the value and ignore case; Rust and Go compare it exactly. On SDK release 0.13.1 and earlier TypeScript needed exactly `true` and Python treated any non-empty value (including `false`) as on |
 
 **Signals differ by SDK.** The Rust `run_*` helpers trap SIGTERM only, so
 Ctrl-C on a hand-run Rust primitive kills it without the graceful disconnect.
 Python, TypeScript, and Go trap both SIGTERM and SIGINT. Under the engine this
 does not matter: shutdown arrives as `system.shutdown` and then SIGTERM.
+
+### Errors an engine rejection raises
+
+When the engine rejects a request, each SDK reports it under a name that says
+which request failed.
+
+| Rejected request | Rust `ClientError` | Python | TypeScript | Go |
+|---|---|---|---|---|
+| subscribe, pattern subscribe | `SubscriptionFailed` | `SubscriptionError` | `SubscriptionError` | `*SubscriptionError` |
+| acknowledged publish | `PublishFailed` | `PublishError` | `PublishError` | `*PublishError` |
+| `discover` | `DiscoveryFailed` | `DiscoveryError` | `DiscoveryError` | `*DiscoveryError` |
+
+On SDK release 0.13.1 and earlier TypeScript exported all three classes and
+threw none of them, and Python raised only `PublishError`: every other
+rejection was a plain `ConnectionError` with the code `CONNECTION_FAILED`
+(Govcraft/emergent#68). After 0.13.1 the TypeScript three and Python's
+`SubscriptionError` and `DiscoveryError` are raised, and each is a subclass of
+`ConnectionError`, so code that catches `ConnectionError` keeps working. Test
+for the specific class first. Python's `PublishError` is not a
+`ConnectionError`.
+
+Rust's `ClientError` also has `IoError`, `IpcError`, `ProtocolError` and
+`EngineError`. The SDK returns none of them. The first two have `From`
+conversions for your own `?`.
+
+### A malformed frame from the engine
+
+After SDK release 0.13.1 the Python, TypeScript and Go read loops log and skip
+a frame whose body does not decode or has the wrong shape, and deliver the
+frames behind it. On 0.13.1 and earlier one such frame (a PUSH with a null
+body, a wrong-typed field, a truncated MessagePack or JSON body) ended the
+TypeScript and Python read loops and closed the subscriber stream
+(Govcraft/emergent#64). Go kept running but dropped every frame buffered
+behind the bad one, and passed a message with wrong-typed fields to the
+subscriber with an empty `ID`. A header that cannot be trusted (an oversized
+length, a wrong protocol version) still drops the buffer, because nothing says
+where the next frame starts.
 
 ### Cargo.toml
 

@@ -22,9 +22,12 @@ import {
 import { generateMessageId } from "./message.ts";
 import {
   ConnectionError,
+  DiscoveryError,
   DisposedError,
   ProtocolError,
+  PublishError,
   SocketNotFoundError,
+  SubscriptionError,
   TimeoutError,
 } from "./errors.ts";
 import {
@@ -43,7 +46,7 @@ import {
   MSG_TYPE_SUBSCRIBE_PATTERNS,
   MSG_TYPE_UNSUBSCRIBE,
   MSG_TYPE_UNSUBSCRIBE_PATTERNS,
-  tryDecodeFrame,
+  nextFrame,
 } from "./protocol.ts";
 import { MessageStream } from "./stream.ts";
 import { isEmergentMessageType, partitionTopics } from "./topics.ts";
@@ -244,6 +247,115 @@ export function discoveryInfoFromResponse(response: unknown): DiscoveryInfo {
     messageTypes: Object.freeze(messageTypes),
     primitives: Object.freeze(primitives),
   };
+}
+
+/**
+ * Name a frame type for a log line, falling back to its byte in hex.
+ */
+export function frameTypeLabel(msgType: number): string {
+  return frameTypeName(msgType) ??
+    `0x${msgType.toString(16).padStart(2, "0")}`;
+}
+
+/**
+ * Read the notification a `PUSH` frame carries.
+ *
+ * Only `message_type` is needed to route a notification, so it is the only
+ * field checked. Returns `undefined` for a body that is not an object or has
+ * no string `message_type`.
+ */
+export function pushFromFrame(
+  payload: unknown,
+): IpcPushNotification | undefined {
+  if (
+    typeof payload !== "object" || payload === null || Array.isArray(payload)
+  ) {
+    return undefined;
+  }
+  const body = payload as Record<string, unknown>;
+  if (typeof body.message_type !== "string") return undefined;
+  return body as unknown as IpcPushNotification;
+}
+
+/**
+ * Read the Emergent message a push notification carries as its payload.
+ *
+ * `id`, `message_type` and `source` must be strings and `timestamp_ms` a
+ * number. `correlation_id` and `causation_id` must be strings when present. A
+ * `null` there reads as absent, which is how a publisher that does not omit
+ * empty fields writes one. `payload` and `metadata` are kept as sent. Returns
+ * `undefined` for anything else, so a message of the wrong shape never
+ * reaches the subscriber.
+ */
+export function wireMessageFromPush(payload: unknown): WireMessage | undefined {
+  if (
+    typeof payload !== "object" || payload === null || Array.isArray(payload)
+  ) {
+    return undefined;
+  }
+  const body = payload as Record<string, unknown>;
+
+  if (
+    typeof body.id !== "string" || typeof body.message_type !== "string" ||
+    typeof body.source !== "string" || typeof body.timestamp_ms !== "number"
+  ) {
+    return undefined;
+  }
+
+  const isOptionalString = (
+    value: unknown,
+  ): value is string | null | undefined =>
+    value === undefined || value === null || typeof value === "string";
+  const { correlation_id: correlationId, causation_id: causationId } = body;
+  if (!isOptionalString(correlationId) || !isOptionalString(causationId)) {
+    return undefined;
+  }
+
+  return {
+    id: body.id,
+    message_type: body.message_type,
+    source: body.source,
+    correlation_id: correlationId ?? undefined,
+    causation_id: causationId ?? undefined,
+    timestamp_ms: body.timestamp_ms,
+    payload: body.payload,
+    metadata: body.metadata ?? undefined,
+  };
+}
+
+/**
+ * Read the primitives a `system.response.topology` message payload lists.
+ *
+ * Entries that are not objects with a string `name` are dropped. A payload
+ * with no `primitives` list reads as an empty topology.
+ */
+export function topologyFromPayload(payload: unknown): TopologyState {
+  if (typeof payload !== "object" || payload === null) {
+    return { primitives: [] };
+  }
+  const { primitives } = payload as { primitives?: unknown };
+  if (!Array.isArray(primitives)) return { primitives: [] };
+  return {
+    primitives: primitives.filter((entry): entry is TopologyPrimitive =>
+      typeof entry === "object" && entry !== null &&
+      typeof (entry as { name?: unknown }).name === "string"
+    ),
+  };
+}
+
+/**
+ * Read the topics a `system.response.subscriptions` message payload lists.
+ *
+ * Entries that are not strings are dropped. A payload with no `subscribes`
+ * list reads as no subscriptions.
+ */
+export function subscribesFromPayload(payload: unknown): string[] {
+  if (typeof payload !== "object" || payload === null) return [];
+  const { subscribes } = payload as { subscribes?: unknown };
+  if (!Array.isArray(subscribes)) return [];
+  return subscribes.filter((entry): entry is string =>
+    typeof entry === "string"
+  );
 }
 
 /**
@@ -457,7 +569,10 @@ export class BaseClient {
         error: response.error,
       });
       stream.close();
-      throw new ConnectionError(response.error ?? "Subscription failed");
+      throw new SubscriptionError(
+        response.error ?? "Subscription failed",
+        exact,
+      );
     }
 
     if (patterns.length > 0) {
@@ -482,8 +597,9 @@ export class BaseClient {
           error: patternResponse.error,
         });
         stream.close();
-        throw new ConnectionError(
+        throw new SubscriptionError(
           patternResponse.error ?? "Pattern subscription failed",
+          patterns,
         );
       }
     }
@@ -662,7 +778,10 @@ export class BaseClient {
         messageType: message.messageType,
         error: response.error,
       });
-      throw new ConnectionError(response.error ?? "Broker returned error");
+      throw new PublishError(
+        response.error ?? "Broker returned error",
+        message.messageType,
+      );
     }
 
     this.#logger.debug("publish_ack succeeded", {
@@ -696,7 +815,7 @@ export class BaseClient {
 
     if (!response.success) {
       this.#logger.error("discovery failed", { error: response.error });
-      throw new ConnectionError(response.error ?? "Discovery failed");
+      throw new DiscoveryError(response.error ?? "Discovery failed");
     }
 
     const info = discoveryInfoFromResponse(response);
@@ -736,8 +855,9 @@ export class BaseClient {
     );
 
     if (!subResponse.success) {
-      throw new ConnectionError(
+      throw new SubscriptionError(
         subResponse.error ?? "Failed to subscribe to response type",
+        ["system.response.subscriptions"],
       );
     }
 
@@ -805,8 +925,9 @@ export class BaseClient {
     );
 
     if (!subResponse.success) {
-      throw new ConnectionError(
+      throw new SubscriptionError(
         subResponse.error ?? "Failed to subscribe to response type",
+        ["system.response.topology"],
       );
     }
 
@@ -1008,28 +1129,38 @@ export class BaseClient {
 
   #processFrames(): void {
     while (this.#readBuffer.length >= HEADER_SIZE) {
+      const step = nextFrame(this.#readBuffer);
+
+      if (step.kind === "incomplete") break;
+
+      if (step.kind === "bad-framing") {
+        // Nothing says where the next frame starts, so drop what is buffered.
+        this.#logger.error("protocol error while processing frame", {
+          error: step.reason,
+        });
+        this.#readBuffer = new Uint8Array(0);
+        break;
+      }
+
+      if (step.kind === "bad-body") {
+        this.#logger.warn("skipping frame with malformed body", {
+          msgType: frameTypeLabel(step.msgType),
+          error: step.reason,
+        });
+        this.#readBuffer = this.#readBuffer.subarray(step.bytesConsumed);
+        continue;
+      }
+
+      this.#readBuffer = this.#readBuffer.subarray(step.frame.bytesConsumed);
+
+      // One frame must never end the read loop, whatever handling it throws.
       try {
-        const result = tryDecodeFrame(this.#readBuffer);
-        if (result === null) {
-          // Not enough data for complete frame
-          break;
-        }
-
-        // Consume the bytes
-        this.#readBuffer = this.#readBuffer.subarray(result.bytesConsumed);
-
-        // Handle the frame
-        this.#handleFrame(result.msgType, result.payload);
+        this.#handleFrame(step.frame.msgType, step.frame.payload);
       } catch (err) {
-        if (err instanceof ProtocolError) {
-          this.#logger.error("protocol error while processing frame", {
-            error: err.message,
-          });
-          // Reset buffer on protocol error
-          this.#readBuffer = new Uint8Array(0);
-          break;
-        }
-        throw err;
+        this.#logger.error("skipping frame that could not be handled", {
+          msgType: frameTypeLabel(step.frame.msgType),
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   }
@@ -1103,6 +1234,99 @@ export class BaseClient {
     }
   }
 
+  /** Remove and return the pub/sub request waiting on a correlation id. */
+  #takePending<T>(
+    requests: Map<string, PendingPubSubRequest<T>>,
+    correlationId: string | undefined,
+  ): PendingPubSubRequest<T> | undefined {
+    if (correlationId === undefined) return undefined;
+    const pending = requests.get(correlationId);
+    if (pending === undefined) return undefined;
+    requests.delete(correlationId);
+    if (pending.timer) clearTimeout(pending.timer);
+    return pending;
+  }
+
+  /**
+   * Route a PUSH frame: to the SDK's own handling for the system messages it
+   * owns, and to the subscriber stream for everything else. A notification or
+   * message of the wrong shape is logged and dropped.
+   */
+  #handlePush(payload: unknown): void {
+    const notification = pushFromFrame(payload);
+    if (notification === undefined) {
+      this.#logger.warn("dropping malformed push frame");
+      return;
+    }
+    const messageType = notification.message_type;
+
+    // Check for shutdown signal - SDK handles this internally
+    if (messageType === "system.shutdown") {
+      this.#messageStream = this.applyShutdownNotification(
+        notification.payload,
+        this.#messageStream,
+      );
+      // Don't forward system.shutdown to user - it's internal
+      return;
+    }
+
+    // Skip the transport's own envelope broadcasts, which only a "*"
+    // subscription ever sees. The message inside each one arrives
+    // separately under its own Emergent message type.
+    if (!isEmergentMessageType(messageType)) {
+      this.#logger.debug("skipping non-Emergent IPC broadcast", {
+        messageType,
+      });
+      return;
+    }
+
+    // The notification.payload IS the serialized EmergentMessage (wire format)
+    const wireMessage = wireMessageFromPush(notification.payload);
+    if (wireMessage === undefined) {
+      this.#logger.warn("dropping push with a malformed message", {
+        messageType,
+      });
+      return;
+    }
+
+    // Handle system.response.topology messages
+    if (messageType === "system.response.topology") {
+      const pending = this.#takePending(
+        this.#pendingTopologyRequests,
+        wireMessage.correlation_id,
+      );
+      pending?.resolve(topologyFromPayload(wireMessage.payload));
+      return; // Don't forward to message stream
+    }
+
+    // Handle system.response.subscriptions messages
+    if (messageType === "system.response.subscriptions") {
+      const pending = this.#takePending(
+        this.#pendingSubscriptionsRequests,
+        wireMessage.correlation_id,
+      );
+      pending?.resolve(subscribesFromPayload(wireMessage.payload));
+      return; // Don't forward to message stream
+    }
+
+    if (!this.#messageStream) return;
+
+    // Convert from wire format (snake_case) to EmergentMessage class
+    let message = EmergentMessage.fromWire(wireMessage);
+
+    // Auto-unwrap stdout payloads when enabled (skip system messages)
+    if (this.#unwrapStdout && !message.messageType.startsWith("system.")) {
+      message = message.unwrapStdout();
+    }
+
+    this.#logger.debug("received message", {
+      messageType: message.messageType,
+      source: message.source,
+    });
+
+    this.#messageStream.push(message);
+  }
+
   #handleFrame(msgType: number, payload: unknown): void {
     switch (msgType) {
       case MSG_TYPE_RESPONSE:
@@ -1120,100 +1344,13 @@ export class BaseClient {
         });
         break;
 
-      case MSG_TYPE_PUSH: {
-        // The payload field contains the complete EmergentMessage
-        const notification = payload as IpcPushNotification;
-
-        // Check for shutdown signal - SDK handles this internally
-        if (notification.message_type === "system.shutdown") {
-          this.#messageStream = this.applyShutdownNotification(
-            notification.payload,
-            this.#messageStream,
-          );
-          // Don't forward system.shutdown to user - it's internal
-          break;
-        }
-
-        // Handle system.response.topology messages
-        if (notification.message_type === "system.response.topology") {
-          const wireMessage = notification.payload as WireMessage;
-          const correlationId = wireMessage.correlation_id;
-          if (correlationId) {
-            const pending = this.#pendingTopologyRequests.get(correlationId);
-            if (pending) {
-              this.#pendingTopologyRequests.delete(correlationId);
-              if (pending.timer) clearTimeout(pending.timer);
-              // Extract primitives from payload
-              const responsePayload = wireMessage.payload as {
-                primitives?: TopologyPrimitive[];
-              };
-              pending.resolve({
-                primitives: responsePayload?.primitives ?? [],
-              });
-            }
-          }
-          break; // Don't forward to message stream
-        }
-
-        // Handle system.response.subscriptions messages
-        if (notification.message_type === "system.response.subscriptions") {
-          const wireMessage = notification.payload as WireMessage;
-          const correlationId = wireMessage.correlation_id;
-          if (correlationId) {
-            const pending = this.#pendingSubscriptionsRequests.get(
-              correlationId,
-            );
-            if (pending) {
-              this.#pendingSubscriptionsRequests.delete(correlationId);
-              if (pending.timer) clearTimeout(pending.timer);
-              // Extract subscribes from payload
-              const responsePayload = wireMessage.payload as {
-                subscribes?: string[];
-              };
-              pending.resolve(responsePayload?.subscribes ?? []);
-            }
-          }
-          break; // Don't forward to message stream
-        }
-
-        // Skip the transport's own envelope broadcasts, which only a "*"
-        // subscription ever sees. The message inside each one arrives
-        // separately under its own Emergent message type.
-        if (!isEmergentMessageType(notification.message_type)) {
-          this.#logger.debug("skipping non-Emergent IPC broadcast", {
-            messageType: notification.message_type,
-          });
-          break;
-        }
-
-        if (this.#messageStream) {
-          // The notification.payload IS the serialized EmergentMessage (wire format)
-          const wireMessage = notification.payload as WireMessage;
-
-          // Convert from wire format (snake_case) to EmergentMessage class
-          let message = EmergentMessage.fromWire(wireMessage);
-
-          // Auto-unwrap stdout payloads when enabled (skip system messages)
-          if (
-            this.#unwrapStdout && !message.messageType.startsWith("system.")
-          ) {
-            message = message.unwrapStdout();
-          }
-
-          this.#logger.debug("received message", {
-            messageType: message.messageType,
-            source: message.source,
-          });
-
-          this.#messageStream.push(message);
-        }
+      case MSG_TYPE_PUSH:
+        this.#handlePush(payload);
         break;
-      }
 
       default:
         this.#logger.warn("ignoring frame of unexpected type", {
-          msgType: frameTypeName(msgType) ??
-            `0x${msgType.toString(16).padStart(2, "0")}`,
+          msgType: frameTypeLabel(msgType),
         });
         break;
     }

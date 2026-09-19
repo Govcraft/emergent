@@ -383,19 +383,24 @@ match EmergentSource::connect("my_source").await {
 
 ### Error Variants
 
-| Variant               | Description                                   |
-| --------------------- | --------------------------------------------- |
-| `ConnectionFailed`    | Engine connection failed                      |
-| `SocketNotFound`      | Engine socket does not exist at expected path  |
-| `Timeout`             | Operation timed out                           |
-| `ProtocolError`       | Unexpected message from engine                |
-| `SubscriptionFailed`  | Subscription request rejected                 |
-| `PublishFailed`       | Publish request failed                        |
-| `DiscoveryFailed`     | Discovery request failed                      |
-| `SerializationError`  | Message serialization/deserialization error    |
-| `IoError`             | Underlying I/O error                          |
-| `IpcError`            | Low-level IPC protocol error                  |
-| `EngineError`         | Engine returned an application-level error     |
+| Variant                    | Description                                                        |
+| -------------------------- | ------------------------------------------------------------------ |
+| `ConnectionFailed`         | Engine connection failed, or a request could not be sent           |
+| `SocketNotFound`           | Engine socket does not exist at expected path                      |
+| `Timeout`                  | Operation timed out                                                |
+| `SubscriptionFailed`       | Subscription request rejected                                      |
+| `InvalidSubscriptionTopic` | A topic that could never match, such as `system.*.error`           |
+| `PublishFailed`            | The broker rejected an acknowledged publish                        |
+| `DiscoveryFailed`          | Discovery request failed                                           |
+| `SerializationError`       | Message serialization/deserialization error                        |
+| `IoError`                  | Not returned by the SDK. `From<std::io::Error>` is for your own `?` |
+| `IpcError`                 | Not returned by the SDK. `From<IpcError>` is for your own `?`       |
+| `ProtocolError`            | Not returned by the SDK today                                      |
+| `EngineError`              | Not returned by the SDK today                                      |
+
+The last four are part of the public enum, so a `match` still has to cover
+them. An engine-side failure reaches you as `SubscriptionFailed`,
+`PublishFailed` or `DiscoveryFailed` with the engine's error text.
 
 Helper functions use a separate `HelperError` type with variants for
 connection, subscription, signal setup, and user-function errors.

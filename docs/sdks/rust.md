@@ -407,8 +407,14 @@ match source.publish(message).await {
 | `ConnectionFailed` | Failed to connect to engine |
 | `Timeout` | Operation timed out |
 | `SubscriptionFailed` | Subscription request failed |
+| `PublishFailed` | The broker rejected an acknowledged publish |
 | `DiscoveryFailed` | Discovery request failed |
-| `ProtocolError` | Unexpected protocol message |
+| `InvalidSubscriptionTopic` | A topic that could never match, such as `system.*.error` |
+| `SerializationError` | A message could not be serialized or deserialized |
+
+`ClientError` also has `IoError`, `IpcError`, `ProtocolError` and
+`EngineError`. The SDK does not return any of them today. The first two have
+`From` conversions so your own code can use `?` on those error types.
 
 ## Graceful Shutdown
 

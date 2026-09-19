@@ -32,8 +32,11 @@ export class EmergentError extends Error {
  * - Permission denied
  */
 export class ConnectionError extends EmergentError {
-  constructor(message: string) {
-    super(message, "CONNECTION_FAILED");
+  /**
+   * @param code - Set by the subclasses that name a more specific failure
+   */
+  constructor(message: string, code = "CONNECTION_FAILED") {
+    super(message, code);
     this.name = "ConnectionError";
   }
 }
@@ -80,9 +83,12 @@ export class ProtocolError extends EmergentError {
 }
 
 /**
- * Error thrown when subscription fails.
+ * Error thrown when the engine rejects a subscription.
+ *
+ * A `ConnectionError`, which is what these failures threw through SDK 0.13.1,
+ * so a handler that catches `ConnectionError` still sees them.
  */
-export class SubscriptionError extends EmergentError {
+export class SubscriptionError extends ConnectionError {
   /** The message types that failed to subscribe */
   readonly messageTypes: string[];
 
@@ -94,9 +100,12 @@ export class SubscriptionError extends EmergentError {
 }
 
 /**
- * Error thrown when publishing fails.
+ * Error thrown when the broker rejects an acknowledged publish.
+ *
+ * A `ConnectionError`, which is what this failure threw through SDK 0.13.1,
+ * so a handler that catches `ConnectionError` still sees it.
  */
-export class PublishError extends EmergentError {
+export class PublishError extends ConnectionError {
   /** The message type that failed to publish */
   readonly messageType: string;
 
@@ -108,9 +117,12 @@ export class PublishError extends EmergentError {
 }
 
 /**
- * Error thrown when discovery fails.
+ * Error thrown when the engine rejects a discovery request.
+ *
+ * A `ConnectionError`, which is what this failure threw through SDK 0.13.1,
+ * so a handler that catches `ConnectionError` still sees it.
  */
-export class DiscoveryError extends EmergentError {
+export class DiscoveryError extends ConnectionError {
   constructor(message: string) {
     super(message, "DISCOVERY_FAILED");
     this.name = "DiscoveryError";

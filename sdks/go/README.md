@@ -269,6 +269,12 @@ case *emergent.ConnectionError:
 | `DisposedError`       | `DISPOSED`            | `ClientType`     |
 | `ValidationError`     | `VALIDATION_ERROR`    | `Msg`, `Field`   |
 
+A frame the engine sends with a malformed body never reaches the caller. After
+SDK release 0.13.1 it is logged and skipped, and the frames behind it are
+still delivered. On 0.13.1 and earlier a body that did not decode emptied the
+read buffer, which lost every frame already buffered behind it, and a message
+with wrong-typed fields reached the subscriber with an empty `ID`.
+
 ## Message Shape
 
 Every message flowing through Emergent follows the same envelope:

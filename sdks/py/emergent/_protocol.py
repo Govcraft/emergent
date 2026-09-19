@@ -84,6 +84,27 @@ class DecodedFrame:
     raw_msg_type: int
 
 
+@dataclass(frozen=True)
+class BadFrameBody:
+    """
+    A whole frame whose body does not decode.
+
+    Its length is known, so a reader drops ``bytes_consumed`` bytes and carries
+    on with the next frame.
+    """
+
+    raw_msg_type: int
+    bytes_consumed: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class BadFraming:
+    """A header that cannot be trusted, so the next frame cannot be found."""
+
+    reason: str
+
+
 def parse_message_type(raw: int) -> MessageType | None:
     """
     Map a wire byte to its ``MessageType``.
@@ -115,7 +136,8 @@ def decode_payload(payload_bytes: bytes | bytearray, format_raw: int) -> Any:
         The decoded payload, or None for an empty body
 
     Raises:
-        ProtocolError: If the format byte is unknown
+        ProtocolError: If the format byte is unknown, or the body is not valid
+            in its format, such as one cut short
     """
     if format_raw not in (Format.JSON, Format.MSGPACK):
         raise ProtocolError(f"Unknown format: {format_raw}")
@@ -123,9 +145,15 @@ def decode_payload(payload_bytes: bytes | bytearray, format_raw: int) -> Any:
     if len(payload_bytes) == 0:
         return None
 
-    if format_raw == Format.JSON:
-        return json.loads(payload_bytes.decode("utf-8"))
-    return msgpack.unpackb(payload_bytes, raw=False)
+    # The decoders raise their own errors: ValueError and its subclasses from
+    # JSON and UTF-8, and msgpack's own family. Callers handle one class.
+    try:
+        if format_raw == Format.JSON:
+            return json.loads(bytes(payload_bytes).decode("utf-8"))
+        return msgpack.unpackb(payload_bytes, raw=False)
+    except (ValueError, msgpack.UnpackException, RecursionError) as e:
+        name = "JSON" if format_raw == Format.JSON else "MessagePack"
+        raise ProtocolError(f"Malformed {name} frame body: {e}") from e
 
 
 def encode_frame(
@@ -178,6 +206,58 @@ def encode_frame(
     return header + payload_bytes
 
 
+def next_frame(buffer: bytes | bytearray) -> DecodedFrame | BadFrameBody | BadFraming | None:
+    """
+    Read the frame at the front of a buffer without raising.
+
+    A body that does not decode is told apart from a header that cannot be
+    trusted, because only the first leaves the reader able to find the next
+    frame.
+
+    Args:
+        buffer: The buffer to read from
+
+    Returns:
+        The decoded frame, ``BadFrameBody`` or ``BadFraming`` for a frame that
+        is malformed, or None if the buffer does not hold a whole frame yet
+    """
+    if len(buffer) < HEADER_SIZE:
+        return None  # Not enough data for header
+
+    # Unpack header
+    payload_len, version, msg_type_raw, format_raw = struct.unpack(">IBBB", buffer[:HEADER_SIZE])
+
+    if payload_len > MAX_FRAME_SIZE:
+        return BadFraming(f"Frame too large: {payload_len} bytes")
+
+    if version != ProtocolVersion.V2:
+        return BadFraming(
+            f"Unsupported protocol version: {version} (expected {ProtocolVersion.V2})"
+        )
+
+    total_len = HEADER_SIZE + payload_len
+
+    if len(buffer) < total_len:
+        return None  # Not enough data for full frame
+
+    try:
+        payload = decode_payload(buffer[HEADER_SIZE:total_len], format_raw)
+    except ProtocolError as e:
+        return BadFrameBody(
+            raw_msg_type=msg_type_raw,
+            bytes_consumed=total_len,
+            reason=str(e),
+        )
+
+    return DecodedFrame(
+        msg_type=parse_message_type(msg_type_raw),
+        format=Format(format_raw),
+        payload=payload,
+        bytes_consumed=total_len,
+        raw_msg_type=msg_type_raw,
+    )
+
+
 def try_decode_frame(buffer: bytes | bytearray) -> DecodedFrame | None:
     """
     Try to decode a frame from a buffer.
@@ -193,34 +273,10 @@ def try_decode_frame(buffer: bytes | bytearray) -> DecodedFrame | None:
     Raises:
         ProtocolError: If the frame is malformed
     """
-    if len(buffer) < HEADER_SIZE:
-        return None  # Not enough data for header
-
-    # Unpack header
-    payload_len, version, msg_type_raw, format_raw = struct.unpack(">IBBB", buffer[:HEADER_SIZE])
-
-    if payload_len > MAX_FRAME_SIZE:
-        raise ProtocolError(f"Frame too large: {payload_len} bytes")
-
-    total_len = HEADER_SIZE + payload_len
-
-    if len(buffer) < total_len:
-        return None  # Not enough data for full frame
-
-    if version != ProtocolVersion.V2:
-        raise ProtocolError(
-            f"Unsupported protocol version: {version} (expected {ProtocolVersion.V2})"
-        )
-
-    payload = decode_payload(buffer[HEADER_SIZE:total_len], format_raw)
-
-    return DecodedFrame(
-        msg_type=parse_message_type(msg_type_raw),
-        format=Format(format_raw),
-        payload=payload,
-        bytes_consumed=total_len,
-        raw_msg_type=msg_type_raw,
-    )
+    step = next_frame(buffer)
+    if isinstance(step, (BadFrameBody, BadFraming)):
+        raise ProtocolError(step.reason)
+    return step
 
 
 def generate_correlation_id(prefix: str = "req") -> str:
