@@ -80,6 +80,22 @@ pub struct ArgumentInfo {
 pub struct BinaryInfo {
     pub release_url: String,
     pub targets: HashMap<String, String>,
+    /// Lowercase hex SHA-256 of each target's archive, keyed by target triple.
+    /// An empty string means the release published no checksum for that target.
+    #[serde(default)]
+    pub checksums: HashMap<String, String>,
+}
+
+impl BinaryInfo {
+    /// The published checksum for a target, or `None` when the manifest has
+    /// no entry or only an empty placeholder.
+    #[must_use]
+    pub fn checksum_for(&self, target: &str) -> Option<&str> {
+        self.checksums
+            .get(target)
+            .map(|sum| sum.trim())
+            .filter(|sum| !sum.is_empty())
+    }
 }
 
 /// Registry handle for fetching manifests.
@@ -316,6 +332,67 @@ x86_64-unknown-linux-gnu = "slack-source-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
         } else {
             panic!("Should parse valid TOML");
         }
+    }
+
+    fn manifest_with_binaries(
+        binaries: &str,
+    ) -> std::result::Result<PrimitiveManifest, toml::de::Error> {
+        toml::from_str(&format!(
+            r#"
+[primitive]
+name = "slack-source"
+version = "0.1.0"
+kind = "source"
+
+[messages]
+publishes = ["slack.message"]
+
+[binaries]
+release_url = "https://example.invalid/releases"
+{binaries}
+[binaries.targets]
+x86_64-unknown-linux-gnu = "slack-source.tar.gz"
+"#
+        ))
+    }
+
+    #[test]
+    fn a_manifest_without_a_checksums_table_publishes_none()
+    -> std::result::Result<(), toml::de::Error> {
+        let manifest = manifest_with_binaries("")?;
+        assert_eq!(
+            manifest.binaries.checksum_for("x86_64-unknown-linux-gnu"),
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_checksum_placeholder_counts_as_unpublished()
+    -> std::result::Result<(), toml::de::Error> {
+        let manifest = manifest_with_binaries(
+            "\n[binaries.checksums]\nx86_64-unknown-linux-gnu = \"\"\naarch64-apple-darwin = \"  \"\n",
+        )?;
+        assert_eq!(
+            manifest.binaries.checksum_for("x86_64-unknown-linux-gnu"),
+            None
+        );
+        assert_eq!(manifest.binaries.checksum_for("aarch64-apple-darwin"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_published_checksum_is_returned_for_its_target_only()
+    -> std::result::Result<(), toml::de::Error> {
+        let manifest = manifest_with_binaries(
+            "\n[binaries.checksums]\nx86_64-unknown-linux-gnu = \" abc123 \"\n",
+        )?;
+        assert_eq!(
+            manifest.binaries.checksum_for("x86_64-unknown-linux-gnu"),
+            Some("abc123")
+        );
+        assert_eq!(manifest.binaries.checksum_for("aarch64-apple-darwin"), None);
+        Ok(())
     }
 
     #[test]

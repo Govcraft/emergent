@@ -131,6 +131,17 @@ impl Installer {
         eprintln!("Downloading {} v{}...", options.name, version);
         self.download_binary(&download_url, &archive_path).await?;
 
+        // Verify before anything from the archive reaches the bin directory
+        let expected = manifest.binaries.checksum_for(platform_str);
+        if verify_archive(&archive_path, expected)? {
+            eprintln!("Checksum verified.");
+        } else {
+            eprintln!(
+                "Warning: the registry publishes no checksum for {} on {}; installing unverified.",
+                options.name, platform_str
+            );
+        }
+
         // Extract archive
         eprintln!("Extracting...");
         self.extract_archive(&archive_path, &bin_dir).await?;
@@ -370,29 +381,100 @@ impl Installer {
 
         Ok(())
     }
+}
 
-    #[allow(dead_code)]
-    async fn verify_checksum(&self, file: &Path, expected: &str) -> Result<()> {
-        let mut hasher = Sha256::new();
-        let bytes = std::fs::read(file)?;
-        hasher.update(&bytes);
-        let result = hasher.finalize();
-        let actual = hex::encode(result);
+/// Lowercase hex SHA-256 of a byte slice.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
 
-        if actual != expected {
-            return Err(MarketplaceError::ChecksumMismatch {
-                expected: expected.to_string(),
-                actual,
-            });
-        }
-
+/// Compare a computed checksum against the published one.
+///
+/// Hex case and surrounding whitespace in the published value do not matter.
+fn check_checksum(actual: &str, expected: &str) -> Result<()> {
+    if actual.eq_ignore_ascii_case(expected.trim()) {
         Ok(())
+    } else {
+        Err(MarketplaceError::ChecksumMismatch {
+            expected: expected.trim().to_string(),
+            actual: actual.to_string(),
+        })
     }
+}
+
+/// Verify a downloaded archive against the manifest's checksum, if it has one.
+///
+/// Returns `Ok(true)` when the archive was verified and `Ok(false)` when the
+/// manifest publishes no checksum for it, so the caller can say so.
+fn verify_archive(archive: &Path, expected: Option<&str>) -> Result<bool> {
+    let Some(expected) = expected else {
+        return Ok(false);
+    };
+    let bytes = std::fs::read(archive)?;
+    check_checksum(&sha256_hex(&bytes), expected)?;
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SHA-256 of the ASCII string "abc", from FIPS 180-2.
+    const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    #[test]
+    fn sha256_hex_matches_the_published_test_vector() {
+        assert_eq!(sha256_hex(b"abc"), ABC_SHA256);
+    }
+
+    #[test]
+    fn checksum_comparison_ignores_hex_case_and_padding() {
+        let published = format!("  {}\n", ABC_SHA256.to_uppercase());
+        assert!(check_checksum(ABC_SHA256, &published).is_ok());
+    }
+
+    #[test]
+    fn a_different_checksum_is_a_mismatch_naming_both_values() {
+        let expected = "0".repeat(64);
+        match check_checksum(ABC_SHA256, &expected) {
+            Err(MarketplaceError::ChecksumMismatch {
+                expected: e,
+                actual: a,
+            }) => {
+                assert_eq!(e, expected);
+                assert_eq!(a, ABC_SHA256);
+            }
+            other => panic!("expected a checksum mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_archive_is_verified_only_when_a_checksum_is_published()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let archive = dir.path().join("primitive.tar.gz");
+        std::fs::write(&archive, b"abc")?;
+
+        assert!(!verify_archive(&archive, None)?);
+        assert!(verify_archive(&archive, Some(ABC_SHA256))?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_tampered_archive_fails_verification() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let archive = dir.path().join("primitive.tar.gz");
+        std::fs::write(&archive, b"abd")?;
+
+        assert!(matches!(
+            verify_archive(&archive, Some(ABC_SHA256)),
+            Err(MarketplaceError::ChecksumMismatch { .. })
+        ));
+        Ok(())
+    }
 
     #[test]
     fn test_install_options_new() {
