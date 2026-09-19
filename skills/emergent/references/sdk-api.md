@@ -453,6 +453,11 @@ subscriber with an empty `ID`. A header that cannot be trusted (an oversized
 length, a wrong protocol version) still drops the buffer, because nothing says
 where the next frame starts.
 
+An envelope field an SDK does not know is not malformed. All four SDKs ignore
+it and deliver the message. Python is the late one: on SDK release 0.13.1 and
+earlier its wire model forbade unknown fields, so a message with one was
+refused (Govcraft/emergent#74).
+
 ### A socket that takes only part of a frame
 
 After SDK release 0.13.1 the TypeScript SDK writes every byte of a frame and
