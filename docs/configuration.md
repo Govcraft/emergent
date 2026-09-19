@@ -396,6 +396,7 @@ args = ["--shell", "sh", "--command", "curl -s ... -H \"Authorization: Bearer $(
 The engine validates configuration at startup:
 
 - All primitive names must be unique
+- Every primitive name must start with a lowercase letter and use only `a-z`, `0-9`, `-`, `_`, at most 64 characters, because the engine builds `system.started.<name>` from it. On engine 0.10.10 and earlier this was not checked and an invalid name aborted the engine once that primitive started; after 0.10.10 the load fails with an error naming the primitive and the rule
 - Paths must exist
 - `subscribes` and `publishes` must be non-empty arrays
 - Sources cannot have `subscribes`
