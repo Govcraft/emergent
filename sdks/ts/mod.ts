@@ -113,6 +113,19 @@ export {
 export { MessageStream } from "./src/stream.ts";
 
 // ============================================================================
+// Subscription Topics
+// ============================================================================
+
+export {
+  classifyTopic,
+  MAX_PATTERN_LEN,
+  partitionTopics,
+  patternPrefix,
+  topicMatches,
+} from "./src/topics.ts";
+export type { TopicKind, TopicPartition } from "./src/topics.ts";
+
+// ============================================================================
 // Errors
 // ============================================================================
 
