@@ -212,7 +212,7 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 	}, correlationID)
 	if err != nil {
 		stream.Close()
-		return nil, &SubscriptionError{Msg: err.Error(), MessageTypes: messageTypes}
+		return nil, &SubscriptionError{Msg: err.Error(), MessageTypes: messageTypes, Err: err}
 	}
 	if !resp.Success {
 		stream.Close()
@@ -235,7 +235,7 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 		}, patternCorrelationID)
 		if patternErr != nil {
 			stream.Close()
-			return nil, &SubscriptionError{Msg: patternErr.Error(), MessageTypes: patterns}
+			return nil, &SubscriptionError{Msg: patternErr.Error(), MessageTypes: patterns, Err: patternErr}
 		}
 		if !patternResp.Success {
 			stream.Close()
@@ -375,12 +375,12 @@ func (c *baseClient) publishInternal(message *EmergentMessage) error {
 
 	frame, err := EncodeFrame(MsgTypeRequest, envelope, c.format)
 	if err != nil {
-		return &PublishError{Msg: fmt.Sprintf("encode error: %v", err), MessageType: string(message.MessageType)}
+		return &PublishError{Msg: fmt.Sprintf("encode error: %v", err), MessageType: string(message.MessageType), Err: err}
 	}
 
 	if err = c.writeFrame(conn, frame); err != nil {
 		c.logger.Error("failed to publish message", "message_type", message.MessageType, "error", err)
-		return &PublishError{Msg: err.Error(), MessageType: string(message.MessageType)}
+		return &PublishError{Msg: err.Error(), MessageType: string(message.MessageType), Err: err}
 	}
 
 	c.logger.Debug("published message", "message_type", message.MessageType, "id", message.ID)
@@ -414,7 +414,7 @@ func (c *baseClient) publishInternalAck(ctx context.Context, message *EmergentMe
 	resp, err := c.sendRequest(ctx, MsgTypeRequest, envelope, correlationID)
 	if err != nil {
 		c.logger.Error("publish_ack failed", "message_type", message.MessageType, "error", err)
-		return &PublishError{Msg: fmt.Sprintf("publish_ack failed: %v", err), MessageType: string(message.MessageType)}
+		return &PublishError{Msg: fmt.Sprintf("publish_ack failed: %v", err), MessageType: string(message.MessageType), Err: err}
 	}
 	if !resp.Success {
 		errMsg := resp.Error
@@ -450,7 +450,7 @@ func (c *baseClient) discoverInternal(ctx context.Context) (*DiscoveryInfo, erro
 		IncludeMessageTypes: true,
 	}, correlationID)
 	if err != nil {
-		return nil, &DiscoveryError{Msg: err.Error()}
+		return nil, &DiscoveryError{Msg: err.Error(), Err: err}
 	}
 	if !resp.Success {
 		errMsg := resp.Error

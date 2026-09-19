@@ -429,6 +429,13 @@ rejection was a plain `ConnectionError` with the code `CONNECTION_FAILED`
 for the specific class first. Python's `PublishError` is not a
 `ConnectionError`.
 
+In Go the same three types also wrap a failure that is not a rejection: a
+timeout, a lost connection, a cancelled context. After SDK release 0.13.1 they
+carry it in an `Err` field with `Unwrap`, so `errors.As(err, &timeoutErr)` and
+`errors.Is(err, context.Canceled)` work, and `Err` is nil for a rejection. On
+0.13.1 and earlier the cause was flattened into `Msg` and could not be reached
+(Govcraft/emergent#73).
+
 Rust's `ClientError` also has `IoError`, `IpcError`, `ProtocolError` and
 `EngineError`. The SDK returns none of them. The first two have `From`
 conversions for your own `?`.
