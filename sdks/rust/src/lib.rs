@@ -73,6 +73,7 @@ mod error;
 pub mod helpers;
 mod message;
 pub mod prelude;
+mod publish_watch;
 mod stream;
 pub mod subscribe;
 pub mod types;
@@ -82,6 +83,7 @@ pub use connection::{
 };
 pub use error::ClientError;
 pub use message::{EmergentMessage, create_message};
+pub use publish_watch::PublishStats;
 pub use stream::MessageStream;
 pub use subscribe::{
     IntoSubscription, InvalidTopic, MAX_PATTERN_LEN, TopicKind, classify_topic, pattern_prefix,

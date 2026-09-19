@@ -95,6 +95,23 @@ stream is dropped. After engine 0.10.10 the engine will not start a topology
 whose enabled primitives, plus 4 reserved connections, exceed the effective
 limit.
 
+**That one connection is also rate limited: 100 messages per second, burst 50.**
+acton-reactive applies a token bucket per connection, with those defaults, so
+each primitive gets that budget to itself. Over it, the engine answers the
+publish frame with a `RATE_LIMITED` error and the message is never delivered. A
+full broker mailbox (`TARGET_BUSY`) and a draining engine (`SHUTTING_DOWN`)
+refuse a publish the same way. The numbers live in
+`$XDG_CONFIG_HOME/acton/ipc.toml` under `[rate_limit]`; `emergent.toml` has no
+key for them. A primitive that needs more throughput batches records into
+fewer messages or publishes with an acknowledgment, which waits for the broker
+and so cannot outpace it.
+
+The engine answers every publish frame, acknowledged or not, so a refusal is
+always on the wire. After engine 0.13.1 the Rust SDK claims that answer and
+logs a refusal at `WARN` with the engine's error text; before that its
+fire-and-forget `publish` reported success and the answer went into acton's
+unclaimed-response drain at `trace` level (Govcraft/emergent#65).
+
 **A subscription is a literal message type or a terminal-wildcard prefix.**
 The broker keeps two indexes. A literal topic is looked up character for
 character. A topic ending in a single `*` matches every message type that
