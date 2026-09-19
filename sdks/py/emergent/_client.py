@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from ._protocol import (
+    DEFAULT_FORMAT,
     HEADER_SIZE,
     Format,
     MessageType,
@@ -268,7 +269,7 @@ class BaseClient:
     name: str
     primitive_kind: PrimitiveKind
     timeout: float = DEFAULT_TIMEOUT
-    format: Format = Format.JSON
+    format: Format = DEFAULT_FORMAT
 
     # Auto-unwrap stdout payloads (read once from EMERGENT_UNWRAP_STDOUT)
     _unwrap_stdout: bool = field(default=False, init=False, repr=False)

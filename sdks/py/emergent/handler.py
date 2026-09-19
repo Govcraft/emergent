@@ -11,7 +11,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Any
 
 from ._client import BaseClient
-from ._protocol import Format, generate_correlation_id
+from ._protocol import DEFAULT_FORMAT, Format, generate_correlation_id
 from .message import MessageBuilder, create_message
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ class EmergentHandler(BaseClient):
         name: str,
         *,
         timeout: float = 30.0,
-        format_: Format = Format.JSON,
+        format_: Format = DEFAULT_FORMAT,
     ) -> None:
         """
         Create a new EmergentHandler.
@@ -75,7 +75,7 @@ class EmergentHandler(BaseClient):
         *,
         socket_path: str | None = None,
         timeout: float = 30.0,
-        format_: Format = Format.JSON,
+        format_: Format = DEFAULT_FORMAT,
     ) -> EmergentHandler:
         """
         Connect to the Emergent engine as a Handler.

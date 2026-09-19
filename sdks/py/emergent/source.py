@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ._client import BaseClient
-from ._protocol import Format
+from ._protocol import DEFAULT_FORMAT, Format
 from .message import MessageBuilder, create_message
 
 if TYPE_CHECKING:
@@ -44,7 +44,7 @@ class EmergentSource(BaseClient):
         name: str,
         *,
         timeout: float = 30.0,
-        format_: Format = Format.JSON,
+        format_: Format = DEFAULT_FORMAT,
     ) -> None:
         """
         Create a new EmergentSource.
@@ -70,7 +70,7 @@ class EmergentSource(BaseClient):
         *,
         socket_path: str | None = None,
         timeout: float = 30.0,
-        format_: Format = Format.JSON,
+        format_: Format = DEFAULT_FORMAT,
     ) -> EmergentSource:
         """
         Connect to the Emergent engine as a Source.

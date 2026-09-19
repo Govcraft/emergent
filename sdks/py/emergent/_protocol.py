@@ -55,6 +55,11 @@ class Format(IntEnum):
     MSGPACK = 0x02
 
 
+#: Wire format every client uses unless told otherwise. MessagePack matches the
+#: Rust, TypeScript and Go SDKs and is what the engine itself sends.
+DEFAULT_FORMAT = Format.MSGPACK
+
+
 # Frame header size: length(4) + version(1) + msgType(1) + format(1)
 HEADER_SIZE = 7
 
@@ -126,7 +131,7 @@ def decode_payload(payload_bytes: bytes | bytearray, format_raw: int) -> Any:
 def encode_frame(
     msg_type: MessageType,
     payload: Any,
-    format_: Format = Format.JSON,
+    format_: Format = DEFAULT_FORMAT,
 ) -> bytes:
     """
     Encode a frame for transmission.

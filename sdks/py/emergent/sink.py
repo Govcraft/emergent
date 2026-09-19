@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ._client import BaseClient
-from ._protocol import Format
+from ._protocol import DEFAULT_FORMAT, Format
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -78,7 +78,7 @@ class EmergentSink(BaseClient):
         name: str,
         *,
         timeout: float = 30.0,
-        format_: Format = Format.JSON,
+        format_: Format = DEFAULT_FORMAT,
     ) -> None:
         """
         Create a new EmergentSink.
@@ -104,7 +104,7 @@ class EmergentSink(BaseClient):
         *,
         socket_path: str | None = None,
         timeout: float = 30.0,
-        format_: Format = Format.JSON,
+        format_: Format = DEFAULT_FORMAT,
     ) -> EmergentSink:
         """
         Connect to the Emergent engine as a Sink.
@@ -139,7 +139,7 @@ class EmergentSink(BaseClient):
         *,
         socket_path: str | None = None,
         timeout: float = 30.0,
-        format_: Format = Format.JSON,
+        format_: Format = DEFAULT_FORMAT,
     ) -> AsyncIterator[EmergentMessage]:
         """
         Convenience method for one-liner message consumption.
