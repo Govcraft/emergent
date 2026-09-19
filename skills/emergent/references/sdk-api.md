@@ -38,6 +38,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+`shutdown` fires on SIGTERM, which is how the engine asks for a graceful stop.
+After engine 0.10.10 it also fires when the engine's connection reaches EOF, so
+a Source built on `run_source` stops instead of publishing into a dead socket
+when the engine is SIGKILLed or aborts (Govcraft/emergent#56). Select on it
+rather than looping on the publish result. A Source that drives its own loop on
+a bare `EmergentSource` gets no such signal and has to exit on a failed publish
+itself.
+
 #### run_handler
 
 ```rust

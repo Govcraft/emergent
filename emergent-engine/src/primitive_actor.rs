@@ -228,6 +228,52 @@ pub fn sigkill_process_group(pid: u32) {
     warn!("SIGKILL not supported on this platform for pid {}", pid);
 }
 
+/// Ask the kernel to SIGTERM this process when the engine goes away.
+///
+/// Runs in the forked child, between `fork` and `exec`. Everything it does is
+/// a bare syscall, which is what makes it safe in that window.
+///
+/// # Which death arms the signal
+///
+/// `PR_SET_PDEATHSIG` fires when the parent *thread* that forked this child
+/// exits, not when the parent process exits. The engine forks from a tokio
+/// multi-threaded runtime worker: `tokio::process::Command::spawn` calls
+/// `std::process::Command::spawn` inline on the polling thread, and a worker
+/// thread runs `worker::run` for the lifetime of the runtime, which the engine
+/// holds open in `block_on` until `main` returns. No engine code on the run
+/// path calls `block_in_place`, the one tokio API that can retire a worker
+/// thread early, so a worker thread dying while the engine lives is not a case
+/// that arises and the signal is not delivered spuriously.
+///
+/// # The fork/prctl race
+///
+/// The engine can die between `fork` and this call, in which case the kernel
+/// already delivered the parent-death signal to nobody and never will. After
+/// arming, the child compares its current parent against the engine PID read
+/// before the fork; if they differ it has been reparented and exits rather than
+/// living on as the orphan this guard exists to prevent.
+///
+/// The signal reaches this process only, not its process group, so a primitive
+/// that spawns its own children is still responsible for them.
+#[cfg(target_os = "linux")]
+fn arm_parent_death_signal(engine_pid: nix::unistd::Pid) -> std::io::Result<()> {
+    use nix::sys::prctl::set_pdeathsig;
+    use nix::sys::signal::Signal;
+    use nix::unistd::getppid;
+
+    // A raw `prctl(2)`: no allocation, no locks.
+    set_pdeathsig(Signal::SIGTERM).map_err(std::io::Error::from)?;
+
+    if getppid() != engine_pid {
+        // SAFETY: `_exit(2)` is async-signal-safe. `std::process::exit` is not:
+        // it runs at-exit handlers and flushes buffers inherited from the
+        // engine, which would be wrong in a forked child.
+        unsafe { nix::libc::_exit(1) };
+    }
+
+    Ok(())
+}
+
 /// Message sent just before the actor spawns its child process.
 #[acton_message]
 pub struct ChildSpawning;
@@ -403,6 +449,24 @@ async fn spawn_primitive_child(
     // and so shutdown can escalate to a group-wide SIGKILL.
     #[cfg(unix)]
     cmd.process_group(0);
+
+    // Tie the child's lifetime to the engine's, so a SIGKILLed or aborting
+    // engine does not leave the primitive running with no parent.
+    #[cfg(target_os = "linux")]
+    {
+        // Read in the parent, before the fork, so the child can tell whether
+        // the engine it was forked from is still its parent.
+        let engine_pid = nix::unistd::Pid::this();
+        // SAFETY: `arm_parent_death_signal` runs in the forked child between
+        // `fork` and `exec`, where only async-signal-safe work is allowed. It
+        // makes three bare syscalls (`prctl`, `getppid`, `_exit`) and nothing
+        // else: no allocation, no locking, no Rust runtime re-entry. The
+        // `io::Error` it can return is built only on the failure path, after
+        // which the child is about to be reaped anyway.
+        unsafe {
+            cmd.pre_exec(move || arm_parent_death_signal(engine_pid));
+        }
+    }
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
