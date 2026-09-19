@@ -61,7 +61,7 @@ On top of that, every event boundary hands you four things at no cost:
 |---|---|
 | **Observability** | The event store records it. You can read what happened and why, after the fact, without instrumenting anything. |
 | **Extensibility** | Anyone can subscribe. New capability means a new primitive and zero edits to existing ones. |
-| **Recoverability** | The event is a resume point. Retry, replay, and redrive all become possible. |
+| **Recoverability** | The event is a resume point. Retry becomes a subscriber on the failure event, and replay becomes reading a payload out of the event store and POSTing it back in. |
 | **Substitutability** | Either side can be swapped, in any language, without the other noticing. |
 
 Every boundary you skip forfeits all four permanently, for everything inside
@@ -157,13 +157,15 @@ expresses concurrency, and fan-in is how it expresses the join.
 
 The corollary is about *where* the concurrency lives. Once an item is in flight,
 every handler subscribing to its event runs concurrently, and that breadth is
-free. What is not free is having many *items* in flight at once:
-`stream-runner`, the splitter, holds each item until the previous is acked. That
-is deliberate, and it buys bounded in-flight work and natural backpressure.
+free. What is not free is having many *items* in flight at once, and two things
+cap it. `stream-runner`, the splitter, holds each item until the previous is
+acked. And every `exec-handler` and `exec-sink` runs one command at a time, in
+arrival order, unless you raise `--max-concurrent`. Both defaults are
+deliberate: they buy bounded in-flight work, ordering, and natural backpressure.
 
 So decide the two separately. Breadth per item is always fan-out. Items in
 parallel is a choice, and if you want it you split with HTTP fan-out or an SDK
-splitter instead. What you must not do is respond to "I want parallelism" by
+splitter instead, and raise `--max-concurrent` on each per-item handler. What you must not do is respond to "I want parallelism" by
 removing the splitter, which leaves you with no way to turn a collection into
 events at all.
 
@@ -218,6 +220,19 @@ p=$(cat); jq -r .prompt <<< "$p" | claude -p | jq -c --argjson orig "$p" '. + {n
 That is still rung 3: one capture, one act, one merge. The moment a second act
 appears between the capture and the merge, split it.
 
+**Write shell bodies as TOML literal strings** (`'''...'''`), never basic ones
+(`"""..."""`). In a basic string TOML decodes `\"` to a bare `"` and `\\n` to
+`\n` before the shell sees anything, so the JSON template in your prompt loses
+its quotes and a path with a space splits in two. In a literal string the shell
+receives exactly what you typed. A jq program with no single quote in it can use
+a one-line literal too: `'select(.verdict == "approved")'`.
+
+**Know the one silence.** `exec-handler` publishes nothing only when the command
+exits 0 with empty stdout, which is what a false `jq select()` does. Every
+non-zero exit publishes the error type. So `[ cond ] && cmd` is not a filter:
+its false case exits 1 and lands on `exec.error`. If a non-zero exit really is a
+normal outcome, declare it with `--silent-exit-codes`.
+
 ## Translating code constructs into topology
 
 Decomposition feels like a leap of faith only until you know the mechanical
@@ -225,12 +240,12 @@ substitutions. Reach for these; they are the idiom.
 
 | You would normally write | Build this instead |
 |---|---|
-| `for item in items:` | Publish one event per item. Note that exec primitives emit exactly **one event per execution**, so printing N objects does not fan out. Use HTTP fan-out, `stream-runner`, or a small SDK splitter. See below. |
+| `for item in items:` | Publish one event per item. Note that no exec primitive splits its stdout: printing N objects publishes **one** event, not N. Use `stream-runner`, HTTP fan-out, or a small SDK splitter. See below. |
 | `if x: A else: B` | Two subscribers on the same event with mutually exclusive `jq select()` predicates. Nothing decides between them; both look, one matches. |
 | `try/except` | Publish `<domain>.failed` with the error in the payload. A separate subscriber owns the response. Failure is data, not control flow. |
 | retry with backoff | `*.failed` to a delay handler to a republish of the original event. The retry count rides in the payload and a guard predicate ends it. |
 | `parallel_map(f, items)` | Publish once, let N handlers subscribe, each publishing its own result type. The engine is the scheduler. |
-| `gather()` / join | Accumulate by `correlation_id` until the expected count arrives, then publish. See the zero-code join below. |
+| `gather()` / join | An accumulator that publishes its bucket on every arrival, and a router whose predicate recognizes a full one. See the join below. |
 | a state variable | An event carrying the new state. If something must accumulate, one small stateful handler owns that accumulator and publishes every change. |
 | a loop counter / guard | A depth field in the payload plus a guard handler whose predicate drops or diverts past the limit. |
 | `sleep()` for pacing | Ack-driven `stream-runner`, or an interval `exec-source`. Time is an event source, not a blocking call. |
@@ -241,18 +256,21 @@ substitutions. Reach for these; they are the idiom.
 
 ### One execution, one event
 
-The single most common way a well-designed topology fails on first run: **every
-exec primitive publishes exactly one event per execution.** `exec-source` puts
-all stdout into one string. `exec-handler` parses stdout as one JSON value and
-wraps it as `{"output": "..."}` when that fails. Printing ten JSON objects
-publishes one event containing ten stringified objects, not ten events.
+The single most common way a well-designed topology fails on first run: **no
+exec primitive splits its stdout.** `exec-source` puts all stdout into one
+string and publishes at most one stdout event per execution (plus a stderr event
+when there is stderr, and always an exit event). `exec-handler` publishes at
+most one event: it parses stdout as one JSON value and wraps it as
+`{"output": "..."}` when that fails. Printing ten JSON objects publishes one
+event containing ten stringified objects, not ten events.
 
 So `jq -c '.[] | ...'` and `split("\n") | .[] | fromjson` look exactly like
 splitting and are not. To get N events, something must publish N times:
 
 - **`stream-runner`** is the splitter. It is the marketplace primitive built for
-  exactly this: hand it a collection, it emits one item at a time. Reach for it
-  first.
+  exactly this: hand it one JSON array, it emits one item at a time. Reach for
+  it first. Put `unwrap_stdout = true` on it and it reads the array straight out
+  of an `exec-source` with no shaping handler between them.
 - **HTTP fan-out**: a shell step POSTs once per item to an `http-source`. Use
   when you need the items themselves in flight simultaneously, since
   `stream-runner` holds each until the previous is acked.
@@ -267,23 +285,43 @@ handlers. Concurrency across *handlers* is free either way.
 
 `references/patterns.md`, "Turning a collection into events", has all three.
 
-### The zero-code join
+### The join
 
-`exec-handler` publishes nothing when the command exits 0 with empty stdout. That
-one fact gives you a join with no custom code: each arrival appends to a
-per-key file and stays silent until the last one lands.
+A join is an accumulator, a router, and a sink, and keeping them apart is what
+stops it becoming a script. The accumulator publishes its whole bucket on every
+arrival. The completeness test is a predicate in the config, where you can read
+it, rather than an `if` in a shell, where you cannot.
 
 ```toml
 [[handlers]]
-name = "joiner"
+name = "collect-shards"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "shard.done", "--publish-as", "shards.complete", "--", "sh", "-c",
-  """p=$(cat); k=$(jq -r .job_id <<< "$p"); f=/tmp/join-$k.jsonl; \
-     echo "$p" >> $f; \
-     [ $(wc -l < $f) -ge 3 ] && jq -s -c --arg k "$k" '{job_id: $k, results: .}' $f && rm -f $f"""]
+args = ["-s", "shard.done", "--publish-as", "shards.collected", "--", "bash", "-c",
+  '''p=$(cat); f="/tmp/join-$(jq -r .job_id <<< "$p").jsonl"; \
+     jq -c . <<< "$p" >> "$f"; \
+     jq -s -c '{job_id: .[0].job_id, results: .}' "$f" ''']
 subscribes = ["shard.done"]
+publishes = ["shards.collected"]
+
+[[handlers]]
+name = "route-complete"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "shards.collected", "--publish-as", "shards.complete", "--",
+        "jq", "-c", "select(.results | length == 3)"]
+subscribes = ["shards.collected"]
 publishes = ["shards.complete"]
+
+[[sinks]]
+name = "clear-joined"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "shards.complete", "--", "bash", "-c",
+  '''rm -f "/tmp/join-$(jq -r .job_id).jsonl"''']
+subscribes = ["shards.complete"]
 ```
+
+The accumulator is the one place a file of state is legitimate, because
+accumulating is its whole job and it publishes every change. It needs no lock
+while `--max-concurrent` stays at its default of 1.
 
 **Choose the join key deliberately.** `exec-source --correlate` mints one ID per
 source *process* and stamps it on everything that process publishes, and every
@@ -329,12 +367,12 @@ name = "judge-file"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "file.changed", "--publish-as", "review.submitted",
         "-e", "review.judge-failed", "-t", "180000", "--", "bash", "-c",
-  """f=$(jq -r .path); \
+  '''f=$(jq -r .path); \
      claude -p "Review $f against our conventions. Print exactly one JSON object \
        on stdout and nothing else, either {\"verdict\":\"approved\",\"path\":\"$f\"} \
        or {\"verdict\":\"needs_work\",\"path\":\"$f\",\"reasons\":[...]}. \
        Do not edit files, do not comment, take no other action." \
-       --allowedTools Read Grep"""]
+       --allowedTools Read Grep''']
 subscribes = ["file.changed"]
 publishes = ["review.submitted", "review.judge-failed"]
 
@@ -375,8 +413,9 @@ Four properties make this the default:
 - **The trace survives the model call.** `exec-handler` inherits the inbound
   `correlation_id` and stamps `causation_id`, so the verdict is causally linked
   to the file change that provoked it.
-- **Failure is already an event.** A crash with stderr, or a timeout, publishes
-  the error type. You can route it like anything else.
+- **Failure is already an event.** Any non-zero exit, a timeout, or a failure to
+  spawn publishes the error type, carrying the original payload plus an `error`
+  key. You can route it like anything else.
 - **Malformed output is still an event.** Stdout that is not JSON becomes
   `{"output": "..."}`, so an agent that ignores the format and narrates ends up
   at `route-invalid` rather than vanishing.
@@ -420,7 +459,9 @@ body arrives nested. What you give up:
 
 - **The causal chain breaks.** `http-source` stamps no `correlation_id` and no
   `causation_id`, so the re-entering event is an orphan. Have the agent echo
-  `EMERGENT_CORRELATION_ID` into the body and trace on that.
+  `EMERGENT_CORRELATION_ID` into the body and trace on that. The variable is set
+  only when the inbound message carries a correlation id, so the run has to
+  start from an `exec-source --correlate`.
 - **Silence is invisible.** A fire-and-forget sink cannot tell you the agent
   emitted nothing, so the pending marker and reaper are mandatory here rather
   than optional.
@@ -507,15 +548,25 @@ primitive and editing zero existing ones? If you would have to open a script,
 that behavior is trapped inside it.
 
 **The injection test.** Can you hand-inject any event mid-topology (POST to an
-`http-source`, or replay one from the log) and get sensible behavior? If a
+`http-source`, or read one out of the event store and POST it back) and get
+sensible behavior? If a
 primitive only works when its predecessor just ran, they are coupled through
 hidden state.
 
 **The concurrency test.** If ten items arrive at once, do ten flow through
 independently, or does something serialize them? Trace one item's path and name
-every point where it could be waiting on a different item. Each one needs an
-external constraint justifying it, because otherwise you have capped throughput
-at one.
+every point where it could be waiting on a different item: a `stream-runner`
+ack, and every exec primitive left at `--max-concurrent 1`. Each one needs a
+reason you can state (a rate limit, ordering, an accumulator, a poller that must
+not double-process), because otherwise you have capped throughput at one without
+deciding to.
+
+**The dead-end test.** For every event, including every `--error-as` topic,
+name its subscriber. For every router group, show that some arm matches any
+payload. An event nobody consumes and a payload no arm matches both vanish
+silently, and behind a `stream-runner` either one stalls the batch for good.
+Subscriptions are exact-match, so `"system.error.*"` and `"issue.*"` subscribe
+to nothing: list each type.
 
 **The script test.** List every primitive whose command is not a bare args
 array. For each, count the commands that touch the world. More than one fails.
@@ -550,17 +601,19 @@ to Slack. One event type, `exec.output`, carrying a summary nobody consumes.
 Every stopping rule broken. Emergent contributed process supervision and nothing
 else.
 
-**The decomposition.** `poll-issues` publishes `issue.found` once per issue
-(loop becomes fan-out). `score-severity` and `detect-duplicates` both subscribe
-to `issue.found` and run concurrently, publishing `issue.scored` and
-`issue.duplicate-checked` (fan-out is the concurrency). `label-issue` subscribes
-to `issue.scored`. Two guards subscribe to `issue.scored` with opposite
-predicates: `confidence >= 0.8` publishes `issue.triaged`, `confidence < 0.8`
-publishes `issue.uncertain` (branch becomes topology). `enrich-context`
-subscribes to `issue.uncertain`, adds related-issue context, and republishes
-`issue.found` with `attempt: n+1` (the feedback edge). A `depth-guard` subscribes
-to `issue.found` and diverts anything past `attempt: 3` to `issue.escalated`,
-which a Slack sink consumes.
+**The decomposition.** `poll-issues` lists unlabeled issues as one JSON array and
+`split-issues`, a `stream-runner`, publishes `issue.found` once per issue (loop
+becomes a splitter). `score-severity` and `detect-duplicates` both subscribe to
+`issue.found` and run concurrently, publishing `issue.scored` and
+`issue.dupe-checked` (fan-out is the concurrency). Three routers subscribe to
+`issue.scored` with exclusive predicates: confident publishes `issue.triaged`,
+not confident with attempts left publishes `issue.uncertain`, not confident with
+none left publishes `issue.escalated` (branch becomes topology, and the third
+arm is the depth guard). `enrich-context` subscribes to `issue.uncertain`, adds
+recent comments, and publishes `issue.enriched` with `attempt: n+1`, which
+`score-severity` also subscribes to (the feedback edge). `label-issue` consumes
+`issue.triaged`, a Slack sink consumes `issue.escalated`, and `settle` turns
+either one into the ack that releases the next issue.
 
 Now notice what nobody wrote: **how many times an issue re-triages**. That is a
 consequence of confidence scores meeting a threshold meeting a depth guard.
