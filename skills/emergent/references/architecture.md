@@ -167,6 +167,8 @@ Axum-based server on configurable port (default: 8891, `api_port = 0` to disable
 
 The first entry is a synthetic `emergent-engine` of kind `"source"` whose `publishes` shows `system.started.*` style strings. Those are display labels for a family of concrete types rather than types the engine ever publishes under that name, though after 0.10.10 the same string does work as a subscription selector. Disabled primitives are absent.
 
+After 0.10.10 the entries after the engine are sorted: by kind in data-flow order (sources, then handlers, then sinks) and by name within a kind. `system.response.topology` carries the same sorted list, so two reads of an unchanged topology are identical and can be diffed directly. On 0.10.10 and earlier the order came from a hash map and changed between reads (Govcraft/emergent#67).
+
 Use it for the graph (`name`, `kind`, `publishes`, `subscribes`) on any engine. Whether it is also good for health depends on the version. On engine 0.10.10 and earlier it is not: every managed primitive reports `state: "configured"` and `pid: null` even while it is running, because the engine serves its registration-time copy (Govcraft/emergent#40). There, read liveness from `system.started.<name>`, `system.stopped.<name>` and `system.error.<name>` in the event store. After 0.10.10 `state`, `pid` and `error` are live: a running primitive reports `running` with its pid, one that exited cleanly reports `stopped` with `pid: null`, and one that crashed reports `failed` with the exit status in `error`. `starting` and `stopping` show up around those transitions.
 
 ## Engine Lifecycle
