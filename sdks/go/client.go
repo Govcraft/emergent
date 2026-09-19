@@ -77,14 +77,22 @@ type baseClient struct {
 	readDone   chan struct{}
 }
 
+// parseUnwrapFlag decides whether EMERGENT_UNWRAP_STDOUT switches stdout
+// unwrapping on. Surrounding whitespace and letter case are ignored, and only
+// "true" and "1" enable it, the same rule as the Rust, Python and TypeScript
+// SDKs. Anything else, an unset variable included, leaves it off.
+func parseUnwrapFlag(value string) bool {
+	normalized := strings.TrimSpace(value)
+	return strings.EqualFold(normalized, "true") || normalized == "1"
+}
+
 func newBaseClient(name string, kind PrimitiveKind, opts *ConnectOptions) *baseClient {
 	timeout := defaultTimeout
 	if opts != nil && opts.Timeout > 0 {
 		timeout = opts.Timeout
 	}
 
-	envUnwrap := os.Getenv("EMERGENT_UNWRAP_STDOUT")
-	autoUnwrap := envUnwrap == "true" || envUnwrap == "1"
+	autoUnwrap := parseUnwrapFlag(os.Getenv("EMERGENT_UNWRAP_STDOUT"))
 
 	return &baseClient{
 		name:                        name,
