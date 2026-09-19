@@ -140,6 +140,8 @@ sqlite_path = "./events.db"
 retention_days = 30
 ```
 
+`retention_days` is the window both stores keep. On engine 0.10.10 and earlier it was parsed and never enforced; after 0.10.10 the engine prunes at startup and once a day, and `retention_days = 0` keeps everything.
+
 ---
 
 ## Lifecycle Management
@@ -195,7 +197,7 @@ System events enable reactive patterns. The [ouroboros-loop example](../config/e
 
 Primitives communicate with the engine over Unix domain sockets:
 
-- **Wire format**: MessagePack (binary, efficient) or JSON (human-readable, useful for debugging)
+- **Wire format**: MessagePack, always. The `[engine].wire_format` key is accepted so older configs keep loading, but it selects nothing. After engine 0.10.10 setting it earns a warning at startup. For human-readable events, read the JSON event log.
 - **Framing**: Length-prefixed messages with type header
 - **Transport**: Unix domain sockets (no network overhead)
 

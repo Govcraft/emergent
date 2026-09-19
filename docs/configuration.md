@@ -11,6 +11,8 @@ emergent --config ./emergent.toml
 
 Use `emergent init` to generate a starter config interactively.
 
+On engine 0.10.10 and earlier an unknown key was ignored without a word, so `retension_days` or a singular `subscribe` loaded cleanly and did nothing. After 0.10.10 an unknown key is a load error that names the key, the keys its table accepts, and the file it came from.
+
 ## Complete Example
 
 This example shows all three primitive types: a marketplace exec-source running a shell command, a Deno-based TypeScript handler, and a Python sink. The `path` field for each primitive points to any executable -- the engine spawns these as child processes.
@@ -23,7 +25,6 @@ This example shows all three primitive types: a marketplace exec-source running 
 [engine]
 name = "emergent"
 socket_path = "auto"
-wire_format = "messagepack"
 # api_port = 8891  # HTTP API port (0 to disable)
 
 # =============================================================================
@@ -88,6 +89,8 @@ api_port = 8891                # HTTP API port (0 to disable)
 | `socket_path` | `"auto"` | `"auto"` for XDG-compliant path, or explicit path like `"/tmp/emergent.sock"` |
 | `api_port` | `8891` | HTTP API port for topology queries. Set to `0` to disable. |
 
+`wire_format` is accepted but selects nothing: IPC is always MessagePack. On engine 0.10.10 and earlier the key was silently inert and the startup line reported the value you set. After 0.10.10 the engine warns at startup that the key has no effect and the ready line no longer names a wire format. Leave it out. To read events in a human-readable form, read the JSON event log.
+
 **Socket path resolution:**
 
 - `"auto"`: Uses XDG base directories (`$XDG_RUNTIME_DIR/emergent/emergent.sock`)
@@ -106,9 +109,11 @@ retention_days = 30
 |--------|---------|-------------|
 | `json_log_dir` | `"./logs"` | Directory for append-only JSON log files (one per day) |
 | `sqlite_path` | `"./events.db"` | Path to SQLite database for structured queries |
-| `retention_days` | `30` | Days to retain events before cleanup |
+| `retention_days` | `30` | Days of events to keep. `0` keeps everything |
 
 Both paths support `"auto"` for XDG data directory placement.
+
+**Retention:** on engine 0.10.10 and earlier `retention_days` was parsed and never enforced, so both stores grew without bound. After 0.10.10 the engine prunes at startup and once a day afterwards: SQLite rows older than the window are deleted, and `events-YYYY-MM-DD.jsonl` files dated before the window are removed. The day at the edge of the window is kept, and files that are not rotated event logs are never touched. Each pass logs what it removed. `retention_days = 0` disables pruning and keeps every event, which the engine states at startup.
 
 ## Sources
 
