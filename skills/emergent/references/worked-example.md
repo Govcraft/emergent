@@ -95,15 +95,21 @@ issue.enriched
   consumed by:  score-severity
 
 issue.score-failed
-  fired when:   the model call failed, timed out, or replied with something that is not JSON
+  fired when:   the model call failed, timed out, or replied with something that is not a JSON object
   payload:      {...the issue, error: {exit_code, stderr, command}}
   published by: score-severity (error path)
-  consumed by:  retry-scoring, escalate-unscorable
+  consumed by:  route-rescorable, escalate-unscorable
 
-issue.rescore-due
-  fired when:   the pause after a failed scoring elapsed and attempts remain
+issue.score-retryable
+  fired when:   a scoring failure was found to have attempts left
+  payload:      same as issue.score-failed
+  published by: route-rescorable
+  consumed by:  delay-rescore
+
+issue.backoff-elapsed
+  fired when:   the pause after a retryable scoring failure ended
   payload:      the issue, with attempt + 1 and no error key
-  published by: retry-scoring
+  published by: delay-rescore
   consumed by:  score-severity
 
 issue.enrich-failed
@@ -140,12 +146,16 @@ issues.drained
   fired when:   every issue from one poll has settled
   payload:      {count}
   published by: split-issues
-  consumed by:  nobody yet
+  consumed by:  nobody yet, on purpose (a digest or a metrics sink can take it later)
 ```
 
+`issues.list-done`, the poller's exit event, is also unconsumed on purpose. No
+error topic is: the three domain ones are routed, and `exec.error` and
+`issues.list-failed` go to the `errors` sink.
+
 Feedback edges: `issue.uncertain` to `enrich-context` to `issue.enriched`, back
-into `score-severity`. `issue.score-failed` to `retry-scoring` to
-`issue.rescore-due`, back into `score-severity`. `issue.settled` back into
+into `score-severity`. `issue.score-failed` to `route-rescorable` to
+`delay-rescore` to `issue.backoff-elapsed`, back into `score-severity`. `issue.settled` back into
 `split-issues`, which is what paces the batch.
 Fan-out: `issue.found` to `score-severity` + `detect-duplicates`. `issue.scored`
 to three exclusive routers. `issue.triaged` to `label-issue` + `notify` + `settle`.
@@ -158,7 +168,7 @@ feedback edges used to republish `issue.found`. That name was a lie on the
 second pass (nothing was found, context was added), and it had a cost: every
 subscriber of `issue.found` ran again, so the duplicate check and its label
 fired once per attempt. Naming the edges for what became true
-(`issue.enriched`, `issue.rescore-due`) fixed the behavior without touching
+(`issue.enriched`, `issue.backoff-elapsed`) fixed the behavior without touching
 `detect-duplicates`.
 
 ### Topology
@@ -169,7 +179,7 @@ poll-issues ─> issues.listed ─> split-issues ─> issue.found ─┬─> det
                                     │ (ack)                  ▼
                               issue.settled          score-severity <──────────────┬──────────────────────┐
                                     ▲                   │        │                  │                      │
-                                  settle                │        └─> issue.score-failed ─┬─> retry-scoring ─> issue.rescore-due
+                                  settle                │        └─> issue.score-failed ─┬─> route-rescorable ─> delay-rescore ─> issue.backoff-elapsed
                                     ▲                   ▼                                └─> escalate-unscorable ──┐
                                     │              issue.scored                                                    │
                                     │      ┌────────────┼──────────────┐                                           │
@@ -210,12 +220,15 @@ api_port = 8891
 # the whole poller in the event store. It is NOT a per-issue key. Per-issue
 # identity is `number`, carried in the payload.
 #
+# `select(length > 0)` prints nothing for an empty list, and blank stdout
+# publishes no stdout event, so an idle poll leaves only its exit event.
+#
 # The three topics come from `publishes` in order (stdout, stderr, exit).
 [[sources]]
 name = "poll-issues"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
 args = ["--correlate", "--interval", "300000", "--shell", "sh", "--command",
-  '''gh issue list --state open --search no:label --limit 50 --json number,title,body --jq 'map(. + {attempt: 1, context: []})' ''']
+  '''gh issue list --state open --search no:label --limit 50 --json number,title,body --jq 'map(. + {attempt: 1, context: []}) | select(length > 0)' ''']
 publishes = ["issues.listed", "issues.list-failed", "issues.list-done"]
 
 # Rung 1: the marketplace splitter, used as itself. `unwrap_stdout` has the SDK
@@ -242,29 +255,38 @@ publishes = ["issue.found", "issues.drained"]
 # These two run concurrently because they subscribe to the same event.
 # No &, no xargs -P, no gather. The topology is the scheduler.
 
-# Rung 3, the carry-through idiom: capture, one act (`claude`), merge. `$orig + .`
-# keeps every field of the issue, so the payload survives the feedback loop.
-# A reply that is not JSON fails the last jq, which is a non-zero exit, which
-# is `issue.score-failed`. Malformed model output becomes an event by itself.
+# Rung 3, the carry-through idiom: capture, one act (`claude`), merge. `$orig`
+# keeps every field of the issue, so the payload survives the feedback loop, and
+# the merge takes three named fields from the model and nothing else, so a reply
+# cannot overwrite `number` or `attempt`.
+#
+# Every way this can fail is `issue.score-failed`. `pipefail` makes a dead
+# `claude` (auth, network, rate limit) the body's exit status; without it the
+# last jq would read nothing, exit 0, and publish nothing at all. A reply that is
+# not a JSON object fails the last jq by itself.
+#
+# `--tools ""` because the issue text comes from strangers and this judge needs
+# nothing but its prompt.
 [[handlers]]
 name = "score-severity"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "issue.found", "-s", "issue.enriched", "-s", "issue.rescore-due",
+args = ["-s", "issue.found", "-s", "issue.enriched", "-s", "issue.backoff-elapsed",
         "--publish-as", "issue.scored", "--error-as", "issue.score-failed", "-t", "60000",
         "--", "bash", "-c",
-  '''p=$(cat); \
+  '''set -o pipefail; p=$(cat); \
      jq -r '"Rate this issue. Reply with one JSON object {severity, confidence, rationale}, severity one of low|medium|high|critical, confidence 0 to 1.\n\(.title)\n\(.body)\nPrior context: \(.context | join("; "))"' <<< "$p" \
-     | claude -p --output-format text \
-     | jq -c --argjson orig "$p" '$orig + .' ''']
-subscribes = ["issue.found", "issue.enriched", "issue.rescore-due"]
+     | claude -p --tools "" --output-format text \
+     | jq -c --argjson orig "$p" '$orig + {severity, confidence, rationale}' ''']
+subscribes = ["issue.found", "issue.enriched", "issue.backoff-elapsed"]
 publishes = ["issue.scored", "issue.score-failed"]
 
-# Rung 3 again: capture, one act (`gh` search), merge.
+# Rung 3 again: capture, one act (`gh` search), merge. Nothing waits on this
+# side branch, so its failure stays on `exec.error` for the `errors` sink.
 [[handlers]]
 name = "detect-duplicates"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "issue.found", "--publish-as", "issue.dupe-checked", "--", "bash", "-c",
-  '''p=$(cat); \
+  '''set -o pipefail; p=$(cat); \
      gh issue list --state open --search "$(jq -r .title <<< "$p")" --json number \
      | jq -c --argjson orig "$p" '{number: $orig.number, duplicate_of: (map(.number) - [$orig.number] | first)}' ''']
 subscribes = ["issue.found"]
@@ -326,7 +348,7 @@ name = "enrich-context"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "issue.uncertain", "--publish-as", "issue.enriched",
         "--error-as", "issue.enrich-failed", "--", "bash", "-c",
-  '''p=$(cat); \
+  '''set -o pipefail; p=$(cat); \
      gh issue view "$(jq -r .number <<< "$p")" --json comments --jq '[.comments[-3:][].body] | join("\n") | .[:2000]' \
      | jq -R -s -c --argjson orig "$p" '. as $c | $orig | .context += [$c] | .attempt += 1' ''']
 subscribes = ["issue.uncertain"]
@@ -334,24 +356,40 @@ publishes = ["issue.enriched", "issue.enrich-failed"]
 
 # --------------------------------------------------------------- failure policy
 
-# Two exclusive subscribers on the failure event: wait and try again, or give
-# up. `sleep` touches nothing, so the delay handler is still one pure shape.
-# `del(.error)` strips the reserved key exec-handler added to the payload.
+# Two exclusive routers on the failure event decide first: try again, or give
+# up. Only a retryable failure ever waits, so an issue that is out of attempts
+# escalates at once instead of sleeping first.
 [[handlers]]
-name = "retry-scoring"
+name = "route-rescorable"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "issue.score-failed", "--publish-as", "issue.rescore-due", "--", "sh", "-c",
-        "sleep 5; jq -c 'select(.attempt < 3) | del(.error) | .attempt += 1'"]
+args = ["-s", "issue.score-failed", "--publish-as", "issue.score-retryable", "--",
+        "jq", "-c", "select(.attempt < 3)"]
 subscribes = ["issue.score-failed"]
-publishes = ["issue.rescore-due"]
+publishes = ["issue.score-retryable"]
 
 [[handlers]]
 name = "escalate-unscorable"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "issue.score-failed", "--publish-as", "issue.escalated", "--", "jq", "-c",
-        'select(.attempt >= 3) | {number, attempt, reason: "scoring failed"}']
+        'select(.attempt < 3 | not) | {number, attempt, reason: "scoring failed"}']
 subscribes = ["issue.score-failed"]
 publishes = ["issue.escalated"]
+
+# The delay. Its one act is the pause, 2, 4, then 8 seconds, read from the
+# payload because nothing else knows the attempt. `-t` has to exceed the longest
+# pause. `del(.error)` strips the reserved key exec-handler added. While this
+# sleeps the whole batch waits, because `split-issues` has one issue in flight.
+# That is the price of acking at the end of the flow, and it is why the pauses
+# are short. `--max-concurrent` stays at 1 for the same reason.
+[[handlers]]
+name = "delay-rescore"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "issue.score-retryable", "--publish-as", "issue.backoff-elapsed",
+        "-t", "20000", "--", "bash", "-c",
+  '''p=$(cat); sleep $((2 ** $(jq -r .attempt <<< "$p"))); \
+     jq -c 'del(.error) | .attempt += 1' <<< "$p" ''']
+subscribes = ["issue.score-retryable"]
+publishes = ["issue.backoff-elapsed"]
 
 [[handlers]]
 name = "escalate-unenrichable"
@@ -401,7 +439,7 @@ subscribes = ["issue.escalated"]
 name = "notify"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "issue.triaged", "--", "bash", "-c",
-  '''jq -c '{text: "Triaged #\(.number) as \(.severity)"}' \
+  '''set -o pipefail; jq -c '{text: "Triaged #\(.number) as \(.severity)"}' \
      | curl -sf -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK" ''']
 subscribes = ["issue.triaged"]
 
@@ -409,7 +447,7 @@ subscribes = ["issue.triaged"]
 name = "notify-human"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "issue.escalated", "--", "bash", "-c",
-  '''jq -c '{text: "Needs a human: #\(.number) after \(.attempt) attempts, \(.reason)"}' \
+  '''set -o pipefail; jq -c '{text: "Needs a human: #\(.number) after \(.attempt) attempts, \(.reason)"}' \
      | curl -sf -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK" ''']
 subscribes = ["issue.escalated"]
 
@@ -423,8 +461,10 @@ subscribes = ["exec.error", "issues.list-failed"]
 
 This config was run end to end against stubbed `gh`, `claude`, and `curl` with
 three issues: one clear, one vague, one the model answered in prose. The event
-store recorded 1 `issue.triaged`, 2 `issue.enriched`, 2 `issue.rescore-due`,
-2 `issue.escalated`, 3 `issue.settled`, and 1 `issues.drained`.
+store recorded 1 `issue.triaged`, 2 `issue.enriched`, 3 `issue.score-failed`,
+2 `issue.score-retryable`, 2 `issue.backoff-elapsed`, 2 `issue.escalated`,
+3 `issue.settled`, 1 `issues.drained`, and nothing on `exec.error`. The third
+failure escalated at once, with no pause in front of it.
 
 ---
 
@@ -452,13 +492,15 @@ which could only ever have looped once because someone wrote a `for`.
 
 | Test | Result |
 |---|---|
-| **Script** | No script file. Every primitive is a marketplace primitive used as itself, one command as an args array, or one `shape \| act \| shape` pipe with a single act. |
+| **Script** | No script file. Every primitive is a marketplace primitive used as itself, one command as an args array, or one shell body with a single act. Every body with an act in the middle of a pipe opens with `set -o pipefail`. |
+| **Requirement** | Poll, triage, label, escalate: four verbs. Everything else traces to a failure of one (`route-rescorable`, `delay-rescore`, the three escalators), to the uncertain case the requirement names (`enrich-context`, the routers), or to `stream-runner`'s ack (`settle`). `detect-duplicates` and its two followers are the one thing nobody asked for. They are here to show fan-out, and in a real build they would wait for someone to want them. |
+| **Dead end** | Every error topic has a subscriber. `issues.drained` and `issues.list-done` have none, on purpose. Each router group is exhaustive: the last arm of each is written as the negation of the others. |
 | **Log** | Every state change has an event. One issue's trail reads as a narrative: `sqlite3 ~/.local/share/emergent/triage/events.db "SELECT message_type, source FROM events WHERE json_extract(payload_json, '$.number') = 7 ORDER BY timestamp_ms"`. |
 | **Subscriber** | "Also track time-to-triage": one sink on `issue.found` and `issue.settled`, zero edits. "Post a weekly digest": a subscriber on `issues.drained`, which nobody consumes yet. |
 | **Injection** | Add the `inject` source from `patterns.md` with a one-line unwrap publishing `issue.found`, POST a synthetic issue, and the whole triage path runs on it. |
 | **Swap** | `claude -p` to an `ollama` curl is one line in `score-severity`. Swapping it for `jev-handler` is a step up the ladder, from rung 3 to rung 1. Nothing else notices either way. |
 | **Kill** | Kill `detect-duplicates` and triage still runs, minus dedup. Kill `notify` and labeling continues. Kill `settle` and the batch stalls after one issue, which is the honest cost of ack-driven pacing. |
-| **Name** | poll-issues, split-issues, score-severity, detect-duplicates, route-confident, enrich-context, depth-guard, settle, label-issue. No "and" anywhere. |
+| **Name** | Each name is one act or one predicate: poll-issues, split-issues, score-severity, detect-duplicates, route-confident, route-rescorable, delay-rescore, enrich-context, depth-guard, settle, label-issue. No "and" anywhere. |
 | **Surprise** | Yes: attempt counts, which issues resolve through enrichment versus escalate, and a batch pace nobody set. |
 
 ## Honest notes on the cost
