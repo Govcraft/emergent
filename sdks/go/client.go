@@ -518,6 +518,11 @@ func (c *baseClient) getMySubscriptionsInternal(ctx context.Context) ([]string, 
 		MessageTypes:  []string{"system.response.subscriptions"},
 	}, subCorrelationID)
 	if err != nil {
+		// A cancelled context is reported as itself, so callers can match it
+		// with errors.Is.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to subscribe to response type: %v", err)}
 	}
 	if !subResp.Success {
@@ -558,9 +563,15 @@ func (c *baseClient) getMySubscriptionsInternal(ctx context.Context) ([]string, 
 		return nil, pubErr
 	}
 
-	// Wait for response
-	result := <-resultCh
-	timer.Stop()
+	// Wait for the response, the request timer, or the caller's context
+	result, err := awaitPubSubResult(ctx, resultCh, timer, func() {
+		c.mu.Lock()
+		delete(c.pendingSubscriptionRequests, correlationID)
+		c.mu.Unlock()
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	switch v := result.(type) {
 	case []string:
@@ -596,6 +607,11 @@ func (c *baseClient) getTopologyInternal(ctx context.Context) (*TopologyState, e
 		MessageTypes:  []string{"system.response.topology"},
 	}, subCorrelationID)
 	if err != nil {
+		// A cancelled context is reported as itself, so callers can match it
+		// with errors.Is.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to subscribe to response type: %v", err)}
 	}
 	if !subResp.Success {
@@ -636,9 +652,15 @@ func (c *baseClient) getTopologyInternal(ctx context.Context) (*TopologyState, e
 		return nil, pubErr
 	}
 
-	// Wait for response
-	result := <-resultCh
-	timer.Stop()
+	// Wait for the response, the request timer, or the caller's context
+	result, err := awaitPubSubResult(ctx, resultCh, timer, func() {
+		c.mu.Lock()
+		delete(c.pendingTopologyRequests, correlationID)
+		c.mu.Unlock()
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	switch v := result.(type) {
 	case *TopologyState:
@@ -648,6 +670,22 @@ func (c *baseClient) getTopologyInternal(ctx context.Context) (*TopologyState, e
 		return nil, v
 	default:
 		return nil, &ConnectionError{Msg: "unexpected response type"}
+	}
+}
+
+// awaitPubSubResult waits for a pub/sub lookup to finish. The result channel
+// carries either the answer or the request timer's TimeoutError. When ctx ends
+// first it stops the timer, calls forget to remove the pending entry, and
+// returns the context's error.
+func awaitPubSubResult(ctx context.Context, resultCh <-chan any, timer *time.Timer, forget func()) (any, error) {
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		forget()
+		return nil, ctx.Err()
+	case result := <-resultCh:
+		timer.Stop()
+		return result, nil
 	}
 }
 

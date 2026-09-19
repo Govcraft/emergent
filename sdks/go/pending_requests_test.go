@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -152,6 +153,9 @@ type fakeEngine struct {
 	// pushDelay holds back pub/sub answers so they land around the client's
 	// request timeout.
 	pushDelay time.Duration
+	// muteLookups drops pub/sub answers, so a lookup waits until its caller
+	// gives up.
+	muteLookups atomic.Bool
 
 	mu    sync.Mutex
 	conns []*fakeConn
@@ -277,6 +281,9 @@ func (e *fakeEngine) serve(conn *fakeConn) {
 
 			reply, ok := fakeEngineReply(frame.MsgType, frame.Payload)
 			if !ok {
+				continue
+			}
+			if reply.delayed && e.muteLookups.Load() {
 				continue
 			}
 			if reply.delayed && e.pushDelay > 0 {
