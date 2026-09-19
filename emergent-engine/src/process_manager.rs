@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
 use tracing::{error, info, warn};
 
 /// Process manager errors.
@@ -44,11 +44,23 @@ pub enum ProcessManagerError {
 struct ActorEntry {
     /// Handle to the running actor.
     handle: ActorHandle,
-    /// Primitive information (name, kind, state, etc.).
-    info: PrimitiveInfo,
+    /// Kind of the primitive, fixed at registration and used for ordering.
+    kind: PrimitiveKind,
+    /// Live primitive information published by the actor that owns it.
+    ///
+    /// Reading through this receiver is what makes topology queries report the
+    /// current state and pid instead of a registration-time copy.
+    status: watch::Receiver<PrimitiveInfo>,
     /// Startup configuration (kept for restart capability).
     #[allow(dead_code)]
     config: PrimitiveActorConfig,
+}
+
+impl ActorEntry {
+    /// Snapshot the primitive's current information.
+    fn info(&self) -> PrimitiveInfo {
+        self.status.borrow().clone()
+    }
 }
 
 /// Manages the lifecycle of Source, Handler, and Sink processes.
@@ -135,6 +147,7 @@ impl ProcessManager {
         env: &HashMap<String, String>,
     ) -> Result<(), ProcessManagerError> {
         let name = info.name.clone();
+        let kind = info.kind;
 
         // Check for duplicates
         {
@@ -154,8 +167,9 @@ impl ProcessManager {
             api_port: self.api_port,
         };
 
-        // Build the actor (does not start it yet)
-        let actor = build_primitive_actor(runtime, actor_config.clone());
+        // Build the actor (does not start it yet). The actor owns the live
+        // state; `status` is the read side of what it publishes.
+        let (actor, status) = build_primitive_actor(runtime, actor_config.clone());
 
         // Start the actor - this triggers after_start which spawns the process
         let handle = actor.start().await;
@@ -163,7 +177,8 @@ impl ProcessManager {
         // Store the entry
         let entry = ActorEntry {
             handle,
-            info,
+            kind,
+            status,
             config: actor_config,
         };
 
@@ -240,7 +255,7 @@ impl ProcessManager {
             let mut sinks = Vec::new();
 
             for (name, entry) in actors.iter() {
-                match entry.info.kind {
+                match entry.kind {
                     PrimitiveKind::Source => sources.push(name.clone()),
                     PrimitiveKind::Handler => handlers.push(name.clone()),
                     PrimitiveKind::Sink => sinks.push(name.clone()),
@@ -300,15 +315,19 @@ impl ProcessManager {
     }
 
     /// Get information about all registered primitives.
+    ///
+    /// The state, pid and error come from each primitive's actor, so a running
+    /// primitive reports `Running` with its pid, a cleanly exited one reports
+    /// `Stopped`, and a crashed one reports `Failed` with the error.
     pub async fn list_all(&self) -> Vec<PrimitiveInfo> {
         let actors = self.actors.read().await;
-        actors.values().map(|e| e.info.clone()).collect()
+        actors.values().map(ActorEntry::info).collect()
     }
 
     /// Get information about a specific primitive.
     pub async fn get_info(&self, name: &str) -> Option<PrimitiveInfo> {
         let actors = self.actors.read().await;
-        actors.get(name).map(|e| e.info.clone())
+        actors.get(name).map(ActorEntry::info)
     }
 
     /// Get the count of registered primitives.
@@ -328,8 +347,8 @@ impl ProcessManager {
         let actors = self.actors.read().await;
         actors
             .values()
-            .filter(|e| e.info.kind == kind)
-            .map(|e| e.info.clone())
+            .filter(|e| e.kind == kind)
+            .map(ActorEntry::info)
             .collect()
     }
 
@@ -377,7 +396,7 @@ impl ProcessManager {
             let actors = self.actors.read().await;
             actors
                 .iter()
-                .filter(|(_, e)| e.info.kind == kind)
+                .filter(|(_, e)| e.kind == kind)
                 .map(|(name, e)| (name.clone(), e.handle.clone()))
                 .collect()
         };
@@ -421,7 +440,7 @@ impl ProcessManager {
             let actors = self.actors.read().await;
             actors
                 .iter()
-                .filter(|(_, e)| e.info.kind == kind)
+                .filter(|(_, e)| e.kind == kind)
                 .map(|(name, e)| (name.clone(), e.handle.clone()))
                 .collect()
         };
