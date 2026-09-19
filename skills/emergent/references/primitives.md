@@ -539,7 +539,7 @@ subscribes = ["system.response.topology"]
 **Flags:** `--port <PORT>` (8080). Open `/` in a browser; `/api/topology`
 returns the graph as JSON.
 
-**Known limitation, verified against 0.12.0.** The viewer ignores the config's
+**Known limitation, verified against 0.12.0 (Govcraft/emergent-primitives#5).** The viewer ignores the config's
 `subscribes` and asks for three `system.*.*` wildcards itself. Subscriptions are
 exact-match (see `configuration.md`), so those never deliver, and the graph
 shows the engine node and nothing else. It fills in only if something publishes

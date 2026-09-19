@@ -120,7 +120,7 @@ Absent means omitted, not `null` or `[]`, so read these with a default: `jq '.pu
 
 `system.shutdown.requested` fires first and reaches user code like any other message. Use it for cleanup tasks (e.g., stopping web servers started by exec-source). The engine adds no grace period after it: the drain starts immediately, so the cleanup window is only the fixed timers under Shutdown Order.
 
-Every SDK subscribes to `system.shutdown` on its own and swallows it, so it is three events in the event store and none in your handler. It is meant to close the handler/sink stream whose `kind` matches. Do not rely on that: the engine delivers the whole message envelope as the notification payload, which puts `kind` one level deeper than the SDKs look for it (by code reading of engine 0.10.10 and the Rust, Python and TypeScript SDKs; not yet confirmed at runtime). Assume a primitive ends on the SIGTERM fallback, and make SIGTERM a clean exit.
+Every SDK subscribes to `system.shutdown` on its own and swallows it, so it is three events in the event store and none in your handler. It is meant to close the handler/sink stream whose `kind` matches. Do not rely on that: the engine delivers the whole message envelope as the notification payload, which puts `kind` one level deeper than the Rust, Python and TypeScript SDKs look for it. Confirmed at runtime on engine 0.10.10: an `exec-sink` logs `shutdown_kind=unknown` on all three broadcasts and stops only on the SIGTERM that follows (Govcraft/emergent#43). The Go SDK reads the right level. Assume a primitive ends on the SIGTERM fallback, and make SIGTERM a clean exit.
 
 ### Topology Events
 

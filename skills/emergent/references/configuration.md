@@ -144,7 +144,7 @@ sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | String | Yes | Unique across sources, handlers, and sinks combined. Lowercase letter first, then `a-z 0-9 - _`, at most 64 characters. The config loader does not check this, and an invalid name (a space, an uppercase letter) hangs the engine during startup |
+| `name` | String | Yes | Unique across sources, handlers, and sinks combined. Lowercase letter first, then `a-z 0-9 - _`, at most 64 characters. The config loader does not check this, and an invalid name (a space, an uppercase letter) aborts the engine with exit 134 the moment that primitive starts, leaving the child it just spawned running as an orphan (Govcraft/emergent#42) |
 | `path` | Path | Yes | Path to executable. See Path Resolution. Must exist for every enabled primitive or the engine refuses to start |
 | `args` | Array[String] | No | Command-line arguments |
 | `enabled` | Boolean | No | Enable/disable (default: `true`) |
