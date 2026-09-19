@@ -211,8 +211,12 @@ in a single `*` and matches every type that starts with the text before it.
 that first appear later in the run.
 
 ```toml
-# Both of these watch the same two failures.
+# Naming each failure:
 subscribes = ["system.error.poll-issues", "system.error.score-severity"]
+```
+
+```toml
+# Watching the same two, and any primitive added later:
 subscribes = ["system.error.*"]
 ```
 
