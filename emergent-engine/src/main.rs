@@ -100,7 +100,7 @@ use emergent_engine::config::EmergentConfig;
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
-use emergent_engine::process_manager::ProcessManager;
+use emergent_engine::process_manager::{ProcessManager, ShutdownTimings};
 use emergent_engine::topology::build_topology_payload;
 
 // ============================================================================
@@ -722,7 +722,9 @@ async fn main() -> Result<()> {
 
     // Graceful shutdown with coordinated drain protocol
     // Sources → Handlers → Sinks (each tier drains before the next)
-    process_manager.graceful_shutdown(&broker).await;
+    process_manager
+        .graceful_shutdown(&broker, ShutdownTimings::from_engine(&config.engine))
+        .await;
 
     // Flush event stores
     info!("Flushing event stores...");

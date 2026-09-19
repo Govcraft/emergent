@@ -26,7 +26,9 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::sync::Arc;
 use tokio::process::Command;
+use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
 /// Payload for system lifecycle events.
@@ -97,6 +99,106 @@ impl SystemEventPayload {
     }
 }
 
+/// Single-writer view of a primitive's live child PID.
+///
+/// The actor writes to it (`Some(pid)` on spawn, `None` on exit); the process
+/// manager reads and awaits it. This is what lets shutdown wait on the actual
+/// child instead of sleeping a fixed interval, and it gives the manager the
+/// PID it needs to escalate to SIGKILL.
+#[derive(Clone, Debug)]
+pub struct ChildPidWatch {
+    tx: Arc<watch::Sender<Option<u32>>>,
+}
+
+impl Default for ChildPidWatch {
+    fn default() -> Self {
+        Self::new().0
+    }
+}
+
+impl ChildPidWatch {
+    /// Create a writer and its paired reader.
+    #[must_use]
+    pub fn new() -> (Self, watch::Receiver<Option<u32>>) {
+        let (tx, rx) = watch::channel(None);
+        (Self { tx: Arc::new(tx) }, rx)
+    }
+
+    /// Record that a child with this PID is now running.
+    pub fn set(&self, pid: u32) {
+        let _ = self.tx.send(Some(pid));
+    }
+
+    /// Record that no child is running.
+    pub fn clear(&self) {
+        let _ = self.tx.send(None);
+    }
+}
+
+/// Report whether every watched child has exited, within a time budget.
+///
+/// Returns the primitives still running when the budget expired, with the PID
+/// to escalate against. An empty result means the phase drained on its own and
+/// the caller can move on immediately.
+pub async fn wait_for_children_exit(
+    watched: &mut [(String, watch::Receiver<Option<u32>>)],
+    budget: std::time::Duration,
+) -> Vec<(String, u32)> {
+    let deadline = tokio::time::Instant::now() + budget;
+
+    for (_, rx) in watched.iter_mut() {
+        while rx.borrow_and_update().is_some() {
+            match tokio::time::timeout_at(deadline, rx.changed()).await {
+                // Value changed: loop round and re-read it.
+                Ok(Ok(())) => {}
+                // Sender gone (actor dropped) or deadline reached.
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+    }
+
+    watched
+        .iter()
+        .filter_map(|(name, rx)| rx.borrow().map(|pid| (name.clone(), pid)))
+        .collect()
+}
+
+/// Send SIGKILL to a child's process group, falling back to the process itself.
+///
+/// Children are spawned with `process_group(0)`, so each child leads its own
+/// group and the group ID equals its PID. Killing the group therefore reaches
+/// the child and anything it spawned (a shell's backgrounded `sleep`, for
+/// instance) without touching the engine or any sibling primitive.
+#[cfg(unix)]
+pub fn sigkill_process_group(pid: u32) {
+    use nix::errno::Errno;
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+
+    let Ok(raw) = i32::try_from(pid) else {
+        warn!("Cannot SIGKILL pid {}: out of range", pid);
+        return;
+    };
+
+    match kill(Pid::from_raw(-raw), Signal::SIGKILL) {
+        Ok(()) => {}
+        // The group is already gone; nothing to escalate against.
+        Err(Errno::ESRCH) => {}
+        Err(e) => {
+            warn!("Failed to SIGKILL process group {}: {}", pid, e);
+            if let Err(e) = kill(Pid::from_raw(raw), Signal::SIGKILL) {
+                warn!("Failed to SIGKILL pid {}: {}", pid, e);
+            }
+        }
+    }
+}
+
+/// SIGKILL is not available on this platform.
+#[cfg(not(unix))]
+pub fn sigkill_process_group(pid: u32) {
+    warn!("SIGKILL not supported on this platform for pid {}", pid);
+}
+
 /// Message sent when a child process has been spawned.
 ///
 /// This message carries the PID and primitive info for state initialization.
@@ -128,6 +230,13 @@ pub struct HealthCheck;
 #[acton_message]
 pub struct StopPrimitive;
 
+/// Message telling the actor the engine is tearing the topology down.
+///
+/// Sent to every actor before the first shutdown phase begins, so that a child
+/// which exits during the drain is not mistaken for a crash and respawned.
+#[acton_message]
+pub struct EngineShuttingDown;
+
 /// State for a primitive actor managing a child process.
 ///
 /// Note: We store only the PID, not the Child handle. The Child lives
@@ -142,6 +251,8 @@ pub struct PrimitiveActorState {
     pub info: PrimitiveInfo,
     /// Process ID of the child (if running).
     pub child_pid: Option<u32>,
+    /// Whether the engine is shutting down, which suppresses restarts.
+    pub shutting_down: bool,
 }
 
 /// Configuration for building a primitive actor.
@@ -159,6 +270,8 @@ pub struct PrimitiveActorConfig {
     pub socket_path: PathBuf,
     /// HTTP API port for topology queries.
     pub api_port: u16,
+    /// Writer for the live child PID, read by the process manager.
+    pub pid_watch: ChildPidWatch,
 }
 
 /// Build and configure a primitive actor.
@@ -193,6 +306,7 @@ pub fn build_primitive_actor(
     let after_start_env = env;
     let after_start_socket = socket_path;
     let after_start_api_port = config.api_port;
+    let after_start_pid_watch = config.pid_watch.clone();
 
     actor
         .after_start(move |actor| {
@@ -206,6 +320,7 @@ pub fn build_primitive_actor(
             let env = after_start_env.clone();
             let socket_path = after_start_socket.clone();
             let api_port = after_start_api_port;
+            let pid_watch = after_start_pid_watch.clone();
 
             async move {
                 // Build the command
@@ -236,6 +351,10 @@ pub fn build_primitive_actor(
                         info!("Started {} (pid: {:?})", name, pid);
 
                         if let Some(pid) = pid {
+                            // Publish the PID before anything else so the process
+                            // manager can wait on (and if need be signal) this child.
+                            pid_watch.set(pid);
+
                             // Store PID and info via self-message
                             let mut info = spawn_info.clone();
                             info.pid = Some(pid);
@@ -252,9 +371,13 @@ pub fn build_primitive_actor(
                             let monitor_handle = self_handle.clone();
                             let monitor_info = spawn_info.clone();
                             let monitor_broker = broker.clone();
+                            let monitor_pid_watch = pid_watch.clone();
                             tokio::spawn(async move {
                                 match child.wait().await {
                                     Ok(status) => {
+                                        // Clear the watch first: the process manager
+                                        // may be waiting on exactly this signal.
+                                        monitor_pid_watch.clear();
                                         let exit_code = exit_code_from_status(&status);
                                         let clean = is_clean_exit(&status);
                                         if clean {
@@ -297,15 +420,18 @@ pub fn build_primitive_actor(
                                         monitor_broker.broadcast(event).await;
                                     }
                                     Err(e) => {
+                                        monitor_pid_watch.clear();
                                         error!("Error waiting for {}: {}", monitor_info.name, e);
                                     }
                                 }
                             });
                         } else {
+                            pid_watch.clear();
                             error!("Failed to get PID for {}", name);
                         }
                     }
                     Err(e) => {
+                        pid_watch.clear();
                         error!("Failed to spawn {}: {}", name, e);
 
                         // Broadcast system.error event
@@ -379,8 +505,15 @@ pub fn build_primitive_actor(
             );
             Reply::ready()
         })
+        .mutate_on::<EngineShuttingDown>(|actor, _envelope| {
+            actor.model.shutting_down = true;
+            Reply::ready()
+        })
         .mutate_on::<StopPrimitive>(|actor, _envelope| {
             let name = actor.model.info.name.clone();
+            // A stop request is always engine-initiated, so the child exiting
+            // from here on is expected rather than a failure to recover from.
+            actor.model.shutting_down = true;
 
             if let Some(pid) = actor.model.child_pid {
                 actor.model.info.state = PrimitiveState::Stopping;
@@ -636,6 +769,95 @@ mod tests {
         assert!(json.contains("\"publishes\":[\"output.enriched\"]"));
         assert!(json.contains("\"subscribes\":[\"input.event\"]"));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_returns_immediately_when_nothing_is_running() {
+        let (_w1, rx1) = ChildPidWatch::new();
+        let (_w2, rx2) = ChildPidWatch::new();
+        let mut watched = vec![("a".to_string(), rx1), ("b".to_string(), rx2)];
+
+        let start = tokio::time::Instant::now();
+        let alive = wait_for_children_exit(&mut watched, std::time::Duration::from_secs(5)).await;
+
+        assert!(alive.is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(250),
+            "should not have waited: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_returns_as_soon_as_the_last_child_exits() {
+        let (writer, rx) = ChildPidWatch::new();
+        writer.set(4242);
+        let mut watched = vec![("late".to_string(), rx)];
+
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            writer.clear();
+        });
+
+        let start = tokio::time::Instant::now();
+        let alive = wait_for_children_exit(&mut watched, std::time::Duration::from_secs(5)).await;
+
+        assert!(alive.is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(1_000),
+            "should have returned on exit, not on the budget: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_reports_survivors_with_their_pids_at_the_deadline() {
+        let (stubborn, stubborn_rx) = ChildPidWatch::new();
+        stubborn.set(1234);
+        let (quick, quick_rx) = ChildPidWatch::new();
+        quick.set(5678);
+        quick.clear();
+
+        let mut watched = vec![
+            ("quick".to_string(), quick_rx),
+            ("stubborn".to_string(), stubborn_rx),
+        ];
+
+        let alive =
+            wait_for_children_exit(&mut watched, std::time::Duration::from_millis(50)).await;
+
+        assert_eq!(alive, vec![("stubborn".to_string(), 1234)]);
+    }
+
+    #[tokio::test]
+    async fn wait_shares_one_deadline_across_every_child() {
+        let (a, a_rx) = ChildPidWatch::new();
+        a.set(1);
+        let (b, b_rx) = ChildPidWatch::new();
+        b.set(2);
+        let mut watched = vec![("a".to_string(), a_rx), ("b".to_string(), b_rx)];
+
+        let start = tokio::time::Instant::now();
+        let alive =
+            wait_for_children_exit(&mut watched, std::time::Duration::from_millis(100)).await;
+
+        assert_eq!(alive.len(), 2);
+        // Two children must not cost two budgets.
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(180),
+            "budget should be shared, not per child: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_treats_a_zero_budget_as_a_liveness_snapshot() {
+        let (w, rx) = ChildPidWatch::new();
+        w.set(99);
+        let mut watched = vec![("x".to_string(), rx)];
+
+        let alive = wait_for_children_exit(&mut watched, std::time::Duration::ZERO).await;
+        assert_eq!(alive, vec![("x".to_string(), 99)]);
     }
 
     #[test]
