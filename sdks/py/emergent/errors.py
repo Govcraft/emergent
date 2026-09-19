@@ -74,13 +74,18 @@ class ProtocolError(EmergentError):
         super().__init__(message, self.code)
 
 
-class SubscriptionError(EmergentError):
-    """Error thrown when subscription fails."""
+class SubscriptionError(ConnectionError):
+    """
+    Error thrown when the engine rejects a subscription.
+
+    A ``ConnectionError``, which is what these failures raised through SDK
+    0.13.1, so an ``except ConnectionError`` still sees them.
+    """
 
     code = "SUBSCRIPTION_FAILED"
 
     def __init__(self, message: str, message_types: list[str] | None = None) -> None:
-        super().__init__(message, self.code)
+        super().__init__(message)
         self.message_types = message_types or []
 
 
@@ -94,13 +99,16 @@ class PublishError(EmergentError):
         self.message_type = message_type
 
 
-class DiscoveryError(EmergentError):
-    """Error thrown when discovery fails."""
+class DiscoveryError(ConnectionError):
+    """
+    Error thrown when discovery fails.
+
+    The engine rejected the request, or its reply was not a discovery reply. A
+    ``ConnectionError``, which is what these failures raised through SDK
+    0.13.1, so an ``except ConnectionError`` still sees them.
+    """
 
     code = "DISCOVERY_FAILED"
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, self.code)
 
 
 class DisposedError(EmergentError):

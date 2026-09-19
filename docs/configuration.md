@@ -149,6 +149,23 @@ topology viewer, which reach `system.request.topology` over the same socket. The
 check runs against the limit that actually took effect, so it catches a ceiling
 set in `ipc.toml` as readily as one set in `emergent.toml`.
 
+**Publish rate limit:** the same acton-reactive layer also rate limits each IPC
+connection to 100 messages per second with a burst of 50, and there is no
+`emergent.toml` key for it. Because a primitive holds exactly one connection,
+that is a per-primitive budget. A source that publishes faster than its budget
+has its excess messages refused by the engine and never delivered. Raise the
+limit in `$XDG_CONFIG_HOME/acton/ipc.toml` under `[rate_limit]`
+(`requests_per_second`, `burst_size`), have the primitive batch several records
+into one message, or have it publish with an acknowledgment so it cannot outpace
+the engine.
+
+The refusal is visible from the primitive side. After engine 0.13.1 the Rust
+SDK logs it at `WARN` with the engine's error text and the message type and
+counts it for the caller; the Go, Python and TypeScript SDKs log the unmatched
+ERROR frame at error level. On 0.13.1 and earlier the Rust SDK's fire-and-forget
+`publish` returned success and the refusal was dropped at `trace` level, so the
+loss was silent (Govcraft/emergent#65).
+
 `wire_format` is accepted but selects nothing: IPC is always MessagePack. On engine 0.10.10 and earlier the key was silently inert and the startup line reported the value you set. After 0.10.10 the engine warns at startup that the key has no effect and the ready line no longer names a wire format. Leave it out. To read events in a human-readable form, read the JSON event log.
 
 **Socket path resolution:**

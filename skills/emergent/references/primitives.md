@@ -249,6 +249,14 @@ variable: `HTTP_SOURCE_PORT`, `HTTP_SOURCE_HOST`, `HTTP_SOURCE_PATH`,
 `emergent.toml`. After primitives 0.11.0 there is also `--trust-forwarded-for`
 (off), described below.
 
+`--path` is an exact axum route, not a prefix: `--path /inject` answers
+`/inject` and returns `404` for `/inject/extra`. Captures use braces,
+`/hook/{id}` or a final `/files/{*rest}`, and the published `path` is the
+concrete requested path. After primitives 0.11.0 an invalid value (no leading
+`/`, the old `:id` or `*rest` syntax, a wildcard that is not last) prints one
+line naming the value and the rule and exits 1. On 0.11.0 and earlier the same
+value panics at startup, which the engine reports as exit status 101.
+
 With a secret set, a request must carry an `X-Signature` header holding the hex
 HMAC-SHA256 of the raw body, with an optional `sha256=` prefix. A missing or
 wrong signature gets `401`. A published request gets `202`.
@@ -291,7 +299,7 @@ name = "ws"
 path = "~/.local/share/emergent/primitives/bin/websocket-handler"
 args = ["--prefix", "ws"]
 subscribes = ["ws.connect", "ws.send", "ws.disconnect"]
-publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
+publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.disconnected", "ws.error"]
 ```
 
 **Flags:** `--prefix <PREFIX>` (default `ws`)
@@ -304,17 +312,48 @@ publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
 | Topic | Payload |
 |---|---|
 | `{prefix}.connected` | `{url}` |
-| `{prefix}.frame` | `{data}`. A text frame is JSON-parsed, falling back to the raw string. A binary frame is base64 |
-| `{prefix}.closed` | `{url, code, reason}` |
-| `{prefix}.error` | `{url, error}` |
+| `{prefix}.frame` | `{data}`. A text frame is JSON-parsed, falling back to the raw string. A binary frame is base64 after primitives 0.11.0; on 0.11.0 and earlier it arrived as the literal string `[object Blob]` |
+| `{prefix}.closed` | The handler was asked to end the connection. Payload below |
+| `{prefix}.disconnected` | The connection ended and nobody asked. After primitives 0.11.0 only. Payload below |
+| `{prefix}.error` | `{url, error}`. Diagnostic, never terminal |
+
+After primitives 0.11.0 every connection publishes exactly one terminal event,
+decided by intent rather than by close code:
+
+| Event | `cause` | Reconnect? |
+|---|---|---|
+| `{prefix}.closed` | `disconnect` (a disconnect message), `reconnect` (a newer connect replaced it), `shutdown` (the handler is stopping) | No |
+| `{prefix}.disconnected` | `remote_close` (the peer sent a close frame), `connection_lost` (dropped with no close frame), `connect_failed` (never opened) | Yes, if you want it back |
+
+Both carry `{url, code, reason, was_clean, cause, opened, error}`. An ending
+with no close frame is always `code` 1006. `opened` is false when the
+connection failed before it was established. `error` is the first socket error
+seen, or null.
+
+Reconnection is a subscriber, not a flag: a handler on `{prefix}.disconnected`
+republishes `{prefix}.connect`. A dropped connection publishes `error` and then
+`disconnected`, so drive the reconnect from `disconnected` alone or the flow
+reconnects twice. Put a delay or a retry count in that handler, because a
+refused connect publishes `disconnected` at once and the loop is otherwise
+tight. A half-open connection (the network is gone with no FIN or RST) is only
+noticed when the OS gives up on it.
+
+On 0.11.0 and earlier there is no `disconnected`: `closed` carried only
+`{url, code, reason}` and covered remote closes too, a handler shutdown
+published nothing, and a connect while connected published `closed` with the
+new URL and orphaned the new socket. Do not build reconnection on those
+versions.
 
 Topic names are resolved by suffix (`.connect`, `.send`, `.frame`, and so on)
 from the config's `subscribes` and `publishes`, falling back to `--prefix`, so
-the config wins over the flag. One connection at a time: a new connect closes
-the old one. A send with no open socket publishes an error event, and a
-non-string send payload is JSON-stringified. Events carry `causation_id` but do
-**not** propagate `correlation_id`, so carry a key in the payload if you need to
-trace across the bridge.
+the config wins over the flag. A topology that declares `slack.closed` and no
+`disconnected` type gets `slack.disconnected`, which nothing routes until you
+declare and subscribe to it. One connection at a time: a new connect closes the
+old one. A send with no open socket publishes an error event, and a non-string
+send payload is JSON-stringified. Every event of a connection carries the
+connect message's id as `causation_id` but does **not** propagate
+`correlation_id`, so carry a key in the payload if you need to trace across the
+bridge.
 
 ---
 
@@ -575,18 +614,33 @@ Live D3 force-directed view of the running pipeline.
 name = "topology"
 path = "~/.local/share/emergent/primitives/bin/topology-viewer"
 args = ["--port", "8009"]
-subscribes = ["system.response.topology"]
+subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
 ```
 
-**Flags:** `--port <PORT>` (8080). Open `/` in a browser; `/api/topology`
-returns the graph as JSON.
+**Flags:** `--port <PORT>` (8080). Open `/` in a browser.
 
-**Known limitation, verified against 0.12.0 (Govcraft/emergent-primitives#5).** The viewer ignores the config's
-`subscribes` and asks for three `system.*.*` wildcards itself. A wildcard has to
-be terminal (see `configuration.md`), so `system.*.*` never matches on any
-engine release: before 0.10.10 no wildcard delivered at all, and after it a
-mid-string star is refused. Either way the graph shows the engine node and
-nothing else. Until that is fixed, read the graph from the engine instead:
+| Route | Returns |
+|---|---|
+| `GET /api/topology` | `{nodes, edges, health}` as the viewer currently holds it |
+| `POST /api/refresh` | After primitives 0.11.0. One re-read of the engine topology, then the same body. `200` when the engine answered, `502` with the held state and the reason when it did not, `405` for other methods |
+| `GET /events` | The SSE stream the page uses: `topology:full`, `node:updated`, `edges:updated`, `health:updated` |
+
+After primitives 0.11.0 the viewer reads the engine's own
+`GET /api/topology` (on `EMERGENT_API_PORT`, which the engine sets) when it
+starts and every 5 seconds, so the graph is complete whatever the viewer missed
+while starting. Its wildcard subscriptions carry the live updates in between;
+they need an engine after 0.10.10 and a viewer built on an SDK that sends
+wildcards, and without them the graph is still right within 5 seconds. `health`
+says whether the graph can be trusted: `ok`, `pending` (no answer yet), `empty`
+(the engine reported nothing but itself) or `degraded` (the engine could not be
+read; `detail` says why). The page shows a banner for anything but `ok`, so
+check `health` before believing a sparse graph.
+
+**On 0.11.0 and earlier (Govcraft/emergent-primitives#5)** the viewer asks for
+three `system.*.*` wildcards, which no engine release delivers, so the graph
+shows the engine node and nothing else, and the refresh button first calls a
+hard-coded `localhost:8892` that nothing serves. On those versions read the
+graph from the engine instead:
 
 ```bash
 curl -s 127.0.0.1:<api_port>/api/topology | jq '.primitives[] | {name, kind, publishes, subscribes}'
