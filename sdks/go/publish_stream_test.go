@@ -34,9 +34,13 @@ func engineBinary() string {
 func startTestEngine(t *testing.T) *testEngine {
 	t.Helper()
 
+	// Keep the clients under test from writing primitive.log files into the
+	// developer's ~/.local/share/emergent.
+	t.Setenv("EMERGENT_LOG", "off")
+
 	binPath := engineBinary()
 	if _, err := os.Stat(binPath); err != nil {
-		t.Skipf("engine binary not found at %s — run 'cargo build' first", binPath)
+		t.Skipf("engine binary not found at %s, run 'cargo build' first", binPath)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "emergent-test-*")
@@ -68,6 +72,9 @@ retention_days = 1
 	cmd := exec.Command(binPath, "--config", configPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	// The engine writes its own log under the XDG data dir. Point that at the
+	// test's temp dir so it is removed with everything else.
+	cmd.Env = append(os.Environ(), "XDG_DATA_HOME="+filepath.Join(tmpDir, "data"))
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("failed to start engine: %v", err)
