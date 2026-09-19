@@ -519,11 +519,16 @@ pub fn unavailable_message(file: &str, url: &str, status: u16) -> String {
     let mut message =
         format!("Could not read {file} from the registry: {url} returned HTTP {status}.");
     if status == 404 {
-        message.push_str(&format!(
-            " That release publishes no {file}. Releases before primitives 0.11.0 predate it, \
-             so install from a later version, or point registry_url in marketplace.toml at a \
-             host that serves {INDEX_FILE} and {MANIFESTS_FILE}."
-        ));
+        message.push_str(&format!(" That release publishes no {file}."));
+        // Only the registry's own assets are worth the advice: a release with
+        // no checksums.txt is a warning on the way to an install, not a dead end.
+        if file == INDEX_FILE || file == MANIFESTS_FILE {
+            message.push_str(&format!(
+                " Releases before primitives 0.11.0 predate it, so install from a later \
+                 version, or point registry_url in marketplace.toml at a host that serves \
+                 {INDEX_FILE} and {MANIFESTS_FILE}."
+            ));
+        }
     }
     message
 }
@@ -655,6 +660,13 @@ nonsense
         assert!(message.contains(&url), "{message}");
         assert!(message.contains("HTTP 404"), "{message}");
         assert!(message.contains("registry_url"), "{message}");
+    }
+
+    #[test]
+    fn a_release_without_checksums_is_not_told_to_change_its_registry_url() {
+        let message = unavailable_message(CHECKSUMS_FILE, "https://example.invalid/c.txt", 404);
+        assert!(message.contains("publishes no checksums.txt"), "{message}");
+        assert!(!message.contains("registry_url"), "{message}");
     }
 
     #[test]
