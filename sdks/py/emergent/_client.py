@@ -21,17 +21,18 @@ from pydantic import ValidationError
 from ._protocol import (
     DEFAULT_FORMAT,
     HEADER_SIZE,
+    BadFrameBody,
+    BadFraming,
     Format,
     MessageType,
     encode_frame,
     generate_correlation_id,
     generate_message_id,
-    try_decode_frame,
+    next_frame,
 )
 from .errors import (
     ConnectionError,
     DisposedError,
-    ProtocolError,
     SocketNotFoundError,
     TimeoutError,
 )
@@ -161,6 +162,68 @@ def error_frame_text(payload: Any) -> str:
     text = error if isinstance(error, str) and error else DEFAULT_ERROR_TEXT
     code = payload.get("error_code")
     return f"{text} ({code})" if isinstance(code, str) and code else text
+
+
+def push_from_frame(payload: Any) -> IpcPushNotification | None:
+    """Read the notification a ``PUSH`` frame carries.
+
+    Returns ``None`` for a body that is not a notification, such as ``None``
+    or one whose ``message_type`` is not a string.
+    """
+    try:
+        return IpcPushNotification.model_validate(payload)
+    except ValidationError:
+        return None
+
+
+def wire_message_from_push(payload: Any) -> WireMessage | None:
+    """Read the Emergent message a push notification carries as its payload.
+
+    Returns ``None`` for anything that is not a whole message, so a message of
+    the wrong shape never reaches the subscriber.
+    """
+    try:
+        return WireMessage.model_validate(payload)
+    except ValidationError:
+        return None
+
+
+def topology_from_payload(payload: Any) -> TopologyState:
+    """Read the primitives a ``system.response.topology`` payload lists.
+
+    A field an entry leaves out takes its default. Entries that are not
+    objects, or hold a field of the wrong type, are dropped. A payload with no
+    ``primitives`` list reads as an empty topology.
+    """
+    entries = payload.get("primitives") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return TopologyState(primitives=())
+
+    primitives: list[TopologyPrimitive] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            primitives.append(
+                TopologyPrimitive.model_validate(
+                    {"name": "", "kind": "", "state": "stopped"} | entry
+                )
+            )
+        except ValidationError:
+            continue
+    return TopologyState(primitives=tuple(primitives))
+
+
+def subscribes_from_payload(payload: Any) -> list[str]:
+    """Read the topics a ``system.response.subscriptions`` payload lists.
+
+    Entries that are not strings are dropped. A payload with no ``subscribes``
+    list reads as no subscriptions.
+    """
+    entries = payload.get("subscribes") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, str)]
 
 
 def discovery_info_from_response(response: IpcResponse) -> DiscoveryInfo:
@@ -926,35 +989,54 @@ class BaseClient:
     def _process_frames(self) -> None:
         """Process complete frames from read buffer."""
         while len(self._read_buffer) >= HEADER_SIZE:
-            try:
-                result = try_decode_frame(self._read_buffer)
-                if result is None:
-                    break  # Not enough data
+            step = next_frame(self._read_buffer)
+            if step is None:
+                break  # Not enough data
 
-                # Consume the bytes
-                del self._read_buffer[: result.bytes_consumed]
-
-                if result.msg_type is None:
-                    # The length prefix already delimited the frame, so
-                    # skipping it keeps the stream in step.
-                    logger.warning(
-                        "skipping frame of unknown type primitive=%s msg_type=%#04x",
-                        self.name,
-                        result.raw_msg_type,
-                    )
-                    continue
-
-                # Handle the frame
-                self._handle_frame(result.msg_type, result.payload)
-            except ProtocolError as e:
+            if isinstance(step, BadFraming):
+                # Nothing says where the next frame starts, so drop what is
+                # buffered.
                 logger.error(
                     "protocol error while processing frame primitive=%s error=%s",
                     self.name,
-                    e,
+                    step.reason,
                 )
-                # Reset buffer on protocol error
                 self._read_buffer.clear()
                 break
+
+            # Consume the bytes
+            del self._read_buffer[: step.bytes_consumed]
+
+            if isinstance(step, BadFrameBody):
+                logger.warning(
+                    "skipping frame with malformed body primitive=%s msg_type=%#04x error=%s",
+                    self.name,
+                    step.raw_msg_type,
+                    step.reason,
+                )
+                continue
+
+            if step.msg_type is None:
+                # The length prefix already delimited the frame, so
+                # skipping it keeps the stream in step.
+                logger.warning(
+                    "skipping frame of unknown type primitive=%s msg_type=%#04x",
+                    self.name,
+                    step.raw_msg_type,
+                )
+                continue
+
+            # One frame must never end the read loop, whatever handling it
+            # raises.
+            try:
+                self._handle_frame(step.msg_type, step.payload)
+            except Exception as e:
+                logger.error(
+                    "skipping frame that could not be handled primitive=%s msg_type=%s error=%s",
+                    self.name,
+                    step.msg_type.name,
+                    e,
+                )
 
     def _settle_response(self, msg_type: MessageType, payload: Any) -> None:
         """
@@ -999,111 +1081,109 @@ class BaseClient:
             logger.debug("ignoring frame primitive=%s msg_type=%s", self.name, msg_type.name)
 
         elif msg_type == MessageType.PUSH:
-            notification = IpcPushNotification.model_validate(payload)
+            self._handle_push(payload)
 
-            # Check for shutdown signal - SDK handles this internally
-            if notification.message_type == "system.shutdown":
-                shutdown_kind = extract_shutdown_kind(notification.payload)
+    def _handle_push(self, payload: Any) -> None:
+        """
+        Route a PUSH frame.
+
+        The system messages the SDK owns are handled here, and everything else
+        goes to the subscriber stream. A notification or message of the wrong
+        shape is logged and dropped.
+        """
+        notification = push_from_frame(payload)
+        if notification is None:
+            logger.warning("dropping malformed push frame primitive=%s", self.name)
+            return
+        message_type = notification.message_type
+
+        # Check for shutdown signal - SDK handles this internally
+        if message_type == "system.shutdown":
+            shutdown_kind = extract_shutdown_kind(notification.payload)
+            logger.info(
+                "received shutdown signal primitive=%s kind=%s",
+                self.name,
+                shutdown_kind if shutdown_kind is not None else "unknown",
+            )
+
+            # Close stream if shutdown is for this primitive's kind
+            if shutdown_kind == self.primitive_kind.lower() and self._message_stream is not None:
                 logger.info(
-                    "received shutdown signal primitive=%s kind=%s",
+                    "shutting down (engine requested) primitive=%s",
                     self.name,
-                    shutdown_kind if shutdown_kind is not None else "unknown",
                 )
+                self._message_stream.close()
+                self._message_stream = None
+            # Don't forward system.shutdown to user - it's internal
+            return
 
-                # Close stream if shutdown is for this primitive's kind
-                if (
-                    shutdown_kind == self.primitive_kind.lower()
-                    and self._message_stream is not None
-                ):
-                    logger.info(
-                        "shutting down (engine requested) primitive=%s",
-                        self.name,
+        # Skip the transport's own envelope broadcasts, which only a "*"
+        # subscription ever sees. The message inside each one arrives
+        # separately under its own Emergent message type.
+        if not is_emergent_message_type(message_type):
+            logger.debug(
+                "skipping non-Emergent IPC broadcast primitive=%s message_type=%s",
+                self.name,
+                message_type,
+            )
+            return
+
+        # The notification.payload IS the serialized EmergentMessage
+        wire_message = wire_message_from_push(notification.payload)
+        if wire_message is None:
+            logger.warning(
+                "dropping push with a malformed message primitive=%s message_type=%s",
+                self.name,
+                message_type,
+            )
+            return
+        correlation_id = wire_message.correlation_id
+
+        # Handle system.response.topology messages
+        if message_type == "system.response.topology":
+            topology_pending = (
+                self._pending_topology_requests.pop(correlation_id, None)
+                if correlation_id
+                else None
+            )
+            if topology_pending is not None:
+                if topology_pending.timer is not None:
+                    topology_pending.timer.cancel()
+                if not topology_pending.future.done():
+                    topology_pending.future.set_result(topology_from_payload(wire_message.payload))
+            return  # Don't forward to message stream
+
+        # Handle system.response.subscriptions messages
+        if message_type == "system.response.subscriptions":
+            subscriptions_pending = (
+                self._pending_subscriptions_requests.pop(correlation_id, None)
+                if correlation_id
+                else None
+            )
+            if subscriptions_pending is not None:
+                if subscriptions_pending.timer is not None:
+                    subscriptions_pending.timer.cancel()
+                if not subscriptions_pending.future.done():
+                    subscriptions_pending.future.set_result(
+                        subscribes_from_payload(wire_message.payload)
                     )
-                    self._message_stream.close()
-                    self._message_stream = None
-                # Don't forward system.shutdown to user - it's internal
-                return
+            return  # Don't forward to message stream
 
-            # Handle system.response.topology messages
-            if notification.message_type == "system.response.topology":
-                wire_message = WireMessage.model_validate(notification.payload)
-                correlation_id = wire_message.correlation_id
-                if correlation_id:
-                    topology_pending = self._pending_topology_requests.pop(correlation_id, None)
-                    if topology_pending is not None:
-                        if topology_pending.timer is not None:
-                            topology_pending.timer.cancel()
-                        if not topology_pending.future.done():
-                            # Extract primitives from payload
-                            payload_data = wire_message.payload or {}
-                            primitives_data = (
-                                payload_data.get("primitives", [])
-                                if isinstance(payload_data, dict)
-                                else []
-                            )
-                            primitives = tuple(
-                                TopologyPrimitive(
-                                    name=p.get("name", ""),
-                                    kind=p.get("kind", ""),
-                                    state=p.get("state", "stopped"),
-                                    publishes=tuple(p.get("publishes", [])),
-                                    subscribes=tuple(p.get("subscribes", [])),
-                                    pid=p.get("pid"),
-                                    error=p.get("error"),
-                                )
-                                for p in primitives_data
-                            )
-                            topology_pending.future.set_result(TopologyState(primitives=primitives))
-                return  # Don't forward to message stream
+        if self._message_stream is None:
+            return
 
-            # Handle system.response.subscriptions messages
-            if notification.message_type == "system.response.subscriptions":
-                wire_message = WireMessage.model_validate(notification.payload)
-                correlation_id = wire_message.correlation_id
-                if correlation_id:
-                    subscriptions_pending = self._pending_subscriptions_requests.pop(
-                        correlation_id, None
-                    )
-                    if subscriptions_pending is not None:
-                        if subscriptions_pending.timer is not None:
-                            subscriptions_pending.timer.cancel()
-                        if not subscriptions_pending.future.done():
-                            # Extract subscribes from payload
-                            payload_data = wire_message.payload or {}
-                            subscribes = (
-                                payload_data.get("subscribes", [])
-                                if isinstance(payload_data, dict)
-                                else []
-                            )
-                            subscriptions_pending.future.set_result(subscribes)
-                return  # Don't forward to message stream
+        logger.debug(
+            "received message primitive=%s message_type=%s",
+            self.name,
+            message_type,
+        )
+        message = EmergentMessage.from_wire(wire_message)
 
-            # Skip the transport's own envelope broadcasts, which only a "*"
-            # subscription ever sees. The message inside each one arrives
-            # separately under its own Emergent message type.
-            if not is_emergent_message_type(notification.message_type):
-                logger.debug(
-                    "skipping non-Emergent IPC broadcast primitive=%s message_type=%s",
-                    self.name,
-                    notification.message_type,
-                )
-                return
+        # Auto-unwrap exec-source stdout payloads when enabled
+        if self._unwrap_stdout and not message.message_type.startswith("system."):
+            message = message.unwrap_stdout()
 
-            if self._message_stream is not None:
-                logger.debug(
-                    "received message primitive=%s message_type=%s",
-                    self.name,
-                    notification.message_type,
-                )
-                # The notification.payload IS the serialized EmergentMessage
-                wire_message = WireMessage.model_validate(notification.payload)
-                message = EmergentMessage.from_wire(wire_message)
-
-                # Auto-unwrap exec-source stdout payloads when enabled
-                if self._unwrap_stdout and not message.message_type.startswith("system."):
-                    message = message.unwrap_stdout()
-
-                self._message_stream.push(message)
+        self._message_stream.push(message)
 
     def _on_stream_close(self) -> None:
         """Callback when stream closes."""
