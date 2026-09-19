@@ -11,12 +11,15 @@ use serde_json::json;
 
 use crate::scaffold::handler::{AllTemplatesRendered, TemplateRenderedMessage};
 use crate::scaffold::messages::{Language, PrimitiveType, ScaffoldComplete};
+use crate::scaffold::outcome::{TemplateFailure, scaffold_error};
 
 /// State for the file writer sink actor.
 #[derive(Default, Clone, Debug)]
 pub struct FileWriterState {
     /// Files that have been written.
     files_written: Arc<Mutex<Vec<String>>>,
+    /// Files this actor was handed and could not write.
+    write_failures: Arc<Mutex<Vec<TemplateFailure>>>,
 }
 
 /// Message to signal scaffold completion.
@@ -36,14 +39,20 @@ pub struct ScaffoldCompleteMessage {
 pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
     let mut actor = runtime.new_actor_with_name::<FileWriterState>("scaffold_sink".to_string());
 
-    // Handle individual rendered templates
-    actor.act_on::<TemplateRenderedMessage>(|actor, envelope| {
+    // Handle individual rendered templates.
+    //
+    // Both handlers are `mutate_on`, not `act_on`: acton awaits a mutating
+    // handler before it dequeues the next message, while read-only handlers
+    // are detached and carry no execution order. The completion check below
+    // reads what the writes above it recorded, so it has to run after them.
+    actor.mutate_on::<TemplateRenderedMessage>(|actor, envelope| {
         let msg = envelope.message();
         let rendered = &msg.rendered;
         let output_dir = msg.output_dir.clone();
         let dry_run = msg.dry_run;
         let json_output = msg.json_output;
         let files_written = actor.model.files_written.clone();
+        let write_failures = actor.model.write_failures.clone();
 
         let file_path = rendered.file_path.clone();
         let content = rendered.content.clone();
@@ -71,13 +80,15 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                 if let Some(parent) = full_path.parent()
                     && let Err(e) = fs::create_dir_all(parent)
                 {
-                    eprintln!("Failed to create directory {}: {e}", parent.display());
+                    let reason = format!("failed to create directory {}: {e}", parent.display());
+                    record_failure(&write_failures, &file_path, reason);
                     return;
                 }
 
                 // Write the file
                 if let Err(e) = fs::write(&full_path, &content) {
-                    eprintln!("Failed to write {}: {e}", full_path.display());
+                    let reason = format!("failed to write {}: {e}", full_path.display());
+                    record_failure(&write_failures, &file_path, reason);
                     return;
                 }
 
@@ -101,9 +112,12 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
     });
 
     // Handle completion
-    actor.act_on::<AllTemplatesRendered>(|actor, envelope| {
+    actor.mutate_on::<AllTemplatesRendered>(|actor, envelope| {
         let msg = envelope.message();
         let broker = actor.broker().clone();
+        let write_failures = actor.model.write_failures.clone();
+        let expected_files = msg.total_files;
+        let render_failures = msg.failures.clone();
         let output_dir = msg.output_dir.clone();
         let dry_run = msg.dry_run;
         let json_output = msg.json_output;
@@ -115,11 +129,17 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
         let publishes = msg.publishes.clone();
 
         Reply::pending(async move {
+            let mut failures = render_failures;
+            failures.extend(taken_failures(&write_failures));
+
+            let error = scaffold_error(expected_files, &files, &failures);
+            let success = error.is_none();
+
             let result = ScaffoldComplete {
                 files_written: files.clone(),
                 output_dir: output_dir.clone(),
-                success: true,
-                error: None,
+                success,
+                error: error.clone(),
                 dry_run,
             };
 
@@ -128,9 +148,19 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                     "action": if dry_run { "preview_complete" } else { "scaffold_complete" },
                     "files": files,
                     "output_dir": output_dir.display().to_string(),
-                    "success": true,
+                    "success": success,
+                    "failures": failures.iter().map(|f| json!({"file": f.file, "reason": f.reason})).collect::<Vec<_>>(),
+                    "error": error,
                 });
                 println!("{output}");
+            } else if error.is_some() {
+                // The command reports the failure itself, with every file it
+                // names. Repeating it here would print it twice.
+                eprintln!(
+                    "\nThe {} in {} is incomplete.",
+                    if dry_run { "preview" } else { "generated primitive" },
+                    output_dir.display()
+                );
             } else if dry_run {
                 println!(
                     "\nDry run complete. {} file(s) would be created in {}",
@@ -191,6 +221,28 @@ pub fn build_file_writer_actor(runtime: &mut ActorRuntime) -> ActorHandle {
             handle
         })
     })
+}
+
+/// Records a file this actor could not write.
+///
+/// A poisoned lock is reported rather than unwrapped. The run still fails,
+/// because the completion check also catches a file that never arrived.
+fn record_failure(failures: &Arc<Mutex<Vec<TemplateFailure>>>, file: &str, reason: String) {
+    match failures.lock() {
+        Ok(mut failures) => failures.push(TemplateFailure::new(file, reason)),
+        Err(e) => eprintln!("could not record the failure for {file}: {e}"),
+    }
+}
+
+/// Takes the failures recorded so far, leaving the list empty.
+fn taken_failures(failures: &Arc<Mutex<Vec<TemplateFailure>>>) -> Vec<TemplateFailure> {
+    match failures.lock() {
+        Ok(mut failures) => std::mem::take(&mut *failures),
+        Err(e) => {
+            eprintln!("could not read the recorded scaffold failures: {e}");
+            Vec::new()
+        }
+    }
 }
 
 /// Resolve an interpreter command to its absolute path via PATH lookup.

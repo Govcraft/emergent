@@ -27,6 +27,19 @@ pub struct ScaffoldRequestMessage {
     pub request: ScaffoldRequest,
 }
 
+/// Message reporting a scaffold run that ended before any template ran.
+///
+/// The workflow has no completion message to send in that case, so this is
+/// what tells the command to stop waiting and with which exit status.
+#[acton_message]
+#[derive(Clone)]
+pub struct ScaffoldAborted {
+    /// Why the run ended.
+    pub reason: String,
+    /// Whether the user asked for it, which is not a failure.
+    pub cancelled: bool,
+}
+
 /// State for the CLI source actor.
 #[derive(Default, Clone, Debug)]
 pub struct CliSourceState;
@@ -62,9 +75,20 @@ pub fn build_cli_source_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                 }
                 Err(ScaffoldError::Cancelled) => {
                     eprintln!("Scaffold cancelled.");
+                    broker
+                        .broadcast(ScaffoldAborted {
+                            reason: "scaffold cancelled".to_string(),
+                            cancelled: true,
+                        })
+                        .await;
                 }
                 Err(e) => {
-                    eprintln!("Error: {e}");
+                    broker
+                        .broadcast(ScaffoldAborted {
+                            reason: e.to_string(),
+                            cancelled: false,
+                        })
+                        .await;
                 }
             }
         })
