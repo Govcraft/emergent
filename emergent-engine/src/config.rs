@@ -375,6 +375,25 @@ fn check_duplicate_names<'a, T: PrimitiveConfig + 'a>(
     Ok(())
 }
 
+/// Check that every subscription topic can match something (pure function).
+///
+/// Delegates the rule to the SDK so the engine and every primitive agree on
+/// what a wildcard means: a single terminal `*`, or no `*` at all.
+fn check_subscription_topics(
+    name: &str,
+    kind: &str,
+    subscribes: &[String],
+) -> Result<(), ConfigError> {
+    for topic in subscribes {
+        emergent_client::classify_topic(topic).map_err(|e| {
+            ConfigError::ValidationError(format!(
+                "{kind} '{name}' subscribes to an invalid topic: {e}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// Check that paths exist for enabled primitives (impure function).
 fn check_paths_exist<'a, T: PrimitiveConfig + 'a>(
     primitives: impl IntoIterator<Item = &'a T>,
@@ -516,12 +535,34 @@ impl EmergentConfig {
         Ok(())
     }
 
+    /// Validate every configured subscription topic (pure function).
+    ///
+    /// A topic is either a literal message type or a prefix selector ending in
+    /// a single `*`. A `*` anywhere else, such as `system.*.error`, can never
+    /// match a published message type, so the engine refuses the topology
+    /// rather than starting a primitive that would sit idle forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ValidationError`] naming the primitive and the
+    /// topic that cannot match.
+    pub fn validate_subscription_topics(&self) -> Result<(), ConfigError> {
+        for handler in &self.handlers {
+            check_subscription_topics(&handler.name, "handler", &handler.subscribes)?;
+        }
+        for sink in &self.sinks {
+            check_subscription_topics(&sink.name, "sink", &sink.subscribes)?;
+        }
+        Ok(())
+    }
+
     /// Validate the configuration (combines structure and path validation).
     ///
-    /// This is a convenience method that runs both pure validation (duplicate names)
-    /// and impure validation (path existence checks).
+    /// This is a convenience method that runs both pure validation (duplicate names,
+    /// subscription topics) and impure validation (path existence checks).
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.validate_unique_names()?;
+        self.validate_subscription_topics()?;
         self.validate_paths()?;
         Ok(())
     }
@@ -616,6 +657,61 @@ impl EmergentConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terminal_wildcard_topic_is_accepted() -> Result<(), Box<dyn std::error::Error>> {
+        let toml = r#"
+[engine]
+name = "test"
+
+[[sinks]]
+name = "watchdog"
+path = "/bin/true"
+subscribes = ["system.started.*", "tick.out", "*"]
+"#;
+        let config = EmergentConfig::parse(toml)?;
+        config.validate_subscription_topics()?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_mid_string_wildcard_topic_fails_the_config() {
+        let toml = r#"
+[engine]
+name = "test"
+
+[[sinks]]
+name = "watchdog"
+path = "/bin/true"
+subscribes = ["system.*.error"]
+"#;
+        let Err(error) = EmergentConfig::parse(toml) else {
+            panic!("a topic that can never match must not load");
+        };
+        let message = error.to_string();
+        assert!(message.contains("watchdog"), "got: {message}");
+        assert!(message.contains("system.*.error"), "got: {message}");
+    }
+
+    #[test]
+    fn a_mid_string_wildcard_on_a_handler_fails_the_config() {
+        let toml = r#"
+[engine]
+name = "test"
+
+[[handlers]]
+name = "router"
+path = "/bin/true"
+subscribes = ["*.tick"]
+publishes = ["out"]
+"#;
+        let Err(error) = EmergentConfig::parse(toml) else {
+            panic!("a topic that can never match must not load");
+        };
+        let message = error.to_string();
+        assert!(message.contains("router"), "got: {message}");
+        assert!(message.contains("*.tick"), "got: {message}");
+    }
 
     #[test]
     fn test_parse_minimal_config() -> Result<(), Box<dyn std::error::Error>> {

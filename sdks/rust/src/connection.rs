@@ -8,7 +8,9 @@
 use crate::error::ClientError;
 use crate::message::EmergentMessage;
 use crate::stream::MessageStream;
-use crate::subscribe::{IntoSubscription, needs_configured_topics, resolve_topics};
+use crate::subscribe::{
+    IntoSubscription, needs_configured_topics, partition_topics, resolve_topics,
+};
 use crate::types::{CorrelationId, PrimitiveName};
 use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
@@ -248,14 +250,22 @@ async fn push_to_message_stream(
 /// Subscribe on an `IpcClient` and return a `MessageStream`.
 ///
 /// Shared implementation used by both Handler and Sink.
+///
+/// Topics are split into literal message types and terminal-wildcard selectors
+/// such as `tick.*` or `*`. The two travel as separate IPC requests because the
+/// engine keeps two indexes, and a connection matching through both still
+/// receives one copy of each message. A topic that could never match, such as
+/// `system.*.error`, fails here before either request is sent.
 async fn subscribe_and_stream(
     client: &IpcClient,
     topics: Vec<String>,
     name: &str,
     shutdown_kind: &str,
 ) -> Result<(MessageStream, Vec<String>)> {
+    let partition = partition_topics(topics)?;
+
     // Add system.shutdown to subscriptions (SDK handles it internally)
-    let mut all_types = topics;
+    let mut all_types = partition.exact;
     if !all_types.iter().any(|t| t == "system.shutdown") {
         all_types.push("system.shutdown".to_string());
     }
@@ -272,6 +282,25 @@ async fn subscribe_and_stream(
                 .error
                 .unwrap_or_else(|| "unknown error".to_string()),
         ));
+    }
+
+    let mut pattern_subs = Vec::new();
+    if !partition.patterns.is_empty() {
+        let pattern_response = client
+            .subscribe_patterns(partition.patterns)
+            .await
+            .map_err(|e| {
+                ClientError::SubscriptionFailed(format!("pattern subscribe failed: {e}"))
+            })?;
+
+        if !pattern_response.success {
+            return Err(ClientError::SubscriptionFailed(
+                pattern_response
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string()),
+            ));
+        }
+        pattern_subs = pattern_response.subscribed_patterns;
     }
 
     // Take the push receiver and bridge to MessageStream
@@ -294,6 +323,7 @@ async fn subscribe_and_stream(
         .subscribed_types
         .into_iter()
         .filter(|s| s != "system.shutdown")
+        .chain(pattern_subs)
         .collect();
 
     Ok((MessageStream::new(rx), user_subs))

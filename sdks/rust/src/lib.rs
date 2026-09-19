@@ -74,7 +74,7 @@ pub mod helpers;
 mod message;
 pub mod prelude;
 mod stream;
-mod subscribe;
+pub mod subscribe;
 pub mod types;
 
 pub use connection::{
@@ -83,7 +83,10 @@ pub use connection::{
 pub use error::ClientError;
 pub use message::{EmergentMessage, create_message};
 pub use stream::MessageStream;
-pub use subscribe::IntoSubscription;
+pub use subscribe::{
+    IntoSubscription, InvalidTopic, MAX_PATTERN_LEN, TopicKind, classify_topic, pattern_prefix,
+    topic_matches,
+};
 
 /// Result type for client operations.
 pub type Result<T> = std::result::Result<T, ClientError>;

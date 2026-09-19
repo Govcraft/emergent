@@ -103,22 +103,21 @@ impl MessageType {
         self.0.split('.').next()
     }
 
-    /// Checks if this message type matches a pattern with wildcards.
+    /// Checks whether this message type matches a subscription topic.
     ///
-    /// Supports `*` at the end to match any suffix.
+    /// This is the engine's own rule, shared with [`crate::subscribe::topic_matches`]:
+    /// a literal topic matches only itself, and a topic ending in a single `*`
+    /// matches every message type starting with the text before the star.
+    ///
     /// Examples:
     /// - "timer.tick" matches "timer.tick" (exact)
     /// - "timer.tick" matches "timer.*" (wildcard)
     /// - "system.started.timer" matches "system.started.*" (wildcard)
+    /// - "timer.tick" matches "*" (every message type)
+    /// - "timer.tick" does not match "*.tick": the wildcard must be terminal
     #[must_use]
     pub fn matches_pattern(&self, pattern: &str) -> bool {
-        if let Some(prefix) = pattern.strip_suffix(".*") {
-            self.0.starts_with(prefix)
-                && self.0.len() > prefix.len()
-                && self.0.as_bytes().get(prefix.len()) == Some(&b'.')
-        } else {
-            self.0 == pattern
-        }
+        crate::subscribe::topic_matches(pattern, &self.0)
     }
 }
 
@@ -247,6 +246,29 @@ mod tests {
         assert!(msg_type.matches_pattern("system.started.*"));
         assert!(msg_type.matches_pattern("system.*"));
         assert!(!msg_type.matches_pattern("user.*"));
+        Ok(())
+    }
+
+    #[test]
+    fn matches_pattern_bare_star() -> Result<(), InvalidMessageType> {
+        let msg_type = MessageType::new("system.started.timer")?;
+        assert!(msg_type.matches_pattern("*"));
+        Ok(())
+    }
+
+    #[test]
+    fn matches_pattern_wildcard_need_not_follow_a_dot() -> Result<(), InvalidMessageType> {
+        let msg_type = MessageType::new("system.started.timer")?;
+        assert!(msg_type.matches_pattern("system.star*"));
+        assert!(!msg_type.matches_pattern("system.starx*"));
+        Ok(())
+    }
+
+    #[test]
+    fn matches_pattern_rejects_a_non_terminal_wildcard() -> Result<(), InvalidMessageType> {
+        let msg_type = MessageType::new("system.started.timer")?;
+        assert!(!msg_type.matches_pattern("system.*.timer"));
+        assert!(!msg_type.matches_pattern("*.timer"));
         Ok(())
     }
 
