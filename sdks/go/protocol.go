@@ -28,10 +28,10 @@ const (
 	MsgTypeStream      byte = 0x09
 
 	// MsgTypeSubscribePatterns subscribes to IPC prefix patterns.
-	// Requires engine 0.10.11 or later.
+	// Requires an engine newer than 0.10.10.
 	MsgTypeSubscribePatterns byte = 0x0a
 	// MsgTypeUnsubscribePatterns unsubscribes from IPC prefix patterns.
-	// Requires engine 0.10.11 or later.
+	// Requires an engine newer than 0.10.10.
 	MsgTypeUnsubscribePatterns byte = 0x0b
 )
 
