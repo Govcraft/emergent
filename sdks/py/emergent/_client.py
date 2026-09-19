@@ -32,8 +32,10 @@ from ._protocol import (
 )
 from .errors import (
     ConnectionError,
+    DiscoveryError,
     DisposedError,
     SocketNotFoundError,
+    SubscriptionError,
     TimeoutError,
 )
 from .stream import MessageStream
@@ -472,7 +474,7 @@ class BaseClient:
                 response.error,
             )
             stream.close()
-            raise ConnectionError(response.error or "Subscription failed")
+            raise SubscriptionError(response.error or "Subscription failed", exact_types)
 
         if patterns:
             # Patterns travel on their own request because the engine keeps a
@@ -495,7 +497,9 @@ class BaseClient:
                     pattern_response.error,
                 )
                 stream.close()
-                raise ConnectionError(pattern_response.error or "Pattern subscription failed")
+                raise SubscriptionError(
+                    pattern_response.error or "Pattern subscription failed", patterns
+                )
 
         # Track subscribed types (exclude internal system.shutdown)
         for t in message_types:
@@ -692,13 +696,13 @@ class BaseClient:
 
         if not response.success:
             logger.error("discovery failed primitive=%s error=%s", self.name, response.error)
-            raise ConnectionError(response.error or "Discovery failed")
+            raise DiscoveryError(response.error or "Discovery failed")
 
         try:
             info = discovery_info_from_response(response)
         except ValidationError as err:
             logger.error("discovery response malformed primitive=%s error=%s", self.name, err)
-            raise ConnectionError(f"Malformed discovery response: {err}") from err
+            raise DiscoveryError(f"Malformed discovery response: {err}") from err
 
         logger.debug(
             "discovery complete primitive=%s message_types=%d primitives=%d",
@@ -741,7 +745,10 @@ class BaseClient:
         )
 
         if not sub_response.success:
-            raise ConnectionError(sub_response.error or "Failed to subscribe to response type")
+            raise SubscriptionError(
+                sub_response.error or "Failed to subscribe to response type",
+                ["system.response.subscriptions"],
+            )
 
         # Create promise to wait for response
         loop = asyncio.get_event_loop()
@@ -811,7 +818,10 @@ class BaseClient:
         )
 
         if not sub_response.success:
-            raise ConnectionError(sub_response.error or "Failed to subscribe to response type")
+            raise SubscriptionError(
+                sub_response.error or "Failed to subscribe to response type",
+                ["system.response.topology"],
+            )
 
         # Create promise to wait for response
         loop = asyncio.get_event_loop()
