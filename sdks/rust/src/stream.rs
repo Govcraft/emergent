@@ -1,8 +1,10 @@
 //! Message stream for receiving pushed messages.
 
 use crate::message::EmergentMessage;
+use acton_reactive::ipc::IpcClient;
 use futures::Stream;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
@@ -32,12 +34,32 @@ use tokio::sync::mpsc;
 pub struct MessageStream {
     /// The receiver channel for incoming messages.
     receiver: mpsc::Receiver<EmergentMessage>,
+    /// Optional owner of the IPC connection feeding this stream.
+    ///
+    /// Constructors that hand back only the stream, such as
+    /// `EmergentSink::messages`, park the client here. Without it the client
+    /// would drop when the constructor returns, closing the connection and
+    /// with it the stream, before the caller ever read a message.
+    _connection: Option<Arc<IpcClient>>,
 }
 
 impl MessageStream {
     /// Create a new message stream from a receiver channel.
     pub(crate) fn new(receiver: mpsc::Receiver<EmergentMessage>) -> Self {
-        Self { receiver }
+        Self {
+            receiver,
+            _connection: None,
+        }
+    }
+
+    /// Tie the lifetime of the IPC connection to this stream.
+    ///
+    /// Used by constructors that do not return the primitive itself, so the
+    /// connection outlives the call that created it.
+    #[must_use]
+    pub(crate) fn owning(mut self, client: Arc<IpcClient>) -> Self {
+        self._connection = Some(client);
+        self
     }
 
     /// Receive the next message from the stream.

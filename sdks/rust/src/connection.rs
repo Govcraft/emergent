@@ -1265,7 +1265,10 @@ impl EmergentSink {
             Vec::new()
         };
         let topics = resolve_topics(requested, configured);
-        sink.subscribe(topics).await
+        let client = Arc::clone(&sink.client);
+        // The sink itself is dropped when this function returns, so hand its
+        // connection to the stream, which is all the caller gets back.
+        Ok(sink.subscribe(topics).await?.owning(client))
     }
 
     /// Subscribe to message types and return a stream of incoming messages.
