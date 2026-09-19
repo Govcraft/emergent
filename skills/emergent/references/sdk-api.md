@@ -414,6 +414,18 @@ subscriber with an empty `ID`. A header that cannot be trusted (an oversized
 length, a wrong protocol version) still drops the buffer, because nothing says
 where the next frame starts.
 
+### A socket that takes only part of a frame
+
+After SDK release 0.13.1 the TypeScript SDK writes every byte of a frame and
+writes frames one at a time. On 0.13.1 and earlier it called `Deno.Conn.write`
+once and ignored the byte count, so a full socket buffer (a large payload, a
+slow engine) could leave half a frame on the wire, after which the engine could
+not find the next frame on that connection (Govcraft/emergent#69). Python, Go
+and Rust never had the gap: asyncio's transport keeps what the socket does not
+take and sends it in order, Go's `net.Conn.Write` writes everything or returns
+an error, and Rust hands every frame to acton-reactive's one writer task, which
+uses `write_all`.
+
 ### Cargo.toml
 
 ```toml
