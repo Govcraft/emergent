@@ -309,7 +309,9 @@ pub fn render_primitive_files(
     let filenames = registry.files_for(language, primitive_type);
 
     if filenames.is_empty() {
-        return Err(format!("No templates found for {language} {primitive_type}"));
+        return Err(format!(
+            "No templates found for {language} {primitive_type}"
+        ));
     }
 
     filenames
