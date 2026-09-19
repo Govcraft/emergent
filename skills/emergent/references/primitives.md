@@ -291,7 +291,7 @@ name = "ws"
 path = "~/.local/share/emergent/primitives/bin/websocket-handler"
 args = ["--prefix", "ws"]
 subscribes = ["ws.connect", "ws.send", "ws.disconnect"]
-publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
+publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.disconnected", "ws.error"]
 ```
 
 **Flags:** `--prefix <PREFIX>` (default `ws`)
@@ -304,17 +304,48 @@ publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
 | Topic | Payload |
 |---|---|
 | `{prefix}.connected` | `{url}` |
-| `{prefix}.frame` | `{data}`. A text frame is JSON-parsed, falling back to the raw string. A binary frame is base64 |
-| `{prefix}.closed` | `{url, code, reason}` |
-| `{prefix}.error` | `{url, error}` |
+| `{prefix}.frame` | `{data}`. A text frame is JSON-parsed, falling back to the raw string. A binary frame is base64 after primitives 0.11.0; on 0.11.0 and earlier it arrived as the literal string `[object Blob]` |
+| `{prefix}.closed` | The handler was asked to end the connection. Payload below |
+| `{prefix}.disconnected` | The connection ended and nobody asked. After primitives 0.11.0 only. Payload below |
+| `{prefix}.error` | `{url, error}`. Diagnostic, never terminal |
+
+After primitives 0.11.0 every connection publishes exactly one terminal event,
+decided by intent rather than by close code:
+
+| Event | `cause` | Reconnect? |
+|---|---|---|
+| `{prefix}.closed` | `disconnect` (a disconnect message), `reconnect` (a newer connect replaced it), `shutdown` (the handler is stopping) | No |
+| `{prefix}.disconnected` | `remote_close` (the peer sent a close frame), `connection_lost` (dropped with no close frame), `connect_failed` (never opened) | Yes, if you want it back |
+
+Both carry `{url, code, reason, was_clean, cause, opened, error}`. An ending
+with no close frame is always `code` 1006. `opened` is false when the
+connection failed before it was established. `error` is the first socket error
+seen, or null.
+
+Reconnection is a subscriber, not a flag: a handler on `{prefix}.disconnected`
+republishes `{prefix}.connect`. A dropped connection publishes `error` and then
+`disconnected`, so drive the reconnect from `disconnected` alone or the flow
+reconnects twice. Put a delay or a retry count in that handler, because a
+refused connect publishes `disconnected` at once and the loop is otherwise
+tight. A half-open connection (the network is gone with no FIN or RST) is only
+noticed when the OS gives up on it.
+
+On 0.11.0 and earlier there is no `disconnected`: `closed` carried only
+`{url, code, reason}` and covered remote closes too, a handler shutdown
+published nothing, and a connect while connected published `closed` with the
+new URL and orphaned the new socket. Do not build reconnection on those
+versions.
 
 Topic names are resolved by suffix (`.connect`, `.send`, `.frame`, and so on)
 from the config's `subscribes` and `publishes`, falling back to `--prefix`, so
-the config wins over the flag. One connection at a time: a new connect closes
-the old one. A send with no open socket publishes an error event, and a
-non-string send payload is JSON-stringified. Events carry `causation_id` but do
-**not** propagate `correlation_id`, so carry a key in the payload if you need to
-trace across the bridge.
+the config wins over the flag. A topology that declares `slack.closed` and no
+`disconnected` type gets `slack.disconnected`, which nothing routes until you
+declare and subscribe to it. One connection at a time: a new connect closes the
+old one. A send with no open socket publishes an error event, and a non-string
+send payload is JSON-stringified. Every event of a connection carries the
+connect message's id as `causation_id` but does **not** propagate
+`correlation_id`, so carry a key in the payload if you need to trace across the
+bridge.
 
 ---
 
