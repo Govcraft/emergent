@@ -18,27 +18,27 @@ On engine 0.10.10 and earlier an unknown key was ignored without a word, so `ret
 This example shows all three primitive types: a marketplace exec-source running a shell command, a Deno-based TypeScript handler, and a Python sink. The `path` field for each primitive points to any executable -- the engine spawns these as child processes.
 
 ```toml
-# =============================================================================
+# ======================================================================
 # Engine Settings
-# =============================================================================
+# ======================================================================
 
 [engine]
 name = "emergent"
 socket_path = "auto"
 # api_port = 8891  # HTTP API port (0 to disable)
 
-# =============================================================================
+# ======================================================================
 # Event Store Settings
-# =============================================================================
+# ======================================================================
 
 [event_store]
 json_log_dir = "./logs"
 sqlite_path = "./events.db"
 retention_days = 30
 
-# =============================================================================
+# ======================================================================
 # Sources (publish only)
-# =============================================================================
+# ======================================================================
 
 # Marketplace exec-source: run any shell command on an interval
 [[sources]]
@@ -48,9 +48,9 @@ args = ["--command", "date", "--interval", "5000"]
 enabled = true
 publishes = ["timer.tick"]
 
-# =============================================================================
+# ======================================================================
 # Handlers (subscribe and publish)
-# =============================================================================
+# ======================================================================
 
 # TypeScript handler (via Deno)
 [[handlers]]
@@ -61,9 +61,9 @@ enabled = true
 subscribes = ["timer.tick"]
 publishes = ["timer.filtered", "filter.processed"]
 
-# =============================================================================
+# ======================================================================
 # Sinks (subscribe only)
-# =============================================================================
+# ======================================================================
 
 # Python sink (via uv or python3)
 [[sinks]]
@@ -81,6 +81,7 @@ subscribes = ["timer.filtered", "filter.processed", "system.started.*"]
 name = "emergent"              # Instance name (used in socket path)
 socket_path = "auto"           # Socket location
 api_port = 8891                # HTTP API port (0 to disable)
+max_connections = 1024         # Concurrent IPC connections the engine accepts
 shutdown_drain_ms = 500        # Voluntary-exit window per shutdown phase
 shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
 ```
@@ -90,6 +91,7 @@ shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
 | `name` | `"emergent"` | Engine instance name |
 | `socket_path` | `"auto"` | `"auto"` for XDG-compliant path, or explicit path like `"/tmp/emergent.sock"` |
 | `api_port` | `8891` | HTTP API port for topology queries. Set to `0` to disable. |
+| `max_connections` | unset | Maximum concurrent IPC connections. Leave it out to keep what acton-reactive resolves. |
 | `shutdown_drain_ms` | `500` | How long a shutdown phase waits for its primitives to exit on the `system.shutdown` broadcast alone, before SIGTERM. Sources skip this window because they cannot subscribe. |
 | `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
 
@@ -108,6 +110,26 @@ reach EOF, which ends a Handler's or Sink's subscription stream and, in the Rust
 SDK, trips the same shutdown signal `run_source` already gives a Source. On
 0.10.10 and earlier the primitives were orphaned and kept running until killed by
 hand (Govcraft/emergent#56).
+
+**Connection limit:** every enabled primitive opens exactly one IPC connection
+at startup and holds it for the life of its process, so a topology of 20
+primitives needs 20 connections plus a little headroom. The ceiling comes from
+acton-reactive, which resolves it from `$XDG_CONFIG_HOME/acton/ipc.toml` if that
+file sets `[limits] max_connections`, and otherwise from its own default. Set
+`[engine].max_connections` to override both from `emergent.toml`, and leave the
+key out to accept whatever acton resolves.
+
+On engine 0.10.10 and earlier the engine never looked at the limit. A topology
+larger than the ceiling started anyway: the primitives that lost the race to
+connect were dropped, `/api/topology` still reported them as `running`, and
+nothing said why they were doing no work. After 0.10.10 the engine refuses to
+start when the limit cannot cover every enabled primitive plus 4 reserved
+connections, and the error names the limit, the primitive count and the key to
+raise. The 4 cover one restarting primitive, which can briefly hold both its old
+and its new connection, and transient clients such as a CLI query or the
+topology viewer, which reach `system.request.topology` over the same socket. The
+check runs against the limit that actually took effect, so it catches a ceiling
+set in `ipc.toml` as readily as one set in `emergent.toml`.
 
 `wire_format` is accepted but selects nothing: IPC is always MessagePack. On engine 0.10.10 and earlier the key was silently inert and the startup line reported the value you set. After 0.10.10 the engine warns at startup that the key has no effect and the ready line no longer names a wire format. Leave it out. To read events in a human-readable form, read the JSON event log.
 

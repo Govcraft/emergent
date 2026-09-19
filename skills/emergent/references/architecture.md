@@ -84,6 +84,17 @@ variables above are applied last, so they win over a same-named `env` key.
 4. Sources: Publish messages. Sources have no subscribe API.
 5. Handlers/Sinks: Subscribe to message types, receive push notifications
 
+**One connection per primitive, capped.** A primitive connects once and keeps
+that connection until it exits; publishing reuses the connection's writer rather
+than opening another, so ingress never competes with subscribers for a slot. The
+engine's IPC listener admits at most `max_connections` at a time, a limit
+acton-reactive resolves from `$XDG_CONFIG_HOME/acton/ipc.toml` or its own
+default and `[engine].max_connections` overrides. A connection refused at that
+ceiling gets a typed `connection_rejected` response naming the limit before the
+stream is dropped. After engine 0.10.10 the engine will not start a topology
+whose enabled primitives, plus 4 reserved connections, exceed the effective
+limit.
+
 **A subscription is a literal message type or a terminal-wildcard prefix.**
 The broker keeps two indexes. A literal topic is looked up character for
 character. A topic ending in a single `*` matches every message type that

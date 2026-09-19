@@ -342,10 +342,19 @@ fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
         .with_context(|| format!("Failed to load {}", config_path.display()))
 }
 
-/// Create IPC configuration with the socket path from engine config.
-fn create_ipc_config(socket_path: &std::path::Path) -> IpcConfig {
+/// Create IPC configuration from the engine config.
+///
+/// [`IpcConfig::load`] resolves acton-reactive's own defaults and
+/// `$XDG_CONFIG_HOME/acton/ipc.toml` first. The socket path always comes from
+/// `[engine]`. `max_connections` overrides the resolved limit only when
+/// `[engine].max_connections` is set, so leaving the key out keeps whatever
+/// acton resolved.
+fn create_ipc_config(socket_path: &std::path::Path, max_connections: Option<usize>) -> IpcConfig {
     let mut ipc_config = IpcConfig::load();
     ipc_config.socket.path = Some(socket_path.to_path_buf());
+    if let Some(limit) = max_connections {
+        ipc_config.limits.max_connections = limit;
+    }
     ipc_config
 }
 
@@ -505,7 +514,23 @@ async fn main() -> Result<()> {
     let process_manager = ProcessManager::new(socket_path.clone(), config.engine.api_port);
 
     // Create IPC configuration with our socket path
-    let ipc_config = create_ipc_config(&socket_path);
+    let ipc_config = create_ipc_config(&socket_path, config.engine.max_connections);
+
+    // Refuse to start a topology that cannot fit under the effective connection
+    // limit. This runs after IpcConfig::load so it sees the limit acton
+    // actually resolved, not just the one written in emergent.toml. Without it
+    // the primitives that lose the race to the accept semaphore are dropped
+    // silently, and the engine reports them as running.
+    let max_connections = ipc_config.limits.max_connections;
+    config
+        .check_connection_capacity(max_connections)
+        .context("Connection capacity pre-flight check failed")?;
+    info!(
+        "IPC connection limit: {} ({} enabled primitive(s) plus {} reserved)",
+        max_connections,
+        config.enabled_primitive_count(),
+        emergent_engine::config::RESERVED_IPC_CONNECTIONS
+    );
 
     // Launch the acton runtime
     let mut runtime = ActonApp::launch_async().await;
