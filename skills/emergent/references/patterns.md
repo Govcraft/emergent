@@ -95,18 +95,27 @@ Items and the end event carry the load's `correlation_id` and a `causation_id`
 pointing at the load. The end payload is `{"count": N}`, and an empty array
 publishes it immediately.
 
-Three constraints to design around:
+Three constraints to design around. Through primitives 0.11.0 each one fails
+silently; after 0.11.0 each has a flag or a topic that turns it into an event
+(`references/primitives.md` has the flags and payloads).
 
 - **One collection at a time.** A load arriving while a stream is still running
-  is dropped (again, a warning you only see with `RUST_LOG=warn`). With an
-  interval poller that is usually what you want, because no item is ever in
-  flight twice. Size the interval so a batch normally drains first.
-- **A missing ack stalls it until the engine restarts.** There is no timeout.
-  The ack topic must be something the downstream path always publishes, on the
-  success path and on every failure path. Route each `--error-as` topic to an
-  event that ends in the ack; never leave one on `exec.error`.
-- **Acks are not matched to items.** Any message on the ack topic releases the
-  next item. Keep that topic exclusive to this stream.
+  is dropped. With an interval poller that is usually what you want, because no
+  item is ever in flight twice. Size the interval so a batch normally drains
+  first. On 0.11.0 and earlier the drop is a warning you only see with
+  `RUST_LOG=warn`; after 0.11.0 it is published on `--rejected-topic` with
+  `reason: "busy"`.
+- **A missing ack.** On 0.11.0 and earlier it stalls the stream until the engine
+  restarts, with no timeout. After 0.11.0 set `--ack-timeout-ms`, and route the
+  `--timed-out-topic` event, which carries the item. Either way the ack topic
+  should be something the downstream path always publishes, on the success path
+  and on every failure path: a timeout is a backstop, and each one costs the
+  full wait. Route each `--error-as` topic to an event that ends in the ack;
+  never leave one on `exec.error`.
+- **Acks and items.** Without `--ack-key`, any message on the ack topic releases
+  the next item, so keep that topic exclusive to this stream. After 0.11.0,
+  `--ack-key <field>` releases only on an ack whose field equals the item in
+  flight; use it whenever the items carry an id.
 
 `--ack-topic` takes one topic. A flow with several exits (filed, escalated,
 rejected) needs a fan-in handler that turns each exit into the one ack, like
@@ -1052,7 +1061,8 @@ publishes = ["issue.found"]
 ```
 
 `--host` defaults to `0.0.0.0`. An injection endpoint is an actuator, so bind it
-to loopback. The payload is `{method, path, headers, body, remote_addr}`; the
+to loopback. The payload is `{method, path, query, headers, body, remote_addr}`
+(`query` after primitives 0.11.0); the
 handler above unwraps `.body` into whatever type you want to simulate.
 
 This is also how you replay. The engine has no replay command, so replaying an

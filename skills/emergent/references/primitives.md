@@ -246,16 +246,29 @@ publishes = ["http.request"]
 `--secret <SECRET>` for signature validation. Each reads an environment
 variable: `HTTP_SOURCE_PORT`, `HTTP_SOURCE_HOST`, `HTTP_SOURCE_PATH`,
 `HTTP_SOURCE_SECRET`. Prefer the variable for the secret so it stays out of
-`emergent.toml`.
+`emergent.toml`. After primitives 0.11.0 there is also `--trust-forwarded-for`
+(off), described below.
 
 With a secret set, a request must carry an `X-Signature` header holding the hex
 HMAC-SHA256 of the raw body, with an optional `sha256=` prefix. A missing or
 wrong signature gets `401`. A published request gets `202`.
 
 **Publishes:** the first entry of `publishes` (default `http.request`) with
-`{"method", "path", "headers", "body", "remote_addr"}`. `body` is the parsed
-JSON, or the raw body as a string when it is not JSON. `path` is always `"/"`
-and `remote_addr` is always `null` today, so do not route on either.
+`{"method", "path", "query", "headers", "body", "remote_addr"}`. `body` is the
+parsed JSON, or the raw body as a string when it is not JSON.
+
+- On primitives 0.11.0 and earlier `path` is always `"/"`, `remote_addr` is
+  always `null` and there is no `query`, so do not route on any of them.
+- After 0.11.0 `path` is the requested path without the query string, so
+  `select(.path == "/inject")` is a stable route. `query` is the raw, undecoded
+  query string, or `null`. `remote_addr` is the IP of the socket peer, with no
+  port.
+
+`remote_addr` ignores `X-Forwarded-For` by default, because a direct caller can
+write anything in that header. Pass `--trust-forwarded-for` only when the source
+sits behind a reverse proxy that overwrites the header; the leftmost hop is then
+reported, and a malformed header falls back to the socket peer. On a directly
+exposed port the flag lets every caller name itself, so leave it off.
 
 The request body never becomes an event of its own type. It arrives nested under
 `.body`, with no `correlation_id` and no `causation_id`, so the first handler
@@ -323,7 +336,8 @@ publishes = ["work.item", "batch.complete"]
 ```
 
 As with `exec-handler`, the `publishes` array overrides the topic flags by
-position: keep it `[item, end]`.
+position: keep it `[item, end]`, or after primitives 0.11.0
+`[item, end, rejected, timed out]`.
 
 **Flags**
 
@@ -334,27 +348,51 @@ position: keep it `[item, end]`.
 | `--ack-topic` | `stream.ack` | Topic that advances the stream |
 | `--end-topic` | `stream.end` | Published when exhausted, payload `{"count": N}` |
 | `--items-key` | `items` | Object key holding the array (ignored for a bare array) |
+| `--rejected-topic` | `stream.rejected` | After 0.11.0. Published when a load is dropped |
+| `--timed-out-topic` | `stream.item-timed-out` | After 0.11.0. Published when an ack does not arrive in time |
+| `--ack-key` | unset | After 0.11.0. Field that must agree between an item and its ack |
+| `--ack-timeout-ms` | unset | After 0.11.0. How long an item may wait for its ack |
+| `--on-timeout` | `skip` | After 0.11.0. `skip` the item or `end` the run; needs `--ack-timeout-ms` |
 
 This is **the splitter**: the one marketplace primitive that turns a collection
 into per-item events. It is also the pacing mechanism, because those are the
 same behavior: one item in flight until the ack fires.
 
-Two constraints to design around:
+What to design around depends on the version, because through primitives
+0.11.0 every one of these failures was silent.
 
 - **One collection at a time.** A `load` arriving while a stream is still
-  running is dropped, not queued, and the drop is only logged at
-  `RUST_LOG=warn` or lower, so by default it is silent. With an interval source, gate the
-  poll on the end topic or size the interval so a batch drains first.
-- **A missing ack stalls the stream permanently.** Whatever you name as the ack
-  topic must be published on the failure path as well as the success path. The
-  runner stays in its streaming state, so every later load is dropped too, until
-  restart.
-- **Acks are not matched to items.** Any message on the ack topic advances the
-  stream, so a duplicate ack skips an item. Make sure exactly one ack fires per
-  item across all paths.
-- **A malformed load is dropped without an end event.** A payload missing
-  `--items-key`, or whose key is not an array, publishes nothing. An empty
-  collection publishes the end event `{"count": 0}` immediately.
+  running is dropped, not queued. With an interval source, gate the poll on the
+  end topic or size the interval so a batch drains first. On 0.11.0 and earlier
+  the drop is only logged at `RUST_LOG=warn` or lower, so by default it is
+  silent. After 0.11.0 it is published on the rejected topic with
+  `reason: "busy"` and the dropped load intact under `.payload`. Do not wire
+  that straight back to the load topic: the stream is still busy and the
+  rejection would loop. Park it and replay it on the end event.
+- **A malformed load.** A payload missing `--items-key`, or whose key is not an
+  array, publishes nothing on 0.11.0 and earlier. After 0.11.0 it is published
+  on the rejected topic with `reason: "bad_shape"`, and a raw `exec-source`
+  envelope gets a `hint` to unwrap it first. An empty collection publishes the
+  end event with `count: 0` immediately on every version.
+- **Acks and items.** Without `--ack-key`, any message on the ack topic advances
+  the stream, so a duplicate or late ack puts two items in flight; make sure
+  exactly one ack fires per item across all paths. After 0.11.0,
+  `--ack-key <field>` advances only when `ack[field]` equals the same field on
+  the item in flight. The field must be present and non-null on both sides, so
+  a collection of bare strings cannot use it. A mismatched ack is logged at WARN
+  and not published.
+- **A missing ack.** On 0.11.0 and earlier it stalls the stream until restart,
+  and every later load is dropped too, so the ack topic must be published on the
+  failure path as well as the success path. After 0.11.0, `--ack-timeout-ms`
+  bounds the wait: the item is published on the timed-out topic under `.item`,
+  and `--on-timeout` either skips it or ends the run with `incomplete: true`.
+  Pair it with `--ack-key`, or an ack that arrives after its item timed out
+  advances the stream a second time.
+
+After 0.11.0 the end event is
+`{"count", "total", "timed_out", "incomplete"}`; `count` and `total` differ only
+when a run ended early. Route the rejected and timed-out topics with `jq`
+selectors on `.reason`, the same way `jev-handler` error kinds are routed.
 
 The ack topic is normally the downstream stage's own output, so consumption rate
 sets the pace. The load message's `correlation_id` is replayed onto every item

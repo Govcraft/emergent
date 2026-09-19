@@ -232,7 +232,8 @@ are load-bearing, and each was a real defect before it was a rule:
   its last command's status, and the last command is `jq`. Without `pipefail` a
   `claude` that fails on auth or the network leaves `jq` reading nothing: exit
   0, empty stdout, no event on either topic, and a `stream-runner` behind it
-  stalls for good. A failed `pdftotext | jq -R -s '{text: .}'` is worse, because
+  stalls for good (or, with `--ack-timeout-ms`, until that item times out). A
+  failed `pdftotext | jq -R -s '{text: .}'` is worse, because
   it publishes a success event with empty text. With `pipefail` both publish the
   error topic with the act's own exit code and stderr. It is a shell option, not
   logic. Use `bash -c`, since not every `sh` has it.
@@ -607,10 +608,10 @@ cost.
 `http-source`, or read one out of the event store and POST it back) and get
 sensible behavior? If a
 primitive only works when its predecessor just ran, they are coupled through
-hidden state. One caution behind a `stream-runner`: acks are not matched to
-items, so an injected item that reaches the ack topic releases the stream's next
-item early. Say which you chose, a separate exit for injected items or the
-skew.
+hidden state. One caution behind a `stream-runner`: without `--ack-key` (added
+after primitives 0.11.0) acks are not matched to items, so an injected item that
+reaches the ack topic releases the stream's next item early. Say which you
+chose: `--ack-key`, a separate exit for injected items, or the skew.
 
 **The concurrency test.** If ten items arrive at once, do ten flow through
 independently, or does something serialize them? Trace one item's path and name
