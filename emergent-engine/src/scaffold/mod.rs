@@ -34,6 +34,7 @@
 pub mod cli;
 pub mod handler;
 pub mod messages;
+pub mod outcome;
 pub mod sdk;
 pub mod sink;
 pub mod source;
@@ -44,7 +45,7 @@ use acton_reactive::prelude::*;
 use cli::ScaffoldArgs;
 use handler::build_template_handler_actor;
 use sink::{ScaffoldCompleteMessage, build_file_writer_actor};
-use source::{StartScaffold, build_cli_source_actor};
+use source::{ScaffoldAborted, StartScaffold, build_cli_source_actor};
 
 /// Run the scaffold command with the given arguments.
 ///
@@ -56,7 +57,10 @@ use source::{StartScaffold, build_cli_source_actor};
 ///
 /// # Errors
 ///
-/// Returns an error if the actor runtime fails to shut down.
+/// Returns an error if any file the scaffold was asked to produce failed, if
+/// the run ended before reporting a result, or if the actor runtime fails to
+/// shut down. The command exits non-zero in each case, so a partial crate on
+/// disk is never reported as success.
 pub async fn run_scaffold(args: ScaffoldArgs) -> anyhow::Result<()> {
     // Create a new acton runtime for the scaffold operation
     let mut runtime = ActonApp::launch_async().await;
@@ -69,15 +73,33 @@ pub async fn run_scaffold(args: ScaffoldArgs) -> anyhow::Result<()> {
     // Create a completion listener
     let mut completion_actor = runtime.new_actor_with_name::<()>("scaffold_completion".to_string());
 
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    // The outcome of the run: `Err` carries the message the command fails with.
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let tx = std::sync::Arc::new(tokio::sync::Mutex::new(Some(tx)));
 
     let tx_clone = tx.clone();
-    completion_actor.act_on::<ScaffoldCompleteMessage>(move |_actor, _envelope| {
+    completion_actor.act_on::<ScaffoldCompleteMessage>(move |_actor, envelope| {
         let tx = tx_clone.clone();
+        let outcome = envelope.message().result.error.clone().map_or(Ok(()), Err);
         Reply::pending(async move {
             if let Some(tx) = tx.lock().await.take() {
-                let _ = tx.send(());
+                let _ = tx.send(outcome);
+            }
+        })
+    });
+
+    let tx_clone = tx.clone();
+    completion_actor.act_on::<ScaffoldAborted>(move |_actor, envelope| {
+        let tx = tx_clone.clone();
+        let msg = envelope.message();
+        let outcome = if msg.cancelled {
+            Ok(())
+        } else {
+            Err(msg.reason.clone())
+        };
+        Reply::pending(async move {
+            if let Some(tx) = tx.lock().await.take() {
+                let _ = tx.send(outcome);
             }
         })
     });
@@ -86,31 +108,33 @@ pub async fn run_scaffold(args: ScaffoldArgs) -> anyhow::Result<()> {
     completion_handle
         .subscribe::<ScaffoldCompleteMessage>()
         .await;
+    completion_handle.subscribe::<ScaffoldAborted>().await;
 
     // Trigger the workflow
     source_handle.send(StartScaffold { args }).await;
 
-    // Wait for completion with a timeout
+    // Wait for the outcome with a timeout
     let timeout = tokio::time::Duration::from_secs(30);
-    match tokio::time::timeout(timeout, rx).await {
-        Ok(Ok(())) => {
-            // Success - let the actors clean up
+    let outcome = match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(outcome)) => {
+            // Let the actors finish their current work before shutdown.
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            outcome
         }
-        Ok(Err(_)) => {
-            // Channel closed unexpectedly
-            eprintln!("Scaffold workflow ended unexpectedly");
-        }
-        Err(_) => {
-            // Timeout
-            eprintln!("Scaffold workflow timed out");
-        }
-    }
+        Ok(Err(_)) => Err("the scaffold workflow ended before reporting a result".to_string()),
+        Err(_) => Err(format!(
+            "the scaffold workflow timed out after {} seconds",
+            timeout.as_secs()
+        )),
+    };
 
     // Shutdown the runtime
     runtime.shutdown_all().await?;
 
-    Ok(())
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(reason) => Err(anyhow::anyhow!(reason)),
+    }
 }
 
 #[cfg(test)]

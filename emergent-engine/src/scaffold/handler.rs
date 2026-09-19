@@ -7,6 +7,7 @@ use acton_reactive::prelude::*;
 
 use crate::scaffold::cli::build_template_context;
 use crate::scaffold::messages::{Language, PrimitiveType, TemplateRendered};
+use crate::scaffold::outcome::TemplateFailure;
 use crate::scaffold::source::ScaffoldRequestMessage;
 use crate::scaffold::templates::{TemplateRegistry, render_template};
 
@@ -24,11 +25,14 @@ pub struct TemplateRenderedMessage {
     pub output_dir: std::path::PathBuf,
 }
 
-/// Message indicating all templates have been rendered.
+/// Message indicating the template handler has finished.
+///
+/// It reports what the run was asked to produce as well as what it produced,
+/// so a run that failed part way cannot be mistaken for a smaller success.
 #[acton_message]
 #[derive(Clone)]
 pub struct AllTemplatesRendered {
-    /// Total number of files rendered.
+    /// Number of files the run was asked to produce.
     pub total_files: usize,
     /// Whether this is a dry run.
     pub dry_run: bool,
@@ -38,6 +42,8 @@ pub struct AllTemplatesRendered {
     pub output_dir: std::path::PathBuf,
     /// List of files that were rendered.
     pub files: Vec<String>,
+    /// Files the run was asked to produce and could not.
+    pub failures: Vec<TemplateFailure>,
     /// The language used for code generation.
     pub language: Language,
     /// Name of the primitive.
@@ -73,28 +79,19 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
             let registry = TemplateRegistry::new();
             let context = build_template_context(&request);
 
-            // Check if we have templates for this language
-            if !registry.has_language(request.language) {
-                eprintln!(
-                    "No templates available for language: {}. Only Rust is currently supported.",
-                    request.language
-                );
-                return;
-            }
-
             // Get list of files to generate
             let files = registry.files_for(request.language, request.primitive_type);
             let total_files = files.len();
 
-            if total_files == 0 {
-                eprintln!(
-                    "No templates found for {} {}",
-                    request.language, request.primitive_type
-                );
-                return;
-            }
-
             let mut rendered_files = Vec::new();
+            let mut failures = Vec::new();
+
+            if files.is_empty() {
+                failures.push(TemplateFailure::new(
+                    format!("{} {}", request.language, request.primitive_type),
+                    "no templates are registered for this language and primitive type",
+                ));
+            }
 
             // Render each template
             for (index, filename) in files.iter().enumerate() {
@@ -102,7 +99,7 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                     match registry.get(request.language, request.primitive_type, filename) {
                         Some(content) => content,
                         None => {
-                            eprintln!("Template not found: {filename}");
+                            failures.push(TemplateFailure::new(*filename, "template not found"));
                             continue;
                         }
                     };
@@ -128,18 +125,19 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                         broker.broadcast(msg).await;
                     }
                     Err(e) => {
-                        eprintln!("Failed to render {filename}: {e}");
+                        failures.push(TemplateFailure::new(*filename, e));
                     }
                 }
             }
 
             // Signal completion
             let complete = AllTemplatesRendered {
-                total_files: rendered_files.len(),
+                total_files,
                 dry_run: request.dry_run,
                 json_output: request.json_output,
                 output_dir: request.output_dir,
                 files: rendered_files,
+                failures,
                 language: request.language,
                 name: request.name,
                 primitive_type: request.primitive_type,
