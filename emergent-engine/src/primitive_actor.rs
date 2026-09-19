@@ -27,8 +27,9 @@ use crate::supervision::{
     RestartDecision, RestartLimits, RestartPolicy, decide_restart, outcome_from_exit_code,
     prune_attempts,
 };
+use crate::topology::ENGINE_PRIMITIVE_NAME;
 use acton_reactive::prelude::*;
-use emergent_client::types::Timestamp;
+use emergent_client::types::{InvalidMessageType, PrimitiveName, Timestamp};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -414,7 +415,7 @@ async fn spawn_primitive_child(
                 })
                 .await;
             let event = create_system_event("system.error", &spawn_info, None, Some(e.to_string()));
-            broker.broadcast(event).await;
+            broadcast_lifecycle_event(&broker, &name, "system.error", event).await;
             return;
         }
     };
@@ -442,11 +443,17 @@ async fn spawn_primitive_child(
     // Store the PID via self-message; the actor owns the live state.
     self_handle.send(ChildSpawned { pid }).await;
 
-    let event = match attempt {
-        None => create_system_event("system.started", &spawn_info, Some(pid), None),
-        Some(n) => create_restarted_event(&spawn_info, pid, n),
+    let (event_type, event) = match attempt {
+        None => (
+            "system.started",
+            create_system_event("system.started", &spawn_info, Some(pid), None),
+        ),
+        Some(n) => (
+            "system.restarted",
+            create_restarted_event(&spawn_info, pid, n),
+        ),
     };
-    broker.broadcast(event).await;
+    broadcast_lifecycle_event(&broker, &name, event_type, event).await;
 
     // Monitor the child in a BACKGROUND TASK. The Child handle lives HERE,
     // not in actor state, because it is not Clone.
@@ -491,7 +498,8 @@ async fn spawn_primitive_child(
                     Some(exit_error_message(exit_code))
                 };
                 let event = create_system_event(event_type, &monitor_info, Some(pid), error_msg);
-                monitor_broker.broadcast(event).await;
+                broadcast_lifecycle_event(&monitor_broker, &monitor_info.name, event_type, event)
+                    .await;
             }
             Err(e) => {
                 pid_watch.clear();
@@ -656,7 +664,7 @@ pub fn build_primitive_actor(
                     let broker = actor.broker().clone();
                     Reply::pending(async move {
                         let event = create_system_event("system.error", &info, None, Some(reason));
-                        broker.broadcast(event).await;
+                        broadcast_lifecycle_event(&broker, &info.name, "system.error", event).await;
                     })
                 }
             }
@@ -779,13 +787,39 @@ fn exit_code_from_status(status: &ExitStatus) -> i32 {
     -1
 }
 
-/// Create a system event message wrapped for IPC.
+/// Message type of the event the engine emits when it is shutting down.
+///
+/// A literal, so it cannot fail validation. `shutdown_event_type_is_valid`
+/// guards that against a future rename.
+const SHUTDOWN_EVENT_TYPE: &str = "system.shutdown";
+
+/// The name the engine publishes its own events under.
+///
+/// [`ENGINE_PRIMITIVE_NAME`] is a valid primitive name, so this never falls
+/// back; the fallback exists only to keep the function total.
+/// `engine_source_is_the_engine_primitive_name` guards the invariant.
+fn engine_source() -> PrimitiveName {
+    PrimitiveName::new(ENGINE_PRIMITIVE_NAME).unwrap_or_else(|_| PrimitiveName::unknown())
+}
+
+/// Create a system event message wrapped for IPC (pure function).
+///
+/// The message type is built from the primitive's configured name, which is
+/// runtime data, so this returns an error instead of panicking. Config
+/// validation rejects such a name before anything is spawned; this is the
+/// second line of defense, because a panic here aborts the whole engine and
+/// orphans every child it has spawned.
+///
+/// # Errors
+///
+/// Returns [`InvalidMessageType`] if `event_type` and the primitive's name do
+/// not form a valid message type.
 fn create_system_event(
     event_type: &str,
     info: &PrimitiveInfo,
     pid: Option<u32>,
     error: Option<String>,
-) -> IpcSystemEvent {
+) -> Result<IpcSystemEvent, InvalidMessageType> {
     let payload = match (event_type, error) {
         ("system.started", None) => SystemEventPayload::started(info, pid.unwrap_or(0)),
         ("system.stopped", None) => SystemEventPayload::stopped(info, pid),
@@ -793,26 +827,59 @@ fn create_system_event(
         _ => SystemEventPayload::stopped(info, pid),
     };
 
-    let message = EmergentMessage::new(&format!("{}.{}", event_type, info.name))
-        .with_source("emergent-engine")
+    let message = EmergentMessage::try_new(&format!("{}.{}", event_type, info.name))?
+        .with_source_name(engine_source())
         .with_payload(json!(payload));
 
-    IpcSystemEvent { inner: message }
+    Ok(IpcSystemEvent { inner: message })
 }
 
-/// Create a `system.restarted.<name>` event wrapped for IPC.
-fn create_restarted_event(info: &PrimitiveInfo, pid: u32, attempt: u32) -> IpcSystemEvent {
-    let message = EmergentMessage::new(&format!("system.restarted.{}", info.name))
-        .with_source("emergent-engine")
+/// Create a `system.restarted.<name>` event wrapped for IPC (pure function).
+///
+/// # Errors
+///
+/// Returns [`InvalidMessageType`] if the primitive's name does not form a valid
+/// message type, for the same reason as [`create_system_event`].
+fn create_restarted_event(
+    info: &PrimitiveInfo,
+    pid: u32,
+    attempt: u32,
+) -> Result<IpcSystemEvent, InvalidMessageType> {
+    let message = EmergentMessage::try_new(&format!("system.restarted.{}", info.name))?
+        .with_source_name(engine_source())
         .with_payload(json!(SystemEventPayload::restarted(info, pid, attempt)));
 
-    IpcSystemEvent { inner: message }
+    Ok(IpcSystemEvent { inner: message })
+}
+
+/// Broadcast a lifecycle event, or log why it could not be built.
+///
+/// A name that cannot form a message type is rejected at config load, so the
+/// error arm is a second line of defense: it keeps a bad name from taking the
+/// engine down, at the cost of one missing event.
+async fn broadcast_lifecycle_event(
+    broker: &ActorHandle,
+    primitive: &str,
+    event_type: &str,
+    event: Result<IpcSystemEvent, InvalidMessageType>,
+) {
+    match event {
+        Ok(event) => broker.broadcast(event).await,
+        Err(e) => warn!(
+            primitive = %primitive,
+            error = %e,
+            "Skipping {event_type} event: the primitive name does not form a valid message type"
+        ),
+    }
 }
 
 /// Create a shutdown system event wrapped for IPC.
+///
+/// The message type is a literal here, not runtime data, so this cannot fail.
+/// `kind` only ever reaches the payload.
 pub fn create_shutdown_event(kind: &str) -> IpcSystemEvent {
-    let message = EmergentMessage::new("system.shutdown")
-        .with_source("emergent-engine")
+    let message = EmergentMessage::new(SHUTDOWN_EVENT_TYPE)
+        .with_source_name(engine_source())
         .with_payload(SystemEventPayload::shutdown(kind));
 
     IpcSystemEvent { inner: message }
@@ -946,7 +1013,9 @@ mod tests {
     #[test]
     fn test_restarted_event_type_is_namespaced_by_primitive() {
         let info = make_sink_info("logger", vec!["a".to_string()]);
-        let event = create_restarted_event(&info, 77, 2);
+        let Ok(event) = create_restarted_event(&info, 77, 2) else {
+            panic!("a valid primitive name must form a system.restarted event");
+        };
 
         assert_eq!(event.inner.message_type.as_str(), "system.restarted.logger");
         assert_eq!(event.inner.payload["name"], "logger");
@@ -1141,6 +1210,46 @@ mod tests {
             // Signal 15 (SIGTERM) => 128 + 15 = 143
             let status = ExitStatus::from_raw(15);
             assert_eq!(exit_code_from_status(&status), 143);
+        }
+    }
+
+    #[test]
+    fn engine_source_is_the_engine_primitive_name() {
+        assert_eq!(engine_source().as_str(), ENGINE_PRIMITIVE_NAME);
+        assert!(!engine_source().is_default());
+    }
+
+    #[test]
+    fn shutdown_event_type_is_valid() {
+        assert!(emergent_client::types::MessageType::new(SHUTDOWN_EVENT_TYPE).is_ok());
+        let event = create_shutdown_event("signal");
+        assert_eq!(event.inner.message_type.as_str(), SHUTDOWN_EVENT_TYPE);
+        assert_eq!(event.inner.source.as_str(), ENGINE_PRIMITIVE_NAME);
+    }
+
+    #[test]
+    fn create_system_event_builds_the_type_from_the_primitive_name() {
+        let info = make_source_info("my-source", vec!["timer.tick".to_string()]);
+        let Ok(event) = create_system_event("system.started", &info, Some(7), None) else {
+            panic!("a valid name must produce an event");
+        };
+        assert_eq!(
+            event.inner.message_type.as_str(),
+            "system.started.my-source"
+        );
+        assert_eq!(event.inner.source.as_str(), ENGINE_PRIMITIVE_NAME);
+    }
+
+    #[test]
+    fn create_system_event_reports_an_invalid_name_instead_of_panicking() {
+        // The engine used to panic here, and with panic = "abort" that killed
+        // the engine after the child was already spawned (Govcraft/emergent#42).
+        let info = make_sink_info("Bad Name", vec!["tick.out".to_string()]);
+        for event_type in ["system.started", "system.stopped", "system.error"] {
+            assert!(
+                create_system_event(event_type, &info, Some(7), None).is_err(),
+                "expected {event_type} for 'Bad Name' to report an error"
+            );
         }
     }
 }

@@ -1,6 +1,9 @@
 //! Message types for the Emergent client library.
 
-use crate::types::{CausationId, CorrelationId, MessageId, MessageType, PrimitiveName, Timestamp};
+use crate::types::{
+    CausationId, CorrelationId, InvalidMessageType, InvalidPrimitiveName, MessageId, MessageType,
+    PrimitiveName, Timestamp,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Create a new message with the given type.
@@ -79,12 +82,38 @@ impl EmergentMessage {
     ///
     /// Generates a unique ID and sets the current timestamp.
     ///
+    /// Use [`Self::try_new`] whenever the message type comes from configuration
+    /// or any other runtime string, because this constructor panics on an
+    /// invalid type.
+    ///
     /// # Panics
     ///
     /// Panics if the message type is invalid.
     #[must_use]
     pub fn new(message_type: &str) -> Self {
         Self::new_with_id_and_timestamp(message_type, MessageId::new(), Timestamp::now())
+    }
+
+    /// Create a new message with the given type, returning an error for an invalid type.
+    ///
+    /// This is the constructor to use when the message type is built from
+    /// runtime data: it never panics, so an invalid type cannot take the
+    /// process down.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMessageType`] if `message_type` is not a valid message type.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use emergent_client::EmergentMessage;
+    ///
+    /// assert!(EmergentMessage::try_new("system.started.timer").is_ok());
+    /// assert!(EmergentMessage::try_new("system.started.Bad Name").is_err());
+    /// ```
+    pub fn try_new(message_type: &str) -> Result<Self, InvalidMessageType> {
+        Self::try_new_with_id_and_timestamp(message_type, MessageId::new(), Timestamp::now())
     }
 
     /// Create a new message with explicit ID and timestamp.
@@ -94,44 +123,76 @@ impl EmergentMessage {
     ///
     /// # Panics
     ///
-    /// Panics if the message type is invalid.
+    /// Panics if the message type is invalid. Use
+    /// [`Self::try_new_with_id_and_timestamp`] for runtime-built types.
     #[must_use]
     pub fn new_with_id_and_timestamp(
         message_type: &str,
         id: MessageId,
         timestamp_ms: Timestamp,
     ) -> Self {
-        // For backwards compatibility, we'll panic on invalid message types
-        // In a future version, we might want to return Result instead
-        let msg_type = MessageType::new(message_type)
-            .unwrap_or_else(|e| panic!("invalid message type '{message_type}': {e}"));
+        // Kept panicking for backwards compatibility. The fallible twin below
+        // carries the actual logic.
+        Self::try_new_with_id_and_timestamp(message_type, id, timestamp_ms)
+            .unwrap_or_else(|e| panic!("invalid message type '{message_type}': {e}"))
+    }
 
-        // Use a default source that can be overwritten with with_source()
-        // We use "unknown" as a valid placeholder
-        let source = PrimitiveName::new("unknown")
-            .unwrap_or_else(|e| panic!("failed to create default source: {e}"));
+    /// Create a message with explicit ID and timestamp, returning an error for an invalid type.
+    ///
+    /// Pure and total: same inputs, same output, and no panic path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMessageType`] if `message_type` is not a valid message type.
+    pub fn try_new_with_id_and_timestamp(
+        message_type: &str,
+        id: MessageId,
+        timestamp_ms: Timestamp,
+    ) -> Result<Self, InvalidMessageType> {
+        let msg_type = MessageType::new(message_type)?;
 
-        Self {
+        Ok(Self {
             id,
             message_type: msg_type,
-            source,
+            // Placeholder source, overwritten by with_source()/with_source_name().
+            source: PrimitiveName::unknown(),
             correlation_id: None,
             causation_id: None,
             timestamp_ms,
             payload: serde_json::Value::Null,
             metadata: None,
-        }
+        })
     }
 
     /// Set the source of this message.
     ///
     /// # Panics
     ///
-    /// Panics if the source name is invalid.
+    /// Panics if the source name is invalid. Use [`Self::try_with_source`] for
+    /// runtime-built names, or [`Self::with_source_name`] when you already hold
+    /// a validated [`PrimitiveName`].
     #[must_use]
-    pub fn with_source(mut self, source: &str) -> Self {
-        self.source = PrimitiveName::new(source)
-            .unwrap_or_else(|e| panic!("invalid source name '{source}': {e}"));
+    pub fn with_source(self, source: &str) -> Self {
+        self.try_with_source(source)
+            .unwrap_or_else(|e| panic!("invalid source name '{source}': {e}"))
+    }
+
+    /// Set the source of this message, returning an error for an invalid name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidPrimitiveName`] if `source` is not a valid primitive name.
+    pub fn try_with_source(mut self, source: &str) -> Result<Self, InvalidPrimitiveName> {
+        self.source = PrimitiveName::new(source)?;
+        Ok(self)
+    }
+
+    /// Set the source of this message from an already validated name.
+    ///
+    /// Infallible by construction: the name has been validated already.
+    #[must_use]
+    pub fn with_source_name(mut self, source: PrimitiveName) -> Self {
+        self.source = source;
         self
     }
 
@@ -400,6 +461,66 @@ mod tests {
         assert!(!msg.has_stdout_payload());
         let unwrapped = msg.unwrap_stdout();
         assert_eq!(unwrapped.payload(), &json!({"kind": "handler"}));
+    }
+
+    #[test]
+    fn try_new_accepts_a_valid_type() -> Result<(), Box<dyn std::error::Error>> {
+        let msg = EmergentMessage::try_new("system.started.my-sink")?;
+        assert_eq!(msg.message_type.as_str(), "system.started.my-sink");
+        assert!(msg.source.is_default());
+        Ok(())
+    }
+
+    #[test]
+    fn try_new_rejects_a_type_built_from_an_invalid_name() {
+        // The exact string the engine used to build from a config name with a
+        // space, which aborted the process (Govcraft/emergent#42).
+        assert!(matches!(
+            EmergentMessage::try_new("system.started.Bad Name"),
+            Err(InvalidMessageType::InvalidCharacters { .. })
+        ));
+    }
+
+    #[test]
+    fn try_new_with_id_and_timestamp_is_pure() {
+        let id = MessageId::new();
+        let timestamp = Timestamp::from_millis(1704067200000);
+
+        let first =
+            EmergentMessage::try_new_with_id_and_timestamp("test.event", id.clone(), timestamp);
+        let second = EmergentMessage::try_new_with_id_and_timestamp("test.event", id, timestamp);
+
+        assert_eq!(first.is_ok(), second.is_ok());
+        if let (Ok(a), Ok(b)) = (first, second) {
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.message_type, b.message_type);
+            assert_eq!(a.timestamp_ms, b.timestamp_ms);
+        }
+    }
+
+    #[test]
+    fn try_with_source_accepts_and_rejects_the_same_names_as_primitive_name() {
+        let msg = EmergentMessage::new("test.event");
+        assert!(msg.clone().try_with_source("emergent-engine").is_ok());
+        assert!(matches!(
+            msg.try_with_source("Bad Name"),
+            Err(InvalidPrimitiveName::InvalidStructure { .. })
+        ));
+    }
+
+    #[test]
+    fn with_source_name_takes_an_already_validated_name() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let name = PrimitiveName::new("emergent-engine")?;
+        let msg = EmergentMessage::new("test.event").with_source_name(name.clone());
+        assert_eq!(msg.source, name);
+        Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid message type 'Bad Type'")]
+    fn new_still_panics_on_an_invalid_type() {
+        let _ = EmergentMessage::new("Bad Type");
     }
 
     #[test]

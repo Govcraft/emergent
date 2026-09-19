@@ -50,6 +50,18 @@ impl PrimitiveName {
     /// Maximum length for a primitive name.
     pub const MAX_LENGTH: usize = 64;
 
+    /// Placeholder name used when a message source has not been set explicitly.
+    pub const UNKNOWN: &'static str = "unknown";
+
+    /// Creates the placeholder [`Self::UNKNOWN`] name.
+    ///
+    /// This is infallible by construction, so callers that need a default
+    /// source do not have to handle an error that cannot happen.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self(Self::UNKNOWN.to_string())
+    }
+
     /// Creates a new primitive name after validation.
     ///
     /// # Errors
@@ -100,7 +112,7 @@ impl PrimitiveName {
     /// This is used to check if a source has been explicitly set.
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.0 == "unknown"
+        self.0 == Self::UNKNOWN
     }
 }
 
@@ -209,6 +221,21 @@ mod tests {
         assert!(PrimitiveName::new("has space").is_err());
         assert!(PrimitiveName::new("has.dot").is_err());
         assert!(PrimitiveName::new("has@at").is_err());
+    }
+
+    #[test]
+    fn unknown_is_the_default_placeholder() {
+        let name = PrimitiveName::unknown();
+        assert_eq!(name.as_str(), PrimitiveName::UNKNOWN);
+        assert!(name.is_default());
+    }
+
+    #[test]
+    fn unknown_passes_the_same_validation_as_a_parsed_name() {
+        assert_eq!(
+            PrimitiveName::new(PrimitiveName::UNKNOWN).ok(),
+            Some(PrimitiveName::unknown())
+        );
     }
 
     #[test]

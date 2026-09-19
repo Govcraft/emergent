@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 use dialoguer::{Input, Select, theme::ColorfulTheme};
+use emergent_client::types::PrimitiveName;
 use heck::{ToSnakeCase, ToUpperCamelCase};
 
 use crate::scaffold::messages::{Language, PrimitiveType, ScaffoldRequest, TemplateContext};
@@ -133,7 +134,12 @@ fn parse_comma_list(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Validate that a name is valid snake_case.
+/// Validate that a name is valid snake_case and usable as a primitive name.
+///
+/// The generated primitive goes into a config under this name, and the engine
+/// turns that name into the last segment of its `system.started.<name>` event,
+/// so the SDK rule has the final say. That keeps scaffold from generating a
+/// name the config loader would reject.
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("Name cannot be empty".to_string());
@@ -155,7 +161,11 @@ fn validate_name(name: &str) -> Result<(), String> {
         return Err("Name cannot start with a number".to_string());
     }
 
-    Ok(())
+    // Defer to the SDK rule the engine enforces at config load, so the two
+    // cannot drift apart. This is what rejects an over-long name.
+    PrimitiveName::new(name)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Run the interactive wizard to collect scaffold parameters.
@@ -399,6 +409,30 @@ mod tests {
         assert!(validate_name("MySource").is_err()); // not snake_case
         assert!(validate_name("my-source").is_err()); // has hyphen
         assert!(validate_name("1source").is_err()); // starts with number
+    }
+
+    #[test]
+    fn validate_name_rejects_a_name_the_config_loader_would_reject() {
+        let too_long = "a".repeat(PrimitiveName::MAX_LENGTH + 1);
+        assert!(PrimitiveName::new(too_long.as_str()).is_err());
+        assert!(validate_name(&too_long).is_err());
+    }
+
+    #[test]
+    fn every_name_scaffold_accepts_is_a_valid_primitive_name() {
+        for name in [
+            "my_source",
+            "timer_handler",
+            "console_sink",
+            "a",
+            &"a".repeat(PrimitiveName::MAX_LENGTH),
+        ] {
+            assert!(validate_name(name).is_ok(), "expected '{name}' accepted");
+            assert!(
+                PrimitiveName::new(name).is_ok(),
+                "scaffold accepted '{name}' but the config loader rejects it"
+            );
+        }
     }
 
     #[test]

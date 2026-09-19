@@ -9,6 +9,7 @@ use crate::supervision::{
     RestartLimits, RestartPolicy, default_restart_backoff_ms, default_restart_max_backoff_ms,
     default_restart_max_retries, default_restart_window_ms, parse_restart_policy,
 };
+use emergent_client::types::PrimitiveName;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -532,6 +533,39 @@ fn check_restart_policies<'a, T: PrimitiveConfig + 'a>(
     Ok(())
 }
 
+/// Validate that a primitive name can form a message type segment (pure function).
+///
+/// The engine publishes `system.started.<name>`, `system.stopped.<name>` and
+/// `system.error.<name>` for every primitive it manages. The last segment is the
+/// configured name, so a name the SDK would reject as a `PrimitiveName` produces
+/// a message type the SDK also rejects. The rule lives in the SDK, this reuses it
+/// rather than restating it, and reports it before anything is spawned.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::ValidationError`] naming the primitive and the rule.
+fn validate_primitive_name(name: &str) -> Result<(), ConfigError> {
+    PrimitiveName::new(name).map(|_| ()).map_err(|e| {
+        ConfigError::ValidationError(format!(
+            "{e}. A primitive name becomes the last segment of its \
+             system.started.<name> event, so it must start with a lowercase letter and \
+             use only lowercase letters, digits, hyphens, or underscores, at most {max} \
+             characters",
+            max = PrimitiveName::MAX_LENGTH
+        ))
+    })
+}
+
+/// Check that every primitive in a collection has a usable name (pure function).
+fn check_valid_names<'a, T: PrimitiveConfig + 'a>(
+    primitives: impl IntoIterator<Item = &'a T>,
+) -> Result<(), ConfigError> {
+    for primitive in primitives {
+        validate_primitive_name(primitive.name())?;
+    }
+    Ok(())
+}
+
 /// Check that paths exist for enabled primitives (impure function).
 fn check_paths_exist<'a, T: PrimitiveConfig + 'a>(
     primitives: impl IntoIterator<Item = &'a T>,
@@ -671,6 +705,17 @@ impl EmergentConfig {
         Ok(())
     }
 
+    /// Validate that every primitive name can form a message type (pure function).
+    ///
+    /// Disabled primitives are checked too: the name is a structural property of
+    /// the config, so enabling a primitive later must never be what breaks it.
+    pub fn validate_names(&self) -> Result<(), ConfigError> {
+        check_valid_names(&self.sources)?;
+        check_valid_names(&self.handlers)?;
+        check_valid_names(&self.sinks)?;
+        Ok(())
+    }
+
     /// Validate that all enabled primitive paths exist (impure function).
     ///
     /// Performs filesystem checks to verify executable paths exist.
@@ -683,9 +728,10 @@ impl EmergentConfig {
 
     /// Validate the configuration (combines structure and path validation).
     ///
-    /// This is a convenience method that runs both pure validation (duplicate names)
-    /// and impure validation (path existence checks).
+    /// This is a convenience method that runs both pure validation (name rules and
+    /// duplicate names) and impure validation (path existence checks).
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_names()?;
         self.validate_unique_names()?;
         self.validate_restart_policies()?;
         self.validate_paths()?;
@@ -1217,6 +1263,119 @@ api_port = 0
         assert_eq!(config.engine.api_port, 0);
         assert!(!config.engine.api_enabled());
         Ok(())
+    }
+
+    fn sink_named(name: &str) -> SinkConfig {
+        SinkConfig {
+            name: name.to_string(),
+            path: PathBuf::from("/bin/true"),
+            args: vec![],
+            enabled: true,
+            subscribes: vec![],
+            env: std::collections::HashMap::new(),
+            unwrap_stdout: false,
+            restart: RestartConfig::default(),
+        }
+    }
+
+    #[test]
+    fn valid_primitive_names_are_accepted() {
+        for name in [
+            "timer",
+            "my_handler",
+            "email-handler",
+            "filter123",
+            &"a".repeat(PrimitiveName::MAX_LENGTH),
+        ] {
+            assert!(
+                validate_primitive_name(name).is_ok(),
+                "expected '{name}' to be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_primitive_names_are_rejected() {
+        for name in [
+            "Bad Name",
+            "Timer",
+            "inValid",
+            "1timer",
+            "has.dot",
+            "has space",
+            "",
+            &"a".repeat(PrimitiveName::MAX_LENGTH + 1),
+        ] {
+            assert!(
+                validate_primitive_name(name).is_err(),
+                "expected '{name}' to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn every_accepted_name_forms_a_valid_system_event_type() {
+        for name in ["timer", "my_handler", "email-handler", "filter123"] {
+            assert!(validate_primitive_name(name).is_ok());
+            assert!(
+                emergent_client::types::MessageType::new(format!("system.started.{name}")).is_ok(),
+                "'{name}' passed config validation but cannot form a message type"
+            );
+        }
+    }
+
+    #[test]
+    fn name_error_reports_the_primitive_and_the_rule() {
+        let Err(err) = validate_primitive_name("Bad Name") else {
+            panic!("expected 'Bad Name' to be rejected");
+        };
+        let message = err.to_string();
+        assert!(message.contains("Bad Name"), "message was: {message}");
+        assert!(
+            message.contains("lowercase letter"),
+            "message was: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_names_checks_sources_handlers_and_sinks() {
+        let mut config = EmergentConfig {
+            sinks: vec![sink_named("good")],
+            ..Default::default()
+        };
+        assert!(config.validate_names().is_ok());
+
+        config.sinks.push(sink_named("Bad Name"));
+        assert!(config.validate_names().is_err());
+    }
+
+    #[test]
+    fn validate_names_checks_disabled_primitives_too() {
+        let mut sink = sink_named("Bad Name");
+        sink.enabled = false;
+        let config = EmergentConfig {
+            sinks: vec![sink],
+            ..Default::default()
+        };
+        assert!(config.validate_names().is_err());
+    }
+
+    #[test]
+    fn parse_rejects_the_reproduction_config_from_issue_42() {
+        let toml = r#"
+[engine]
+name = "badname-test"
+
+[[sinks]]
+name = "Bad Name"
+path = "/bin/true"
+subscribes = ["tick.out"]
+"#;
+        let Err(err) = EmergentConfig::parse(toml) else {
+            panic!("expected the invalid sink name to fail config parsing");
+        };
+        let message = err.to_string();
+        assert!(message.contains("Bad Name"), "message was: {message}");
     }
 }
 
