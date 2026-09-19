@@ -95,6 +95,15 @@ pub struct EngineConfig {
     #[serde(default = "default_api_port")]
     pub api_port: u16,
 
+    /// Maximum concurrent IPC connections the engine accepts.
+    ///
+    /// Leave the key out to keep whatever acton-reactive resolves, which is its
+    /// own default unless `$XDG_CONFIG_HOME/acton/ipc.toml` sets `[limits]
+    /// max_connections`. Setting the key here overrides both, and the value is
+    /// what the startup capacity check measures the topology against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<usize>,
+
     /// How long each shutdown phase waits for children to exit on the
     /// `system.shutdown` broadcast alone, before SIGTERM, in milliseconds.
     #[serde(default = "default_shutdown_drain_ms")]
@@ -157,6 +166,7 @@ impl Default for EngineConfig {
             socket_path: default_socket_path(),
             wire_format: None,
             api_port: default_api_port(),
+            max_connections: None,
             shutdown_drain_ms: default_shutdown_drain_ms(),
             shutdown_grace_ms: default_shutdown_grace_ms(),
         }
@@ -639,6 +649,58 @@ fn check_paths_exist<'a, T: PrimitiveConfig + 'a>(
     Ok(())
 }
 
+/// IPC connections the engine reserves on top of the one that every enabled
+/// primitive holds.
+///
+/// Each enabled primitive connects once at startup and keeps that single
+/// connection for the life of its process: publishing reuses the connection's
+/// writer rather than opening another. The reserve covers the connections that
+/// exist beyond that steady state:
+///
+/// - 1 for a restart. A primitive configured with `[sources.restart]` (or its
+///   handler and sink counterparts) is replaced by a fresh process, and the
+///   exited process's connection is not guaranteed to be reaped before the
+///   replacement connects, so a restarting primitive can hold two for a moment.
+/// - 3 for transient observers. `system.request.topology` and
+///   `system.request.subscriptions` are answered over the same Unix socket, so
+///   every CLI query and every topology-viewer refresh holds a connection for
+///   the length of the request.
+pub const RESERVED_IPC_CONNECTIONS: usize = 4;
+
+/// The connection budget a topology of this size needs (pure function).
+#[must_use]
+pub const fn required_ipc_connections(enabled_primitives: usize) -> usize {
+    enabled_primitives.saturating_add(RESERVED_IPC_CONNECTIONS)
+}
+
+/// Decide whether an effective connection limit can host a topology (pure function).
+///
+/// `max_connections` is the limit acton-reactive actually resolved, so it
+/// already accounts for `[engine].max_connections`, for
+/// `$XDG_CONFIG_HOME/acton/ipc.toml`, and for acton's own default. Returns an
+/// error naming both numbers and the key to raise when the limit is too low.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::ValidationError`] when `max_connections` is below
+/// [`required_ipc_connections`] for this many primitives.
+pub fn check_connection_capacity(
+    enabled_primitives: usize,
+    max_connections: usize,
+) -> Result<(), ConfigError> {
+    let required = required_ipc_connections(enabled_primitives);
+    if max_connections >= required {
+        return Ok(());
+    }
+    Err(ConfigError::ValidationError(format!(
+        "IPC connection limit of {max_connections} is too low for {enabled_primitives} enabled \
+         primitive(s). Each enabled primitive holds one connection for the life of its process, \
+         and the engine reserves {RESERVED_IPC_CONNECTIONS} more for a restarting primitive and \
+         for CLI or topology-viewer queries, so this topology needs at least {required} \
+         connections. Raise [engine].max_connections to {required} or more."
+    )))
+}
+
 /// Complete Emergent configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -908,11 +970,141 @@ impl EmergentConfig {
     pub fn enabled_sinks(&self) -> impl Iterator<Item = &SinkConfig> {
         self.sinks.iter().filter(|s| s.enabled)
     }
+
+    /// How many primitives will be spawned, and so how many IPC connections
+    /// the topology holds in its steady state (pure function).
+    #[must_use]
+    pub fn enabled_primitive_count(&self) -> usize {
+        self.enabled_sources().count()
+            + self.enabled_handlers().count()
+            + self.enabled_sinks().count()
+    }
+
+    /// Check this topology against the connection limit acton-reactive resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ValidationError`] when the limit cannot host the
+    /// enabled primitives plus [`RESERVED_IPC_CONNECTIONS`].
+    pub fn check_connection_capacity(&self, max_connections: usize) -> Result<(), ConfigError> {
+        check_connection_capacity(self.enabled_primitive_count(), max_connections)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_capacity_covers_every_primitive_plus_the_reserve() {
+        // (enabled primitives, effective limit, expected to pass)
+        let cases = [
+            (0_usize, 0_usize, false),
+            (0, RESERVED_IPC_CONNECTIONS - 1, false),
+            (0, RESERVED_IPC_CONNECTIONS, true),
+            (1, RESERVED_IPC_CONNECTIONS, false),
+            (6, 3, false),
+            (6, 9, false),
+            (6, 10, true),
+            (6, 1024, true),
+            (100, 100, false),
+            (100, 104, true),
+            (1020, 1024, true),
+            (1021, 1024, false),
+        ];
+
+        for (primitives, limit, expected_ok) in cases {
+            let result = check_connection_capacity(primitives, limit);
+            assert_eq!(
+                result.is_ok(),
+                expected_ok,
+                "{primitives} primitive(s) under a limit of {limit} should be ok={expected_ok}, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn required_connections_is_the_primitive_count_plus_the_reserve() {
+        assert_eq!(required_ipc_connections(0), RESERVED_IPC_CONNECTIONS);
+        assert_eq!(required_ipc_connections(6), 6 + RESERVED_IPC_CONNECTIONS);
+        // Saturating, so an absurd count cannot wrap into a passing budget.
+        assert_eq!(required_ipc_connections(usize::MAX), usize::MAX);
+        assert!(check_connection_capacity(usize::MAX, usize::MAX - 1).is_err());
+    }
+
+    #[test]
+    fn a_capacity_failure_names_both_numbers_and_the_key_to_raise() {
+        let Err(err) = check_connection_capacity(6, 3) else {
+            panic!("a limit of 3 cannot host 6 primitives");
+        };
+        let message = err.to_string();
+        assert!(message.contains('3'), "{message}");
+        assert!(message.contains('6'), "{message}");
+        assert!(message.contains("10"), "{message}");
+        assert!(message.contains("[engine].max_connections"), "{message}");
+    }
+
+    #[test]
+    fn max_connections_is_optional_and_absent_by_default() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let config = EmergentConfig::parse(
+            r#"
+[engine]
+name = "test"
+"#,
+        )?;
+        assert_eq!(config.engine.max_connections, None);
+
+        let config = EmergentConfig::parse(
+            r#"
+[engine]
+name = "test"
+max_connections = 32
+"#,
+        )?;
+        assert_eq!(config.engine.max_connections, Some(32));
+        Ok(())
+    }
+
+    #[test]
+    fn a_topology_is_checked_against_the_effective_limit() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let toml = r#"
+[engine]
+name = "test"
+
+[[sources]]
+name = "timer"
+path = "/bin/true"
+publishes = ["tick"]
+
+[[handlers]]
+name = "filter"
+path = "/bin/true"
+subscribes = ["tick"]
+publishes = ["tick.out"]
+
+[[sinks]]
+name = "console"
+path = "/bin/true"
+subscribes = ["tick.out"]
+
+[[sinks]]
+name = "disabled-console"
+path = "/bin/true"
+enabled = false
+subscribes = ["tick.out"]
+"#;
+        let config = EmergentConfig::parse(toml)?;
+
+        // The disabled sink spawns no process, so it holds no connection.
+        assert_eq!(config.enabled_primitive_count(), 3);
+
+        assert!(config.check_connection_capacity(3).is_err());
+        assert!(config.check_connection_capacity(6).is_err());
+        assert!(config.check_connection_capacity(7).is_ok());
+        Ok(())
+    }
 
     #[test]
     fn a_terminal_wildcard_topic_is_accepted() -> Result<(), Box<dyn std::error::Error>> {
