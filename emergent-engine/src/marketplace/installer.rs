@@ -1,5 +1,6 @@
 //! Binary download, verification, and installation.
 
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -8,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use super::error::{MarketplaceError, Result};
 use super::platform::TargetPlatform;
-use super::registry::Registry;
+use super::registry::{self, Registry};
 use super::storage::{InstalledPrimitive, MarketplaceStorage};
 
 /// Installer for marketplace primitives.
@@ -54,12 +55,12 @@ impl Installer {
     ///
     /// # Process
     ///
-    /// 1. Fetch manifest from registry
+    /// 1. Fetch the manifest of the release being installed
     /// 2. Check if already installed (unless force=true)
-    /// 3. Resolve version (default: latest from manifest)
+    /// 3. Resolve version (default: the latest release)
     /// 4. Check platform support
-    /// 5. Download binary from GitHub Releases
-    /// 6. Verify SHA256 checksum (if available)
+    /// 5. Download binary from that release
+    /// 6. Verify SHA256 against that release's checksums.txt (if published)
     /// 7. Extract archive to bin directory
     /// 8. Update installation manifest
     ///
@@ -73,10 +74,14 @@ impl Installer {
     /// - Checksum verification fails
     /// - Extraction fails
     pub async fn install(&self, options: InstallOptions) -> Result<InstallResult> {
-        // Fetch manifest
-        let manifest = self.registry.get_manifest(&options.name).await?;
+        // Fetch the manifest of the release being installed, so a pinned
+        // version is described by its own release rather than by the latest.
+        let manifest = self
+            .registry
+            .get_manifest(&options.name, options.version.as_deref())
+            .await?;
 
-        // Use version from manifest if not specified
+        // Use the version the manifest came from if none was pinned
         let version = options
             .version
             .unwrap_or_else(|| manifest.primitive.version.clone());
@@ -115,10 +120,8 @@ impl Installer {
         }
 
         // Construct download URL
-        let download_url = format!(
-            "{}/download/v{}/{}",
-            manifest.binaries.release_url, version, filename
-        );
+        let download_url =
+            registry::asset_url(&manifest.binaries.release_url, Some(&version), filename);
 
         // Create bin directory if it doesn't exist
         let bin_dir = self.storage.bin_dir();
@@ -131,14 +134,23 @@ impl Installer {
         eprintln!("Downloading {} v{}...", options.name, version);
         self.download_binary(&download_url, &archive_path).await?;
 
-        // Verify before anything from the archive reaches the bin directory
-        let expected = manifest.binaries.checksum_for(platform_str);
+        // Verify before anything from the archive reaches the bin directory,
+        // against the checksums published by the same release as the archive.
+        let published = self
+            .registry
+            .release_checksums(&manifest.binaries.release_url, &version)
+            .await;
+        let expected = expected_checksum(
+            published.as_ref(),
+            filename,
+            manifest.binaries.checksum_for(platform_str),
+        );
         if verify_archive(&archive_path, expected)? {
             eprintln!("Checksum verified.");
         } else {
             eprintln!(
-                "Warning: the registry publishes no checksum for {} on {}; installing unverified.",
-                options.name, platform_str
+                "Warning: release v{version} publishes no checksum for {}; installing unverified.",
+                filename
             );
         }
 
@@ -249,7 +261,7 @@ impl Installer {
         })?;
 
         // Fetch latest version from registry
-        let registry_manifest = self.registry.get_manifest(name).await?;
+        let registry_manifest = self.registry.get_manifest(name, None).await?;
         let latest_version = registry_manifest.primitive.version;
 
         if installed.version == latest_version {
@@ -383,6 +395,22 @@ impl Installer {
     }
 }
 
+/// The checksum to verify an archive against.
+///
+/// The release's own checksums.txt is the authority, because it ships with the
+/// archive it describes. A manifest served from elsewhere may publish one
+/// instead, and neither means the install proceeds unverified.
+fn expected_checksum<'a>(
+    published: Option<&'a BTreeMap<String, String>>,
+    filename: &str,
+    from_manifest: Option<&'a str>,
+) -> Option<&'a str> {
+    published
+        .and_then(|sums| sums.get(filename))
+        .map(String::as_str)
+        .or(from_manifest)
+}
+
 /// Lowercase hex SHA-256 of a byte slice.
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -474,6 +502,38 @@ mod tests {
             Err(MarketplaceError::ChecksumMismatch { .. })
         ));
         Ok(())
+    }
+
+    #[test]
+    fn the_release_checksum_outranks_the_manifest_one() {
+        let published = BTreeMap::from([("primitive.tar.gz".to_string(), ABC_SHA256.to_string())]);
+        assert_eq!(
+            expected_checksum(Some(&published), "primitive.tar.gz", Some("stale")),
+            Some(ABC_SHA256)
+        );
+    }
+
+    #[test]
+    fn a_manifest_checksum_answers_when_the_release_publishes_none() {
+        let published = BTreeMap::from([("other.tar.gz".to_string(), ABC_SHA256.to_string())]);
+        assert_eq!(
+            expected_checksum(Some(&published), "primitive.tar.gz", Some("abc123")),
+            Some("abc123")
+        );
+        assert_eq!(
+            expected_checksum(None, "primitive.tar.gz", Some("abc123")),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn nothing_published_anywhere_leaves_the_archive_unverified() {
+        assert_eq!(expected_checksum(None, "primitive.tar.gz", None), None);
+        let empty = BTreeMap::new();
+        assert_eq!(
+            expected_checksum(Some(&empty), "primitive.tar.gz", None),
+            None
+        );
     }
 
     #[test]
