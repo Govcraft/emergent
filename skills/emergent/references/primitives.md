@@ -42,7 +42,7 @@ publishes = ["exec.output"]
 |---|---|
 | `-c, --command <CMD>` | Command to execute (required) |
 | `-a, --args <ARGS>` | One string of arguments. Split on whitespace with no quote handling, unless `--shell` is set, in which case `<shell> -c "<command> <args>"` runs |
-| `-i, --interval <MS>` | Repeat interval; omit or 0 to run once |
+| `-i, --interval <MS>` | Repeat interval; omit or 0 to run once. Runs never overlap, and a run that outlasts the interval is followed immediately by the next |
 | `-s, --shell <SHELL>` | Shell to run through (`sh`, `bash`) |
 | `-d, --working-dir <DIR>` | Working directory |
 | `--correlate` | Mint one correlation ID at startup, stamp it on every published message |
@@ -56,6 +56,10 @@ the engine's own environment is adopted silently, even without `--correlate`.
 Without `--shell`, `--command` is executed directly, so a pipe or a redirect in
 it fails with "No such file or directory". Pass `--shell sh` for anything that
 is more than a program name.
+
+The command has to exit. `exec-source` collects all output and publishes after
+the process ends, so a streaming command (`inotifywait -m`, `tail -f`) never
+publishes. Poll on `--interval`, or write a small SDK source for a true stream.
 
 **Publishes:** `exec.output` (stdout), `exec.error` (stderr), `exec.exit`
 
@@ -621,9 +625,13 @@ receives exactly what you typed, backslash-newline included:
 
 ```toml
 args = ["-s", "issue.found", "--publish-as", "issue.scored", "--", "bash", "-c",
-  '''p=$(cat); gh issue view "$(jq -r .number <<< "$p")" --json body \
+  '''set -o pipefail; p=$(cat); gh issue view "$(jq -r .number <<< "$p")" --json body \
      | jq -c --argjson orig "$p" '{number: $orig.number, body: .body}' ''']
 ```
+
+Open every body that contains a pipe with `set -o pipefail`. A pipe reports its
+last command's status, so without it a failed `gh` leaves `jq` to exit 0 on empty
+input and the handler publishes nothing, not even an error.
 
 Do not use a multi-line basic string (`"""..."""`) for a shell body. TOML
 processes escapes in it first: `\"` becomes a bare `"` and closes the shell's

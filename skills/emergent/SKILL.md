@@ -101,7 +101,9 @@ subscriber wants it for something else the name is a lie it has to work around.
 Consumer-coupled names are how a large topology quietly stops being reusable,
 which forfeits the main reason you decomposed it. If a name contains a
 downstream primitive, a destination, or the word "for", rename it after the
-state change instead.
+state change instead. A pause that ended is a state change too:
+`issue.backoff-elapsed` says what became true, `issue.rescore-due` says what
+someone should do about it.
 
 **Reuse before you add.** Check the events you already have before inventing a
 primitive. If something upstream already publishes what you need, subscribe to
@@ -122,7 +124,9 @@ A cheap sanity check before you move on: count the verbs in the requirement.
 your catalog has fewer events than the requirement has verbs, you have already
 merged something.
 
-Present the catalog, then write config.
+Present the catalog, then write config. With a person in the conversation, show
+it and let them react before any TOML exists. Working unattended, write it down
+first and carry on. The order is the point, not the pause.
 
 ## The stopping rules: when is a primitive still too big?
 
@@ -182,11 +186,14 @@ down out loud.
 2. **An exec primitive around one existing command, as an args array.**
    `"--", "jq", "-c", "select(.confidence >= 0.8)"` or
    `"--", "gh", "issue", "edit", ...`. No shell. This is where most of a good
-   topology lives: routers, projections, unwraps, guards.
-3. **An exec primitive around one shell pipe of the form `shape | act | shape`.**
-   Exactly one command in the pipe touches the world (an API, a model, a file, a
-   queue). Everything else is pure `jq`. The shell is there because a pipe needs
-   one, not because there is logic to hold.
+   topology lives: routers, projections, unwraps, guards. A handler whose act
+   replaces the payload with its own output usually needs rung 3 instead, to
+   carry the item's identity through.
+3. **An exec primitive around one shell body holding one act.** Its form is
+   `shape | act | shape`, or, for an act that reads no stdin and prints nothing
+   (`mv`, `gh issue edit`), `act && shape`. Exactly one command touches the
+   world (an API, a model, a file, a queue). Everything else is pure `jq`. The
+   shell is there because a pipe needs one, not because there is logic to hold.
 4. **An SDK primitive**, only for the three cases in "When a custom primitive
    really is right" at the end of this document.
 
@@ -214,11 +221,41 @@ item's identity (a model reply, a search result) would orphan it. Capturing the
 payload and merging it back is carry-through, not logic:
 
 ```
-p=$(cat); jq -r .prompt <<< "$p" | claude -p | jq -c --argjson orig "$p" '. + {number: $orig.number}'
+set -o pipefail; p=$(cat); jq -r .prompt <<< "$p" | claude -p | jq -c --argjson orig "$p" '$orig + {severity, confidence}'
 ```
 
 That is still rung 3: one capture, one act, one merge. The moment a second act
-appears between the capture and the merge, split it.
+appears between the capture and the merge, split it. Three details in that line
+are load-bearing, and each was a real defect before it was a rule:
+
+- **`set -o pipefail` opens every body that contains a pipe.** A pipe reports
+  its last command's status, and the last command is `jq`. Without `pipefail` a
+  `claude` that fails on auth or the network leaves `jq` reading nothing: exit
+  0, empty stdout, no event on either topic, and a `stream-runner` behind it
+  stalls for good. A failed `pdftotext | jq -R -s '{text: .}'` is worse, because
+  it publishes a success event with empty text. With `pipefail` both publish the
+  error topic with the act's own exit code and stderr. It is a shell option, not
+  logic. Use `bash -c`, since not every `sh` has it.
+- **Take named fields from the act, never `$orig + .`.** Whatever the act prints
+  lands on top of the item, so a model reply containing `"number"` or `"path"`
+  rewrites the identity every later primitive trusts, and one of them may feed
+  it to `mv` or `gh`. `$orig + {severity, confidence}` lets the act contribute
+  exactly what you asked it for.
+- **The payload rides in one argument.** `--argjson orig "$p"` is capped by
+  Linux near 128 KiB per argument. Anything that can outgrow that (document
+  text, a diff, a transcript) should not travel in the event at all: the act
+  that produces it writes a file and the event carries the path.
+
+The `act && shape` form is the same idiom for an act with no output:
+
+```
+p=$(cat); mv "$(jq -r .path <<< "$p")" /srv/claimed/ && jq -c '.path |= sub("^/srv/inbox/"; "/srv/claimed/")' <<< "$p"
+```
+
+`&&` here is not a branch. It stops the announcement from printing after a
+failed act, so a failed `mv` is a non-zero exit with no stdout, which is the
+error topic. With `;` in its place the handler would announce a move that never
+happened.
 
 **Write shell bodies as TOML literal strings** (`'''...'''`), never basic ones
 (`"""..."""`). In a basic string TOML decodes `\"` to a bare `"` and `\\n` to
@@ -231,7 +268,10 @@ a one-line literal too: `'select(.verdict == "approved")'`.
 exits 0 with empty stdout, which is what a false `jq select()` does. Every
 non-zero exit publishes the error type. So `[ cond ] && cmd` is not a filter:
 its false case exits 1 and lands on `exec.error`. If a non-zero exit really is a
-normal outcome, declare it with `--silent-exit-codes`.
+normal outcome, declare it with `--silent-exit-codes`. The silence you did not
+choose is the dangerous one: an act that fails in the middle of a pipe without
+`pipefail`, or an HTTP call that answers 2xx with an empty body. For the second,
+have `curl` print the status (`-w`) so there is always something to publish.
 
 ## Translating code constructs into topology
 
@@ -243,12 +283,12 @@ substitutions. Reach for these; they are the idiom.
 | `for item in items:` | Publish one event per item. Note that no exec primitive splits its stdout: printing N objects publishes **one** event, not N. Use `stream-runner`, HTTP fan-out, or a small SDK splitter. See below. |
 | `if x: A else: B` | Two subscribers on the same event with mutually exclusive `jq select()` predicates. Nothing decides between them; both look, one matches. |
 | `try/except` | Publish `<domain>.failed` with the error in the payload. A separate subscriber owns the response. Failure is data, not control flow. |
-| retry with backoff | `*.failed` to a delay handler to a republish of the original event. The retry count rides in the payload and a guard predicate ends it. |
+| retry with backoff | `*.failed` to two exclusive routers (attempts left, or not), then a delay handler, then an event the failed stage also subscribes to. The attempt count rides in the payload. |
 | `parallel_map(f, items)` | Publish once, let N handlers subscribe, each publishing its own result type. The engine is the scheduler. |
 | `gather()` / join | An accumulator that publishes its bucket on every arrival, and a router whose predicate recognizes a full one. See the join below. |
 | a state variable | An event carrying the new state. If something must accumulate, one small stateful handler owns that accumulator and publishes every change. |
 | a loop counter / guard | A depth field in the payload plus a guard handler whose predicate drops or diverts past the limit. |
-| `sleep()` for pacing | Ack-driven `stream-runner`, or an interval `exec-source`. Time is an event source, not a blocking call. |
+| `sleep()` for pacing | Ack-driven `stream-runner`, or an interval `exec-source`. Time is an event source, not a blocking call. The one blocking `sleep` the idiom keeps is a delay handler whose whole act is the pause, as in the retry pattern. |
 | a function call | Publish an event; subscribe to the response type. |
 | a config flag switching behavior | Two primitives, one enabled. Or two subscribers with predicates on the flag in the payload. |
 | a judgment call no rule can express | An `exec-handler` handing the decision to a model, publishing one verdict event, with routers turning it into the vocabulary. See non-deterministic routing below. |
@@ -424,6 +464,15 @@ Four properties make this the default:
 One silence remains: a clean exit with empty stdout publishes nothing. If that
 is plausible for your agent, add the reaper from `references/patterns.md`.
 
+**Give the judge only the tools the question needs.** The example reads a file
+from your own repo, so it gets `Read` and `Grep`. A judge whose whole input
+arrives in the prompt needs none: pass `--tools ""`. Text that came from outside
+(an invoice, an issue body, an email) is hostile input, and a model holding
+`Bash` or `Write` while it reads hostile input is an actuator anyone can drive.
+The same goes for what you do with the verdict: route on a typed predicate, as
+the routers above do, and keep a person in the path of anything a wrong verdict
+makes expensive.
+
 ### The fast judge: `jev-handler` for typed questions
 
 When the judgment fits a typed question (a yes/no, one option from a known set,
@@ -497,15 +546,16 @@ because the sequence is now non-deterministic as well as hidden. The discipline
 that keeps non-deterministic routing honest: **the agent announces its decision
 as an event and stops; handlers own the consequences.**
 
-**The Script File.** A path to your own script in `args`, or a `bash -c` that
-needs scrolling. *Tell:* `./something.sh`, `something.py`, or a command with a
+**The Script File.** A path to your own script in `args`, or a `bash -c` holding
+more than one act. *Tell:* `./something.sh`, `something.py`, or a command with a
 loop, a conditional, or two world-touching calls in it. It is the most common
 way a decomposed-looking topology hides a monolith, because the TOML has many
 blocks and each one looks small. Count acts, not blocks.
 
 **The Black Box.** A step with a long timeout that publishes exactly one event
-when it finishes. *Tell:* `-t 900000` or larger. Nothing can observe or react to
-anything happening inside it.
+when it finishes. *Tell:* `-t 900000` or larger on a step that does work. Nothing
+can observe or react to anything happening inside it. A delay handler is exempt:
+its only act is the pause, and its `-t` has to exceed it.
 
 **The Hidden Branch.** Routing inside a script. *Tell:* `case`, `if`, or a
 ternary that selects the next action rather than computing a value.
@@ -532,7 +582,10 @@ frame. The frame is still one event.)
 
 **The Straight Line.** No feedback edge anywhere. *Tell:* every event flows
 strictly forward. Sometimes correct for pure ETL, but interrogate it, because
-without a cycle the system can only transform, never adapt.
+without a cycle the system can only transform, never adapt. The cycle has to
+come from the requirement, though: a retry, a re-judge with more context, an
+escalation that comes back. Do not invent a loop to pass this check. "A
+pipeline, on purpose" is a complete answer.
 
 ## Gate 2: review the draft before you ship it
 
@@ -545,13 +598,19 @@ system did and why? Any span where nothing is published is a black box.
 **The subscriber test.** Invent a plausible new requirement ("also notify Slack
 on high severity", "also record timing"). Can you satisfy it by adding one
 primitive and editing zero existing ones? If you would have to open a script,
-that behavior is trapped inside it.
+that behavior is trapped inside it. Zero edits is the bar for a new leaf or a new
+sibling. A step inserted between two existing stages always changes the
+downstream stage's `subscribes`, and that one line is the only edit it should
+cost.
 
 **The injection test.** Can you hand-inject any event mid-topology (POST to an
 `http-source`, or read one out of the event store and POST it back) and get
 sensible behavior? If a
 primitive only works when its predecessor just ran, they are coupled through
-hidden state.
+hidden state. One caution behind a `stream-runner`: acks are not matched to
+items, so an injected item that reaches the ack topic releases the stream's next
+item early. Say which you chose, a separate exit for injected items or the
+skew.
 
 **The concurrency test.** If ten items arrive at once, do ten flow through
 independently, or does something serialize them? Trace one item's path and name
@@ -562,7 +621,10 @@ not double-process), because otherwise you have capped throughput at one without
 deciding to.
 
 **The dead-end test.** For every event, including every `--error-as` topic,
-name its subscriber. For every router group, show that some arm matches any
+name its subscriber, or write "nobody yet" beside it in the catalog on purpose
+(an end-of-batch event, a side result kept for later subscribers). "Nobody" is
+never the answer for an error topic or for any event on a `stream-runner` ack
+path. For every router group, show that some arm matches any
 payload. An event nobody consumes and a payload no arm matches both vanish
 silently, and behind a `stream-runner` either one stalls the batch for good.
 Subscriptions are exact-match, so `"system.error.*"` and `"issue.*"` subscribe
@@ -579,10 +641,19 @@ for Python, `claude` for `ollama`, without touching its neighbors?
 **The kill test.** Kill one primitive. Does the rest degrade sensibly, or does
 everything stop? Local autonomy is what makes the system a system.
 
-**The name test.** Can every primitive be named verb-noun with no "and"?
-`extract-url`, `score-severity`, `post-comment` pass. `fetch-and-format`,
-`process-request`, `handle-event` fail, and the name is telling you the truth
-about the contents.
+**The name test.** Can every primitive be named for its one act or its one
+predicate, with no "and"? `extract-url`, `score-severity`, `post-comment`,
+`route-confident`, `depth-guard` pass. `fetch-and-format`, `process-request`,
+`handle-event` fail, and the name is telling you the truth about the contents.
+
+**The requirement test.** Every gate above argues for more primitives, so this
+one argues for fewer. Trace each primitive to a verb in the requirement, to the
+failure of one, or to the protocol of a primitive you used (the ack fan-in a
+`stream-runner` needs). Anything left is a guess about the future: an inject
+door nobody asked for, an archive move, a second opinion. Decomposition is what
+makes those cheap to add later, as one subscriber on events that already exist,
+so do not build them now. List them in the catalog as possible subscribers and
+stop.
 
 **The surprise test.** Where could this system do something you did not
 explicitly write? If the honest answer is nowhere, you built a pipeline. That

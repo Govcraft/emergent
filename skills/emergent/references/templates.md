@@ -55,7 +55,8 @@ publishes = ["api.error"]
 [[sinks]]
 name = "alerter"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "api.error", "--", "sh", "-c", "jq -c . | curl -s -X POST -H 'Content-Type: application/json' -d @- https://hooks.slack.com/services/YOUR/WEBHOOK/URL"]
+args = ["-s", "api.error", "--", "bash", "-c",
+  '''set -o pipefail; jq -c . | curl -sf -X POST -H 'Content-Type: application/json' -d @- https://hooks.slack.com/services/YOUR/WEBHOOK/URL''']
 subscribes = ["api.error"]
 ```
 
@@ -84,7 +85,8 @@ publishes = ["ai.prompt"]
 [[handlers]]
 name = "claude"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "ai.prompt", "--timeout", "60000", "--", "sh", "-c", "cat | claude -p 2>/dev/null | jq -Rsc '{response: .}'"]
+args = ["-s", "ai.prompt", "--timeout", "60000", "--", "bash", "-c",
+  '''set -o pipefail; claude -p --tools "" | jq -R -s -c '{response: .}' ''']
 subscribes = ["ai.prompt"]
 publishes = ["ai.response"]
 
@@ -176,8 +178,8 @@ subscribes = ["loop.iteration"]
 name = "loopback"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "loop.iteration", "-s", "system.started.webhook", "--",
-    "sh", "-c",
-  '''sleep 1; jq -c '.body // {count: 0}' \
+    "bash", "-c",
+  '''set -o pipefail; sleep 1; jq -c '.body // {count: 0}' \
      | curl -s --retry 5 --retry-connrefused -X POST -H 'Content-Type: application/json' -d @- http://127.0.0.1:8088''']
 subscribes = ["loop.iteration", "system.started.webhook"]
 ```

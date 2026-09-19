@@ -108,6 +108,49 @@ Three constraints to design around:
 - **Acks are not matched to items.** Any message on the ack topic releases the
   next item. Keep that topic exclusive to this stream.
 
+`--ack-topic` takes one topic. A flow with several exits (filed, escalated,
+rejected) needs a fan-in handler that turns each exit into the one ack, like
+`settle` in the worked example.
+
+**Where the ack goes decides what a stall and a crash cost.** Two placements,
+and the choice is yours to state:
+
+- **Ack at the end of the flow.** The source stays a durable queue: if the
+  engine dies mid-item, the next poll finds the item again. The price is
+  head-of-line blocking. One item sleeping in a retry backoff holds every item
+  behind it, so keep delays short or bound the attempts tightly.
+- **Ack at the claim.** The first handler takes ownership of the item (below)
+  and its success event is the ack. Nothing blocks and a backoff costs only the
+  item that is backing off. The price is recovery: an item claimed when the
+  engine dies has no event in flight, so plan how a stranded claim re-enters.
+
+**A poll needs a seen-set, or every poll re-detects everything.** Put it in the
+world, not in a primitive. For an API, poll with a query the topology's own exits
+falsify (`no:label`, `status=new`). For a directory, claim the file: rename it
+out of the inbox, which is atomic, and announce the new path.
+
+```toml
+# `act && shape`: one act (`mv`), then the announcement. A second claim of the
+# same file fails the `mv`, which is a non-zero exit, which is the error topic.
+[[handlers]]
+name = "claim-invoice"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "invoice.detected", "--publish-as", "invoice.claimed",
+        "--error-as", "invoice.claim-failed", "--", "bash", "-c",
+  '''p=$(cat); dst="/srv/claimed/$(jq -r '.path | split("/") | last' <<< "$p")"; \
+     mv -n "$(jq -r .path <<< "$p")" "$dst" && jq -c --arg path "$dst" '.path = $path' <<< "$p" ''']
+subscribes = ["invoice.detected"]
+publishes = ["invoice.claimed", "invoice.claim-failed"]
+```
+
+`exec-source` cannot watch a directory for you. It waits for its command to exit
+and then publishes, so a command that never exits (`inotifywait -m`, `tail -f`)
+never publishes anything. Poll on `--interval` instead. Runs never overlap: a
+run that outlasts the interval is followed immediately by the next. Directories
+like `/srv/claimed` are deployment prerequisites. Create them where you install
+the config (a systemd `ExecStartPre`, a Taskfile step), not with a `mkdir`
+inside a primitive, where it would be a second act on every message.
+
 `worked-example.md` runs this shape end to end, including the failure paths.
 
 ### 2. HTTP fan-out (when items must be concurrent)
@@ -132,7 +175,7 @@ publishes = ["invoice.detected"]
 name = "split-inbox"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "inbox.listed", "--", "bash", "-c",
-  '''jq -c '.stdout | fromjson | .[]' | while IFS= read -r item; do \
+  '''set -o pipefail; jq -c '.stdout | fromjson | .[]' | while IFS= read -r item; do \
        curl -sf -X POST -H 'Content-Type: application/json' -d "$item" http://127.0.0.1:8090; \
      done''']
 subscribes = ["inbox.listed"]
@@ -192,9 +235,10 @@ supervised, observable, and retryable on its own.
 name = "score-severity"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "issue.found", "--publish-as", "issue.scored", "-t", "60000", "--", "bash", "-c",
-  '''p=$(cat); jq -r '"Rate this issue as JSON {severity, confidence}.\n\(.title)\n\(.body)"' <<< "$p" \
-     | claude -p --output-format text \
-     | jq -c --argjson orig "$p" '$orig + .' ''']
+  '''set -o pipefail; p=$(cat); \
+     jq -r '"Rate this issue as JSON {severity, confidence}.\n\(.title)\n\(.body)"' <<< "$p" \
+     | claude -p --tools "" --output-format text \
+     | jq -c --argjson orig "$p" '$orig + {severity, confidence}' ''']
 subscribes = ["issue.found"]
 publishes = ["issue.scored"]
 
@@ -202,7 +246,8 @@ publishes = ["issue.scored"]
 name = "detect-duplicates"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "issue.found", "--publish-as", "issue.dupe-checked", "--", "bash", "-c",
-  '''p=$(cat); gh issue list --state open --search "$(jq -r .title <<< "$p")" --json number \
+  '''set -o pipefail; p=$(cat); \
+     gh issue list --state open --search "$(jq -r .title <<< "$p")" --json number \
      | jq -c --argjson orig "$p" '{number: $orig.number, duplicate_of: (map(.number) - [$orig.number] | first)}' ''']
 subscribes = ["issue.found"]
 publishes = ["issue.dupe-checked"]
@@ -210,6 +255,15 @@ publishes = ["issue.dupe-checked"]
 
 Each body is one act between two shapes: capture the payload, call one thing,
 merge the identity back. Neither is a script file, and neither needs one.
+`set -o pipefail` is what makes the act's failure the body's failure: without it
+the trailing `jq` exits 0 on empty input and a dead `claude` or `gh` publishes
+nothing at all. And the merge names the fields it takes from the act
+(`{severity, confidence}`), so a model reply cannot overwrite `number`.
+
+Siblings are independent only while they leave each other's world alone. If one
+subscriber renames a file or edits a record that another one reads, the event
+order no longer tells you what the second one saw. Give each sibling what it
+needs in the payload, or put the mutation downstream of the reader.
 
 Neither knows the other exists. Adding a third analysis is one more block and
 zero edits, which is the whole point.
@@ -238,6 +292,11 @@ publishes = ["monitor.metric"]
 `exec-handler` exports the inbound message's type, id, source, correlation and
 causation ids to the command as `EMERGENT_MESSAGE_TYPE` and friends, so a
 converging handler can tell its inputs apart without a shell.
+
+Use one converging handler when the inputs get the same treatment. When each
+input needs its own words (three escalation reasons, say), write one small
+handler per input, each publishing the same type with a literal reason, as the
+worked example does. A reader of the log gets prose instead of a type name.
 
 The two shapes of fan-in worth distinguishing:
 
@@ -478,36 +537,119 @@ args = ["-s", "issue.found", "--publish-as", "issue.scored",
         "curl", "-sf", "-X", "POST", "--data-binary", "@-", "http://127.0.0.1:11434/score"]
 ```
 
+That bare form fits a call whose response is the whole result. It has two
+limits. The response replaces the payload, so the item's identity is gone unless
+the service echoes it. And `-f` folds "the service is down" and "the service
+said no" into one failure, so a retry policy hung on it will retry a 422 that
+can never succeed. When the difference matters, make the status data and let
+routers read it:
+
+```toml
+# Transport failure (refused, DNS, timeout) is a non-zero exit: the error topic,
+# worth retrying. Any HTTP answer is a success event carrying its status.
+[[handlers]]
+name = "submit-invoice"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "invoice.extracted", "--publish-as", "invoice.submitted",
+        "--error-as", "invoice.submit-failed", "--", "bash", "-c",
+  '''set -o pipefail; p=$(cat); \
+     curl -s -o /dev/null -w '{"status": %{http_code}}' -X POST -H 'Content-Type: application/json' \
+          --data-binary @- http://127.0.0.1:8700/invoices <<< "$p" \
+     | jq -c --argjson orig "$p" '$orig + {status}' ''']
+subscribes = ["invoice.extracted"]
+publishes = ["invoice.submitted", "invoice.submit-failed"]
+
+[[handlers]]
+name = "route-filed"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "invoice.submitted", "--publish-as", "invoice.filed", "--",
+        "jq", "-c", "select(.status >= 200 and .status < 300)"]
+subscribes = ["invoice.submitted"]
+publishes = ["invoice.filed"]
+
+[[handlers]]
+name = "route-refused"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "invoice.submitted", "--publish-as", "invoice.refused", "--",
+        "jq", "-c", "select(.status >= 400 and .status < 500)"]
+subscribes = ["invoice.submitted"]
+publishes = ["invoice.refused"]
+
+# The last arm is the negation of the others, so no status falls between them.
+[[handlers]]
+name = "route-unavailable"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "invoice.submitted", "--publish-as", "invoice.api-unavailable", "--",
+        "jq", "-c", "select((.status >= 200 and .status < 500) | not)"]
+subscribes = ["invoice.submitted"]
+publishes = ["invoice.api-unavailable"]
+```
+
+`invoice.refused` goes to a person. `invoice.api-unavailable` and
+`invoice.submit-failed` go to the retry policy below. Printing the status also
+closes a silence: a 2xx with an empty body would otherwise be exit 0 with empty
+stdout, which publishes nothing.
+
+Which error topics need a name? Every handler that touches the world gets its
+own `--error-as`, and behind a `stream-runner` that topic is routed to an event
+that ends in the ack, because the world fails routinely. A pure `jq` router,
+projection, or delay may stay on the default `exec.error`, provided one sink
+subscribes to `exec.error`. A `jq` program that parses fails only on a payload
+shape nobody expected, which is a bug to fix rather than a condition to route.
+Behind a `stream-runner` that bug stalls the batch, and the `exec.error` sink is
+where you will read why.
+
 ## Retry with backoff
 
-Failure event, delay, publish an event the failed stage subscribes to. The
-attempt count rides in the payload, and two exclusive subscribers on the failure
-event decide between another try and giving up.
+Failure event, guard, delay, then an event the failed stage subscribes to. The
+attempt count rides in the payload. Two exclusive routers on the failure event
+decide between another try and giving up, and only then does anything wait.
 
 ```toml
 [[handlers]]
-name = "retry-scoring"
+name = "route-rescorable"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "issue.score-failed", "--publish-as", "issue.rescore-due",
-        "-t", "20000", "--max-concurrent", "8", "--", "bash", "-c",
-  '''p=$(cat); sleep $((2 ** $(jq -r '.attempt // 1' <<< "$p"))); \
-     jq -c 'select(.attempt < 3) | del(.error) | .attempt += 1' <<< "$p" ''']
+args = ["-s", "issue.score-failed", "--publish-as", "issue.score-retryable", "--",
+        "jq", "-c", "select(.attempt < 3)"]
 subscribes = ["issue.score-failed"]
-publishes = ["issue.rescore-due"]
+publishes = ["issue.score-retryable"]
 
 [[handlers]]
 name = "escalate-unscorable"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "issue.score-failed", "--publish-as", "issue.escalated", "--",
-        "jq", "-c", "select(.attempt >= 3) | {number, attempt, reason: \"scoring failed\"}"]
+        "jq", "-c", "select(.attempt < 3 | not) | {number, attempt, reason: \"scoring failed\"}"]
 subscribes = ["issue.score-failed"]
 publishes = ["issue.escalated"]
+
+# The delay. Its one act is the pause; the jq after it is the announcement.
+[[handlers]]
+name = "delay-rescore"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "issue.score-retryable", "--publish-as", "issue.backoff-elapsed",
+        "-t", "20000", "--max-concurrent", "8", "--", "bash", "-c",
+  '''p=$(cat); sleep $((2 ** $(jq -r .attempt <<< "$p"))); \
+     jq -c 'del(.error) | .attempt += 1' <<< "$p" ''']
+subscribes = ["issue.score-retryable"]
+publishes = ["issue.backoff-elapsed"]
 ```
 
-Three details carry the weight. The backoff reads the attempt from the payload,
-because nothing else knows it. `-t` must exceed the longest sleep, or the delay
-itself times out and publishes an error. And a sleeping handler holds its slot,
-so raise `--max-concurrent` or one slow retry queues every other one behind it.
+`score-severity` adds `-s issue.backoff-elapsed` and the loop is closed.
+
+Four details carry the weight. The guard runs before the delay, so an item that
+is out of attempts escalates at once instead of sleeping its longest sleep first,
+and the decision is a router you can read rather than a `select` hidden behind a
+pause. The backoff reads the attempt from the payload, because nothing else
+knows it. `-t` must exceed the longest sleep, or the delay itself times out and
+publishes an error. And a sleeping handler holds its slot, so raise
+`--max-concurrent` or one slow retry queues every other one behind it. Behind a
+`stream-runner` with an end-of-flow ack only one item is in flight, so the
+default of 1 is already enough there.
+
+Retry only acts that are safe to repeat. A timeout does not mean the act did not
+happen: a POST that landed and then timed out will land again. Send an
+idempotency key the service dedupes on (the item's own identity works), or send
+timeouts to a person instead of the retry loop.
 
 The retry is a first-class part of the topology, so you can see every attempt in
 the log and change the policy without touching the thing being retried.
