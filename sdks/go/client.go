@@ -1002,45 +1002,57 @@ func (c *baseClient) handleTopologyResponse(payloadMap map[string]any) {
 	// Extract primitives from the nested payload
 	innerPayload, _ := wirePayload["payload"].(map[string]any)
 	primitivesRaw, _ := innerPayload["primitives"].([]any)
-
-	state := &TopologyState{}
-	for _, pRaw := range primitivesRaw {
-		if pm, ok := pRaw.(map[string]any); ok {
-			tp := TopologyPrimitive{}
-			tp.Name, _ = pm["name"].(string)
-			tp.Kind, _ = pm["kind"].(string)
-			tp.State, _ = pm["state"].(string)
-
-			if pubs, ok := pm["publishes"].([]any); ok {
-				for _, p := range pubs {
-					if s, ok := p.(string); ok {
-						tp.Publishes = append(tp.Publishes, s)
-					}
-				}
-			}
-			if subs, ok := pm["subscribes"].([]any); ok {
-				for _, s := range subs {
-					if str, ok := s.(string); ok {
-						tp.Subscribes = append(tp.Subscribes, str)
-					}
-				}
-			}
-			if pid, ok := pm["pid"].(float64); ok {
-				p := uint32(pid)
-				tp.PID = &p
-			}
-			if errStr, ok := pm["error"].(string); ok {
-				tp.Error = &errStr
-			}
-
-			state.Primitives = append(state.Primitives, tp)
-		}
-	}
+	state := topologyStateFromWire(primitivesRaw)
 
 	select {
 	case pending.ch <- state:
 	default:
 	}
+}
+
+// topologyStateFromWire builds a TopologyState from the decoded "primitives"
+// list of a system.response.topology payload. Entries that are not maps are
+// skipped. It is pure, so both wire formats are tested without a socket.
+func topologyStateFromWire(primitivesRaw []any) *TopologyState {
+	state := &TopologyState{}
+	for _, pRaw := range primitivesRaw {
+		if pm, ok := pRaw.(map[string]any); ok {
+			state.Primitives = append(state.Primitives, topologyPrimitiveFromWire(pm))
+		}
+	}
+	return state
+}
+
+// topologyPrimitiveFromWire builds one TopologyPrimitive from its decoded map.
+func topologyPrimitiveFromWire(pm map[string]any) TopologyPrimitive {
+	tp := TopologyPrimitive{}
+	tp.Name, _ = pm["name"].(string)
+	tp.Kind, _ = pm["kind"].(string)
+	tp.State, _ = pm["state"].(string)
+	tp.Publishes = wireStrings(pm["publishes"])
+	tp.Subscribes = wireStrings(pm["subscribes"])
+
+	// The PID is a float64 over JSON and an integer kind over MessagePack.
+	if pid, ok := wireUint32(pm["pid"]); ok {
+		tp.PID = &pid
+	}
+	if errStr, ok := pm["error"].(string); ok {
+		tp.Error = &errStr
+	}
+	return tp
+}
+
+// wireStrings returns the strings of a decoded wire list, skipping any other
+// element. It returns nil for a value that is not a list.
+func wireStrings(value any) []string {
+	items, _ := value.([]any)
+	var result []string
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // handleSubscriptionsResponse completes a pending GetMySubscriptions call.
@@ -1068,14 +1080,7 @@ func (c *baseClient) handleSubscriptionsResponse(payloadMap map[string]any) {
 
 	// Extract subscribes list from nested payload
 	innerPayload, _ := wirePayload["payload"].(map[string]any)
-	subscribesRaw, _ := innerPayload["subscribes"].([]any)
-
-	var result []string
-	for _, s := range subscribesRaw {
-		if str, ok := s.(string); ok {
-			result = append(result, str)
-		}
-	}
+	result := wireStrings(innerPayload["subscribes"])
 
 	select {
 	case pending.ch <- result:

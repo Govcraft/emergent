@@ -21,6 +21,10 @@ type fakeReply struct {
 	delayed bool
 }
 
+// fakeTimerPID is the PID the fake engine reports for its running timer. The
+// console primitive reports none.
+const fakeTimerPID uint32 = 70000
+
 // fakeTopologyPrimitives is the topology the fake engine reports.
 func fakeTopologyPrimitives() []any {
 	return []any{
@@ -28,6 +32,7 @@ func fakeTopologyPrimitives() []any {
 			"name":       "timer",
 			"kind":       "source",
 			"state":      "running",
+			"pid":        fakeTimerPID,
 			"publishes":  []any{"timer.tick"},
 			"subscribes": []any{},
 		},
