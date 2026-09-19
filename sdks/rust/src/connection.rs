@@ -759,6 +759,19 @@ impl EmergentSource {
         info!(primitive.name = %self.name, "disconnected from engine");
         Ok(())
     }
+
+    /// Take the IPC push channel so a caller can watch for the engine's EOF.
+    ///
+    /// A Source subscribes to nothing, so this channel carries no messages it
+    /// cares about. Its one useful event is closing: the client's reader task
+    /// owns the sending half and drops it when the engine's socket reaches
+    /// EOF, which is how a Source learns the engine died. Handlers and Sinks
+    /// already get the same signal through their subscription stream.
+    ///
+    /// Returns `None` if the receiver was already taken.
+    pub(crate) fn take_engine_push_channel(&self) -> Option<mpsc::Receiver<IpcPushNotification>> {
+        self.client.take_push_receiver()
+    }
 }
 
 // ============================================================================

@@ -136,10 +136,12 @@
 
 use crate::connection::{EmergentHandler, EmergentSink, EmergentSource};
 use crate::message::EmergentMessage;
+use acton_reactive::ipc::IpcPushNotification;
 use std::future::Future;
 use thiserror::Error;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+use tracing::{debug, warn};
 
 /// Errors that can occur when running helper functions.
 #[derive(Debug, Error)]
@@ -193,12 +195,58 @@ fn resolve_name(name: Option<&str>, default: &str) -> String {
 /// Call `.changed().await` to wait for a shutdown signal.
 pub type ShutdownReceiver = watch::Receiver<bool>;
 
+/// Why a Source's shutdown watch fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceStopReason {
+    /// The engine asked for a graceful stop with SIGTERM.
+    Signal,
+    /// The engine's IPC connection reached EOF. A Source is told nothing else
+    /// when the engine is SIGKILLed or aborts.
+    EngineDisconnected,
+}
+
+/// Resolve as soon as either `signal` completes or `engine_push` closes.
+///
+/// Pushes that do arrive are discarded: a Source subscribes to nothing, so
+/// anything delivered on that channel is a broadcast it never asked for and
+/// only the channel closing carries meaning. Given no channel (one was already
+/// taken elsewhere) this waits on the signal alone, which is the behaviour
+/// Sources had before EOF was observable.
+async fn source_stop_reason<S>(
+    signal: S,
+    engine_push: Option<mpsc::Receiver<IpcPushNotification>>,
+) -> SourceStopReason
+where
+    S: Future<Output = ()>,
+{
+    let Some(mut push_rx) = engine_push else {
+        signal.await;
+        return SourceStopReason::Signal;
+    };
+
+    tokio::pin!(signal);
+
+    loop {
+        tokio::select! {
+            () = &mut signal => return SourceStopReason::Signal,
+            push = push_rx.recv() => {
+                if push.is_none() {
+                    return SourceStopReason::EngineDisconnected;
+                }
+            }
+        }
+    }
+}
+
 /// Run a Source with custom logic.
 ///
 /// This function handles all the boilerplate for running a Source:
 /// - Resolves the name from the provided option, `EMERGENT_NAME` env var, or default
 /// - Connects to the Emergent engine
 /// - Sets up SIGTERM signal handling for graceful shutdown
+/// - Watches the engine connection and signals shutdown when it reaches EOF,
+///   so a Source stops instead of publishing into a dead socket when the
+///   engine is SIGKILLed or aborts
 /// - Calls your function with the connected source and a shutdown receiver
 /// - Gracefully disconnects after your function completes
 ///
@@ -282,9 +330,34 @@ where
     let mut sigterm = signal(SignalKind::terminate())
         .map_err(|e| HelperError::SignalHandlerFailed(e.to_string()))?;
 
-    // Spawn signal handler task
+    // A Source has no subscription stream to end, so watch the IPC push
+    // channel instead. It closes on socket EOF, which is the only notice an
+    // engine that was SIGKILLed or aborted ever gives.
+    let engine_push = source.take_engine_push_channel();
+    let watcher_name = resolved_name.clone();
+
+    // Spawn the shutdown watcher task
     let signal_task = tokio::spawn(async move {
-        sigterm.recv().await;
+        let reason = source_stop_reason(
+            async move {
+                sigterm.recv().await;
+            },
+            engine_push,
+        )
+        .await;
+
+        match reason {
+            SourceStopReason::Signal => {
+                debug!(primitive.name = %watcher_name, "source shutting down (SIGTERM)");
+            }
+            SourceStopReason::EngineDisconnected => {
+                warn!(
+                    primitive.name = %watcher_name,
+                    "source shutting down (engine connection closed)"
+                );
+            }
+        }
+
         let _ = shutdown_tx.send(true);
     });
 
@@ -535,6 +608,56 @@ mod tests {
         unsafe {
             std::env::remove_var(EMERGENT_NAME_ENV);
         }
+    }
+
+    fn push(message_type: &str) -> IpcPushNotification {
+        IpcPushNotification::new(message_type, None, serde_json::Value::Null)
+    }
+
+    /// A Source that outlives its engine must learn about it somehow, and the
+    /// push channel closing is the only notice it gets.
+    #[tokio::test]
+    async fn engine_eof_stops_a_source() {
+        let (tx, rx) = mpsc::channel(4);
+        drop(tx);
+
+        let reason = source_stop_reason(std::future::pending::<()>(), Some(rx)).await;
+
+        assert_eq!(reason, SourceStopReason::EngineDisconnected);
+    }
+
+    /// SIGTERM still wins while the engine connection is healthy.
+    #[tokio::test]
+    async fn sigterm_stops_a_source_with_a_live_engine() {
+        let (tx, rx) = mpsc::channel(4);
+
+        let reason = source_stop_reason(std::future::ready(()), Some(rx)).await;
+
+        assert_eq!(reason, SourceStopReason::Signal);
+        drop(tx);
+    }
+
+    /// Anything actually delivered on the channel is noise to a Source, and
+    /// must not be mistaken for the engine going away.
+    #[tokio::test]
+    async fn a_delivered_push_does_not_stop_a_source() {
+        let (tx, rx) = mpsc::channel(4);
+        tx.send(push("timer.tick")).await.ok();
+        tx.send(push("system.started.timer")).await.ok();
+
+        let watch = tokio::spawn(source_stop_reason(std::future::pending::<()>(), Some(rx)));
+
+        // Still waiting: the pushes were consumed, not treated as a close.
+        let early = tokio::time::timeout(std::time::Duration::from_millis(50), watch).await;
+        assert!(early.is_err(), "a delivered push must not stop the source");
+    }
+
+    /// With no channel to watch, a Source behaves exactly as it did before.
+    #[tokio::test]
+    async fn without_a_push_channel_only_the_signal_stops_a_source() {
+        let reason = source_stop_reason(std::future::ready(()), None).await;
+
+        assert_eq!(reason, SourceStopReason::Signal);
     }
 
     #[test]
