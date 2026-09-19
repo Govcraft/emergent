@@ -12,6 +12,7 @@ use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get};
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -98,14 +99,13 @@ enum Command {
 }
 
 use emergent_engine::config::EmergentConfig;
-use emergent_engine::declarations::{
-    Enforcement, Operation, RejectionReport, rejection_event_type,
-};
+use emergent_engine::declarations::{Enforcement, RejectionReport, rejection_event_type};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::{ProcessManager, ShutdownTimings};
 use emergent_engine::retention;
+use emergent_engine::security::{EnginePolicy, PolicyObserver, SpawnedPids, policy_is_needed};
 use emergent_engine::topology::build_topology_payload;
 
 // ============================================================================
@@ -198,6 +198,43 @@ impl EventStoreWrapper {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Lets the security policy read the engine's live process table.
+///
+/// Admission asks for this once per connection, so the cost is a read lock on
+/// the process manager at connect time and nothing at all per message.
+struct SpawnedPrimitives(ProcessManager);
+
+impl SpawnedPids for SpawnedPrimitives {
+    fn snapshot(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HashMap<u32, String>> + Send + '_>>
+    {
+        Box::pin(async move {
+            self.0
+                .list_all()
+                .await
+                .into_iter()
+                .filter_map(|info| info.pid.map(|pid| (pid, info.name)))
+                .collect()
+        })
+    }
+}
+
+/// Hands a rejected operation to the task that reports it.
+///
+/// A warning is already logged by the policy, so only a rejection is worth an
+/// event. The send is on an unbounded channel and never awaits, which is what
+/// keeps `authorize` off the blocking list.
+struct RejectionChannel(tokio::sync::mpsc::UnboundedSender<RejectionReport>);
+
+impl PolicyObserver for RejectionChannel {
+    fn on_violation(&self, report: &RejectionReport, enforcement: Enforcement) {
+        if enforcement == Enforcement::Reject && self.0.send(report.clone()).is_err() {
+            debug!("Rejection report dropped: the reporting task has stopped");
+        }
+    }
+}
 
 /// Store and forward the `system.error.<name>` event a strict rejection owes.
 ///
@@ -583,14 +620,56 @@ async fn main() -> Result<()> {
     registry.register::<IpcSystemEvent>("SystemEvent");
     info!("Registered {} IPC message type(s)", registry.len());
 
+    // Build the declaration table before the listener, because the security
+    // policy that enforces it has to be installed as the listener starts.
+    let declarations = Arc::new(config.declaration_table());
+    if declarations.mode().is_enforcing() {
+        info!(
+            "Declaration enforcement: {} ({} primitive(s) declared)",
+            declarations.mode(),
+            declarations.len()
+        );
+    }
+
+    // Rejections are reported from a task of their own. `authorize` runs on
+    // acton's connection task and must not block, and the subscription manager
+    // it would need does not exist until the listener below has started, so the
+    // policy only hands the report over and returns.
+    let (rejections_tx, mut rejections_rx) = tokio::sync::mpsc::unbounded_channel();
+
     // Start the IPC listener first to get the subscription manager
-    let listener_handle = runtime
-        .start_ipc_listener_with_config(ipc_config)
-        .await
-        .context("Failed to start IPC listener")?;
+    let listener_handle = if policy_is_needed(declarations.mode(), false) {
+        let policy = Arc::new(EnginePolicy::new(
+            declarations.clone(),
+            Arc::new(SpawnedPrimitives(process_manager.clone())),
+            Some(Arc::new(RejectionChannel(rejections_tx))),
+        ));
+        runtime
+            .start_ipc_listener_with_policy(ipc_config, policy)
+            .await
+    } else {
+        runtime.start_ipc_listener_with_config(ipc_config).await
+    }
+    .context("Failed to start IPC listener")?;
 
     // Get subscription manager for message routing to IPC clients
     let subscription_manager = listener_handle.subscription_manager();
+
+    // Drain the rejection reports the policy produced into the event store and
+    // out to subscribers. The task ends when the policy is dropped.
+    {
+        let event_store_for_rejections = event_store.clone();
+        let sub_mgr_for_rejections = subscription_manager.clone();
+        tokio::spawn(async move {
+            while let Some(report) = rejections_rx.recv().await {
+                report_rejection(
+                    &event_store_for_rejections,
+                    &sub_mgr_for_rejections,
+                    &report,
+                );
+            }
+        });
+    }
 
     // Create the message broker actor that:
     // 1. Logs events to the event store
@@ -608,49 +687,13 @@ async fn main() -> Result<()> {
     let sub_mgr_for_emergent = sub_mgr_clone.clone();
     let pm_for_subscriptions = process_manager.clone();
     let pm_for_topology = process_manager.clone();
-    let declarations = Arc::new(config.declaration_table());
-    if declarations.mode().is_enforcing() {
-        info!(
-            "Declaration enforcement: {} ({} primitive(s) declared)",
-            declarations.mode(),
-            declarations.len()
-        );
-    }
     broker_actor.mutate_on::<IpcEmergentMessage>(move |actor, envelope| {
         let msg = envelope.message();
         actor.model.message_count += 1;
 
-        // Check the publish against the sender's declarations before the
-        // message is stored or forwarded, so a strict rejection leaves no
-        // trace of the message anywhere.
-        let name = msg.inner.source.as_str();
-        let message_type = msg.inner.message_type.as_str();
-        let checked = declarations.check(name, Operation::Publish, message_type);
-        if checked.enforcement != Enforcement::Accept {
-            let report = RejectionReport::new(
-                checked.verdict,
-                name,
-                Operation::Publish,
-                message_type,
-                declarations.mode(),
-            );
-            warn!(
-                primitive = %name,
-                operation = "publish",
-                message.type = %message_type,
-                mode = %declarations.mode(),
-                "Declaration violation: {}",
-                report.reason
-            );
-            if checked.enforcement == Enforcement::Reject {
-                report_rejection(&event_store_for_emergent, &sub_mgr_for_emergent, &report);
-                // Returning without replying is what the publisher sees: acton
-                // 9.3.0 gives an actor no way to put its own text in the IPC
-                // error frame, so `publish_ack` fails with acton's no-reply
-                // message and the reason is in the log and the event.
-                return Reply::ready();
-            }
-        }
+        // A publish that broke its declarations never reaches here: the
+        // security policy refuses the IPC request before acton routes it, so a
+        // strict rejection leaves no trace in the store or the subscribers.
 
         // Log to event store
         if let Err(e) = event_store_for_emergent.store(&msg.inner) {

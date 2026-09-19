@@ -108,6 +108,10 @@ pub enum Verdict {
     KindCannot,
     /// No primitive of this name is configured.
     UnknownPrimitive,
+    /// Admission could not tie the connection to any configured primitive.
+    Unauthenticated,
+    /// The message named a different primitive than the connection belongs to.
+    SourceMismatch,
 }
 
 impl Verdict {
@@ -116,7 +120,11 @@ impl Verdict {
     pub const fn is_violation(&self) -> bool {
         matches!(
             self,
-            Self::Undeclared | Self::KindCannot | Self::UnknownPrimitive
+            Self::Undeclared
+                | Self::KindCannot
+                | Self::UnknownPrimitive
+                | Self::Unauthenticated
+                | Self::SourceMismatch
         )
     }
 }
@@ -297,13 +305,37 @@ pub fn violation_reason(
         Verdict::UnknownPrimitive => format!(
             "'{name}' tried to {op} '{message_type}' but no primitive of that name is configured"
         ),
+        Verdict::Unauthenticated => format!(
+            "a connection the engine could not tie to a configured primitive tried to {op} '{message_type}'"
+        ),
         Verdict::KindCannot => {
             format!("'{name}' tried to {op} '{message_type}' but its kind cannot {op}")
         }
         Verdict::Undeclared => format!(
             "'{name}' tried to {op} '{message_type}', which is not in its declared {field} list"
         ),
+        Verdict::SourceMismatch => format!(
+            "a message published as '{message_type}' on the connection belonging to '{name}' named a different source"
+        ),
         Verdict::Declared | Verdict::Protocol => format!("'{name}' may {op} '{message_type}'"),
+    }
+}
+
+/// Decide whether a message may carry this `source` on this connection.
+///
+/// Before acton-reactive 9.4.0 the `source` field was the only name the engine
+/// had, so it could not be checked against anything. Now that admission binds a
+/// trusted name to the connection, a message claiming to come from somewhere
+/// else is a violation in its own right: left alone it would write another
+/// primitive's name into the event store and into `system.error.*`.
+///
+/// A message that names nobody is fine; the SDKs fill the field in from the
+/// primitive's own name, and an empty one is not a claim.
+#[must_use]
+pub fn decide_source(identity: Option<&str>, source: Option<&str>) -> Verdict {
+    match (identity, source) {
+        (Some(name), Some(claimed)) if claimed != name => Verdict::SourceMismatch,
+        _ => Verdict::Declared,
     }
 }
 
@@ -320,7 +352,7 @@ pub fn rejection_event_type(name: &str) -> String {
 /// The payload of the `system.error.<name>` event a strict rejection reports.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RejectionReport {
-    /// The name the rejected message claimed as its source.
+    /// The primitive the connection was admitted as, or `<unauthenticated>`.
     pub primitive: String,
     /// `publish` or `subscribe`.
     pub operation: String,
@@ -393,19 +425,50 @@ impl DeclarationTable {
         self.primitives.is_empty()
     }
 
-    /// Decide an operation, returning both the verdict and what to do about it.
+    /// Decide whether a message's `source` matches the connection it arrived on.
     ///
-    /// In [`EnforcementMode::Off`] no lookup happens at all, so the cost of the
-    /// default is one comparison per message.
+    /// Separate from [`Self::check`] because it asks a different question: not
+    /// "may this primitive publish this type" but "is this primitive who it
+    /// says it is".
     #[must_use]
-    pub fn check(&self, name: &str, operation: Operation, message_type: &str) -> Checked {
+    pub fn check_source(&self, identity: Option<&str>, source: Option<&str>) -> Checked {
         if !self.mode.is_enforcing() {
             return Checked {
                 verdict: Verdict::Declared,
                 enforcement: Enforcement::Accept,
             };
         }
-        let verdict = decide(self.primitives.get(name), operation, message_type);
+        let verdict = decide_source(identity, source);
+        Checked {
+            verdict,
+            enforcement: enforcement_for(self.mode, verdict),
+        }
+    }
+
+    /// Decide an operation, returning both the verdict and what to do about it.
+    ///
+    /// `name` is the identity admission established for the connection, not a
+    /// name the client supplied; `None` is a connection the engine could not
+    /// tie to a configured primitive.
+    ///
+    /// In [`EnforcementMode::Off`] no lookup happens at all, so the cost of the
+    /// default is one comparison per message.
+    #[must_use]
+    pub fn check(&self, name: Option<&str>, operation: Operation, message_type: &str) -> Checked {
+        if !self.mode.is_enforcing() {
+            return Checked {
+                verdict: Verdict::Declared,
+                enforcement: Enforcement::Accept,
+            };
+        }
+        let verdict = match name {
+            // A client the engine cannot identify may still ask the engine the
+            // questions every SDK asks, which is how a CLI or a topology viewer
+            // reaches `system.request.topology` over the same socket.
+            None if is_protocol_topic(message_type) => Verdict::Protocol,
+            None => Verdict::Unauthenticated,
+            Some(name) => decide(self.primitives.get(name), operation, message_type),
+        };
         Checked {
             verdict,
             enforcement: enforcement_for(self.mode, verdict),
@@ -613,7 +676,7 @@ mod tests {
             EnforcementMode::Off,
             [("timer".to_string(), source(&["timer.tick"]))],
         );
-        let checked = table.check("nobody", Operation::Publish, "made.up");
+        let checked = table.check(Some("nobody"), Operation::Publish, "made.up");
         assert_eq!(checked.enforcement, Enforcement::Accept);
         assert!(!checked.verdict.is_violation());
     }
@@ -632,26 +695,26 @@ mod tests {
 
         assert_eq!(
             table
-                .check("timer", Operation::Publish, "timer.tick")
+                .check(Some("timer"), Operation::Publish, "timer.tick")
                 .enforcement,
             Enforcement::Accept
         );
         assert_eq!(
             table
-                .check("timer", Operation::Publish, "timer.tock")
+                .check(Some("timer"), Operation::Publish, "timer.tock")
                 .enforcement,
             Enforcement::Reject
         );
         assert_eq!(
             table
-                .check("console", Operation::Publish, "timer.tick")
+                .check(Some("console"), Operation::Publish, "timer.tick")
                 .enforcement,
             Enforcement::Reject
         );
         assert_eq!(
             table
                 .check(
-                    "console",
+                    Some("console"),
                     Operation::Publish,
                     "system.request.subscriptions"
                 )
@@ -660,10 +723,52 @@ mod tests {
         );
         assert_eq!(
             table
-                .check("ghost", Operation::Publish, "timer.tick")
+                .check(Some("ghost"), Operation::Publish, "timer.tick")
                 .enforcement,
             Enforcement::Reject
         );
+    }
+
+    #[test]
+    fn an_unidentified_connection_is_a_violation_but_may_still_ask_the_engine() {
+        let table = DeclarationTable::new(
+            EnforcementMode::Strict,
+            [("timer".to_string(), source(&["timer.tick"]))],
+        );
+
+        // It cannot borrow a declared primitive's permissions.
+        let checked = table.check(None, Operation::Publish, "timer.tick");
+        assert_eq!(checked.verdict, Verdict::Unauthenticated);
+        assert_eq!(checked.enforcement, Enforcement::Reject);
+
+        // But protocol questions stay open, so a CLI or topology viewer that
+        // the engine did not spawn keeps working under strict.
+        for topic in PROTOCOL_TOPICS {
+            let checked = table.check(None, Operation::Publish, topic);
+            assert_eq!(checked.verdict, Verdict::Protocol, "{topic}");
+            assert_eq!(checked.enforcement, Enforcement::Accept, "{topic}");
+        }
+
+        // And in warn mode it is only logged.
+        let warn = DeclarationTable::new(EnforcementMode::Warn, []);
+        assert_eq!(
+            warn.check(None, Operation::Subscribe, "timer.tick")
+                .enforcement,
+            Enforcement::Warn
+        );
+    }
+
+    #[test]
+    fn an_unauthenticated_reason_does_not_invent_a_name() {
+        let reason = violation_reason(
+            Verdict::Unauthenticated,
+            "<unauthenticated>",
+            Operation::Subscribe,
+            "timer.tick",
+        );
+        assert!(reason.contains("could not tie"), "{reason}");
+        assert!(reason.contains("subscribe"), "{reason}");
+        assert!(reason.contains("timer.tick"), "{reason}");
     }
 
     #[test]
@@ -752,6 +857,39 @@ mod tests {
                 Operation::Publish,
                 "timer.tock"
             )
+        );
+    }
+
+    #[test]
+    fn a_message_may_not_claim_a_name_its_connection_does_not_own() {
+        // (admitted identity, claimed source, expected)
+        let cases: &[(Option<&str>, Option<&str>, Verdict)] = &[
+            (Some("timer"), Some("timer"), Verdict::Declared),
+            (Some("timer"), None, Verdict::Declared),
+            (Some("timer"), Some("filter"), Verdict::SourceMismatch),
+            // Nothing to compare against, so the declaration check carries it.
+            (None, Some("timer"), Verdict::Declared),
+            (None, None, Verdict::Declared),
+        ];
+        for (identity, source, expected) in cases {
+            assert_eq!(
+                decide_source(*identity, *source),
+                *expected,
+                "identity {identity:?} claiming {source:?}"
+            );
+        }
+
+        let strict = DeclarationTable::new(EnforcementMode::Strict, []);
+        assert_eq!(
+            strict
+                .check_source(Some("timer"), Some("filter"))
+                .enforcement,
+            Enforcement::Reject
+        );
+        let off = DeclarationTable::new(EnforcementMode::Off, []);
+        assert_eq!(
+            off.check_source(Some("timer"), Some("filter")).enforcement,
+            Enforcement::Accept
         );
     }
 

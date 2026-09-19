@@ -32,6 +32,7 @@ pub mod primitives;
 pub mod process_manager;
 pub mod retention;
 pub mod scaffold;
+pub mod security;
 pub mod supervision;
 pub mod topology;
 pub mod update;
@@ -47,6 +48,7 @@ pub use primitive_actor::{
     build_primitive_actor,
 };
 pub use primitives::{PrimitiveKind, PrimitiveState};
+pub use security::{PrimitiveIdentity, resolve_identity};
 pub use supervision::{
     ExitOutcome, RestartDecision, RestartLimits, RestartPolicy, backoff_delay, decide_restart,
 };

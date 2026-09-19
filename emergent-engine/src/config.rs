@@ -1167,25 +1167,25 @@ subscribes = ["timer.filtered"]
 
         assert_eq!(
             table
-                .check("timer", Operation::Publish, "timer.tick")
+                .check(Some("timer"), Operation::Publish, "timer.tick")
                 .verdict,
             Verdict::Declared
         );
         assert_eq!(
             table
-                .check("timer", Operation::Publish, "timer.tock")
+                .check(Some("timer"), Operation::Publish, "timer.tock")
                 .verdict,
             Verdict::Undeclared
         );
         assert_eq!(
             table
-                .check("console", Operation::Publish, "timer.filtered")
+                .check(Some("console"), Operation::Publish, "timer.filtered")
                 .verdict,
             Verdict::KindCannot
         );
         assert_eq!(
             table
-                .check("filter", Operation::Subscribe, "timer.tick")
+                .check(Some("filter"), Operation::Subscribe, "timer.tick")
                 .verdict,
             Verdict::Declared
         );
