@@ -225,37 +225,41 @@ subscribes = ["monitor.metric"]
 
 Use these when you need **persistent state**, **complex computation**, or **custom protocols**.
 
-### Rust: Stateful Handler (using helpers)
+### Rust: Stateful Handler
+
+This uses the low-level loop rather than `run_handler`. The helper's current
+bound rejects a closure that borrows `handler` across an `.await`, so a handler
+that publishes does not compile with it (see `sdk-api.md`). The loop also owns
+its state outright, so it needs no `Arc` or `Mutex`.
 
 ```rust
-use emergent_client::helpers::run_handler;
-use emergent_client::EmergentMessage;
+use emergent_client::{EmergentHandler, EmergentMessage};
 use serde_json::json;
-use std::sync::{Arc, Mutex};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let counter = Arc::new(Mutex::new(0u64));
+    let mut handler = EmergentHandler::connect("counter_handler").await?;
+    let mut stream = handler.subscribe(["input.event"]).await?;
 
-    run_handler(
-        Some("counter_handler"),
-        &["input.event"],
-        move |msg, handler| {
-            let counter = counter.clone();
-            async move {
-                let mut count = counter.lock().map_err(|e| e.to_string())?;
-                *count += 1;
+    let mut count = 0u64;
 
-                let output = EmergentMessage::new("output.counted")
-                    .with_causation_from_message(msg.id())
-                    .with_payload(json!({"count": *count, "input": msg.payload()}));
-                handler.publish(output).await.map_err(|e| e.to_string())
-            }
-        }
-    ).await?;
+    // Ends when the engine sends system.shutdown or the connection closes.
+    while let Some(msg) = stream.next().await {
+        count += 1;
+        let output = EmergentMessage::new("output.counted")
+            .with_causation_from_message(msg.id())
+            .with_payload(json!({"count": count, "input": msg.payload()}));
+        handler.publish(output).await?;
+    }
+
+    handler.disconnect().await?;
     Ok(())
 }
 ```
+
+If state must be shared with another task, never hold a `std::sync::MutexGuard`
+across an `.await` (the future stops being `Send`). Take the value out in a
+block first: `let n = { let mut c = counter.lock().map_err(|e| e.to_string())?; *c += 1; *c };`.
 
 ### Python: Stateful Handler
 

@@ -2,22 +2,25 @@
 
 ## Clippy Rules
 
-The Emergent workspace enforces strict linting rules. These are **non-negotiable**.
+The Emergent workspace denies two clippy lints. These are **non-negotiable**
+for code in the workspace, and the right default for a primitive of your own.
 
 ### Denied Lints
 
 ```toml
-[lints.clippy]
+# In the emergent workspace root; member crates opt in with `[lints] workspace = true`
+[workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+
+# In a standalone primitive crate, the same thing is spelled:
+# [lints.clippy]
+# unwrap_used = "deny"
+# expect_used = "deny"
 ```
 
-### Forbidden
-
-```toml
-[lints.rust]
-unsafe_code = "forbid"
-```
+These are clippy lints, so `cargo check` and `cargo build` still succeed. Only
+`cargo clippy` fails, which is why it is a required gate.
 
 ## Correct Patterns
 
@@ -26,14 +29,14 @@ unsafe_code = "forbid"
 #### For Option Types
 
 ```rust
-// BAD - will not compile
+// BAD - fails cargo clippy (unwrap_used / expect_used are denied)
 let value = some_option.unwrap();
 let value = some_option.expect("should have value");
 
 // GOOD - handle the None case
 let value = match some_option {
     Some(v) => v,
-    None => return Err(MyError::MissingValue),
+    None => return Err(MyPrimitiveError::MissingValue),
 };
 
 // GOOD - with default
@@ -42,8 +45,8 @@ let value = some_option.unwrap_or(default_value);
 let value = some_option.unwrap_or_else(|| compute_default());
 
 // GOOD - propagate with ?
-let value = some_option.ok_or(MyError::MissingValue)?;
-let value = some_option.ok_or_else(|| MyError::MissingValue)?;
+let value = some_option.ok_or(MyPrimitiveError::MissingValue)?;
+let value = some_option.ok_or_else(|| MyPrimitiveError::MissingValue)?;
 
 // GOOD - if let for optional processing
 if let Some(value) = some_option {
@@ -54,7 +57,7 @@ if let Some(value) = some_option {
 #### For Result Types
 
 ```rust
-// BAD - will not compile
+// BAD - fails cargo clippy (unwrap_used / expect_used are denied)
 let value = some_result.unwrap();
 let value = some_result.expect("should succeed");
 
@@ -62,8 +65,8 @@ let value = some_result.expect("should succeed");
 let value = some_result?;
 
 // GOOD - map the error type
-let value = some_result.map_err(|e| MyError::from(e))?;
-let value = some_result.map_err(MyError::External)?;
+let value = some_result.map_err(|e| MyPrimitiveError::from(e))?;
+let value = some_result.map_err(MyPrimitiveError::External)?;
 
 // GOOD - handle explicitly
 let value = match some_result {
@@ -128,7 +131,7 @@ let data: MyPayload = match msg.payload_as() {
 
 // GOOD - propagate error
 let data: MyPayload = msg.payload_as().map_err(|e| {
-    MyError::InvalidPayload(e.to_string())
+    MyPrimitiveError::InvalidPayload(e.to_string())
 })?;
 ```
 
@@ -144,7 +147,7 @@ let name = std::env::var("EMERGENT_NAME")
 
 // GOOD - required variable
 let name = std::env::var("REQUIRED_VAR")
-    .map_err(|_| MyError::MissingEnvVar("REQUIRED_VAR"))?;
+    .map_err(|_| MyPrimitiveError::MissingEnvVar("REQUIRED_VAR"))?;
 ```
 
 ### Publishing Messages
@@ -167,6 +170,21 @@ source.publish(message).await?;
 
 ## Error Types
 
+### The SDK's Own Errors
+
+| Type | Returned by | Variants |
+|---|---|---|
+| `emergent_client::ClientError` | `connect`, `subscribe`, `publish`, `discover`, `disconnect` | `ConnectionFailed`, `SocketNotFound`, `IoError`, `IpcError`, `SerializationError`, `SubscriptionFailed`, `PublishFailed`, `DiscoveryFailed`, `Timeout`, `EngineError`, `ProtocolError` |
+| `emergent_client::helpers::HelperError` | `run_source`, `run_handler`, `run_sink` | `ConnectionFailed { name, error }`, `UserFunction`, `PublishFailed`, `SubscribeFailed`, `SignalHandlerFailed`, `DisconnectFailed` |
+| `serde_json::Error` | `msg.payload_as::<T>()` | n/a |
+
+The closures passed to the `run_*` helpers return `Result<(), String>`, which is
+why the examples end calls with `.map_err(|e| e.to_string())`. An `Err` from
+the closure makes the helper return `HelperError::UserFunction`, which ends the
+primitive, and the engine does not restart it. Return `Err` only for a failure
+that should stop the process; for one bad message, log it (or publish a
+`<domain>.failed` event) and return `Ok(())`.
+
 ### Creating Custom Errors
 
 Use `thiserror` for custom error types:
@@ -185,8 +203,21 @@ pub enum MyPrimitiveError {
     #[error("missing required field: {0}")]
     MissingField(&'static str),
 
+    #[error("missing value")]
+    MissingValue,
+
+    #[error("missing environment variable: {0}")]
+    MissingEnvVar(&'static str),
+
+    #[error("fetch failed: {0}")]
+    FetchFailed(String),
+
     #[error("external service error: {0}")]
     External(#[from] reqwest::Error),
+
+    // Lets `?` convert SDK errors, as in `EmergentSource::connect(&name).await?`
+    #[error(transparent)]
+    Client(#[from] emergent_client::ClientError),
 }
 ```
 
@@ -228,7 +259,7 @@ let count: u64 = payload
 let count: u64 = payload
     .get("count")
     .and_then(|v| v.as_u64())
-    .ok_or(MyError::MissingField("count"))?;
+    .ok_or(MyPrimitiveError::MissingField("count"))?;
 ```
 
 ### Safe String Extraction
@@ -255,7 +286,7 @@ let name: String = payload
 
 ```rust
 // Chain with ? for early return
-async fn process() -> Result<(), MyError> {
+async fn process() -> Result<(), MyPrimitiveError> {
     let source = EmergentSource::connect(&name).await?;
     let data = fetch_data().await?;
     let result = transform(data)?;
@@ -264,14 +295,14 @@ async fn process() -> Result<(), MyError> {
 }
 
 // Or handle each error specifically
-async fn process_with_context() -> Result<(), MyError> {
+async fn process_with_context() -> Result<(), MyPrimitiveError> {
     let source = EmergentSource::connect(&name)
         .await
-        .map_err(|e| MyError::ConnectionFailed(e.to_string()))?;
+        .map_err(|e| MyPrimitiveError::ConnectionFailed(e.to_string()))?;
 
     let data = fetch_data()
         .await
-        .map_err(|e| MyError::FetchFailed(e.to_string()))?;
+        .map_err(|e| MyPrimitiveError::FetchFailed(e.to_string()))?;
 
     // ...
     Ok(())

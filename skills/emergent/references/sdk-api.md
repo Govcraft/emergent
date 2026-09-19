@@ -38,28 +38,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### run_handler
+#### A handler that publishes: use the loop, not `run_handler`
+
+`run_handler` exists, but its current bound
+(`F: Fn(EmergentMessage, &EmergentHandler) -> Fut`) rejects a closure that
+borrows `handler` across an `.await`, so `handler.publish(..).await` inside it
+fails with "lifetime may not live long enough". A handler that publishes is
+nearly every handler, so write the loop directly. It is the same length.
 
 ```rust
-use emergent_client::helpers::run_handler;
-use emergent_client::EmergentMessage;
+use emergent_client::{EmergentHandler, EmergentMessage};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_handler(
-        Some("my_handler"),
-        &["timer.tick"],
-        |msg, handler| async move {
-            let output = EmergentMessage::new("timer.processed")
-                .with_causation_from_message(msg.id())
-                .with_payload(json!({"processed": true}));
-            handler.publish(output).await.map_err(|e| e.to_string())
-        }
-    ).await?;
+    let mut handler = EmergentHandler::connect("my_handler").await?;
+    let mut stream = handler.subscribe(["timer.tick"]).await?;
+
+    // Ends when the engine sends system.shutdown or the connection closes.
+    while let Some(msg) = stream.next().await {
+        let output = EmergentMessage::new("timer.processed")
+            .with_causation_from_message(msg.id())
+            .with_payload(json!({"processed": true}));
+        handler.publish(output).await?;
+    }
+
+    handler.disconnect().await?;
     Ok(())
 }
 ```
+
+`connect` takes the name as `&str`. The helpers resolve `None` from
+`EMERGENT_NAME`; with the loop, read it yourself:
+`std::env::var("EMERGENT_NAME").unwrap_or_else(|_| "my_handler".into())`.
 
 #### run_sink
 
@@ -95,7 +106,11 @@ source.disconnect().await?;
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `connect` | `async fn connect(name: &str) -> Result<Self>` | Connect to engine as a source |
-| `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish a message |
+| `connect_to` | `async fn connect_to(name: &str, socket_path: &Path) -> Result<Self>` | Connect to an explicit socket instead of `EMERGENT_SOCKET` |
+| `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish, fire-and-forget |
+| `publish_ack` | `async fn publish_ack(&self, message: EmergentMessage) -> Result<()>` | Publish and wait for the engine's acknowledgment |
+| `publish_all` | `async fn publish_all(&self, messages: impl IntoIterator<Item = EmergentMessage>) -> Result<usize>` | Publish each message with `publish_ack`; returns the count |
+| `publish_stream` | `async fn publish_stream<S>(&self, stream: S) -> Result<usize>` | Same, from an async `Stream` |
 | `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | Discover available message types |
 | `name` | `fn name(&self) -> &str` | Get the source name |
 | `disconnect` | `async fn disconnect(&self) -> Result<()>` | Gracefully disconnect |
@@ -103,7 +118,7 @@ source.disconnect().await?;
 #### EmergentHandler
 
 ```rust
-let handler = EmergentHandler::connect("my_handler").await?;
+let mut handler = EmergentHandler::connect("my_handler").await?;  // subscribe takes &mut self
 let mut stream = handler.subscribe(&["timer.tick"]).await?;
 while let Some(msg) = stream.next().await {
     let output = EmergentMessage::new("timer.processed")
@@ -117,35 +132,48 @@ handler.disconnect().await?;
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `connect` | `async fn connect(name: &str) -> Result<Self>` | Connect as handler |
-| `subscribe` | `async fn subscribe(&self, types: impl IntoSubscription) -> Result<MessageStream>` | Subscribe and get stream |
-| `unsubscribe` | `async fn unsubscribe(&self, types: &[&str]) -> Result<()>` | Unsubscribe from types |
-| `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish a message |
+| `connect_to` | `async fn connect_to(name: &str, socket_path: &Path) -> Result<Self>` | Connect to an explicit socket |
+| `messages` | `async fn messages(name, types) -> Result<(Self, MessageStream)>` | Connect and subscribe to the **config's** `subscribes`; the `types` argument is ignored |
+| `subscribe` | `async fn subscribe(&mut self, types: impl IntoSubscription) -> Result<MessageStream>` | Subscribe and get stream |
+| `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish, fire-and-forget |
+| `publish_ack` | `async fn publish_ack(&self, message: EmergentMessage) -> Result<()>` | Publish and wait for the engine's acknowledgment |
+| `publish_all` / `publish_stream` | as on `EmergentSource` | Acked batch publish; returns the count |
+| `stream_offer` / `stream_consume` | see Pull-Based Streaming below | Consumer-driven streaming |
 | `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | Discover message types |
+| `get_my_subscriptions` | `async fn get_my_subscriptions(&self) -> Result<Vec<String>>` | The `subscribes` list from the engine config |
 | `name` | `fn name(&self) -> &str` | Get handler name |
-| `subscribed_types` | `async fn subscribed_types(&self) -> Vec<String>` | Get current subscriptions |
+| `subscribed_types` | `fn subscribed_types(&self) -> &[String]` | Types passed to the last `subscribe` call |
 | `disconnect` | `async fn disconnect(&self) -> Result<()>` | Gracefully disconnect |
+
+The Rust SDK has no `unsubscribe` (Python, TypeScript, and Go do). To stop
+receiving, call `stream.close()` or drop the stream.
 
 #### EmergentSink
 
 ```rust
-let sink = EmergentSink::connect("my_sink").await?;
+let mut sink = EmergentSink::connect("my_sink").await?;  // subscribe takes &mut self
 let topics = sink.get_my_subscriptions().await?;
 let mut stream = sink.subscribe(&topics).await?;
 while let Some(msg) = stream.next().await {
     println!("Received: {:?}", msg.payload());
 }
 
-// Or convenience method:
+// Or the convenience method, which does exactly the three lines above.
+// Its second argument is IGNORED: the stream carries the config's `subscribes`.
 let mut stream = EmergentSink::messages("my_sink", ["timer.tick"]).await?;
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `connect` | `async fn connect(name: &str) -> Result<Self>` | Connect as sink |
-| `messages` | `async fn messages(name, types) -> Result<MessageStream>` | Connect + subscribe in one call |
-| `subscribe` | `async fn subscribe(&self, types: impl IntoSubscription) -> Result<MessageStream>` | Subscribe and get stream |
+| `connect_to` | `async fn connect_to(name: &str, socket_path: &Path) -> Result<Self>` | Connect to an explicit socket |
+| `messages` | `async fn messages(name, types) -> Result<MessageStream>` | Connect and subscribe to the **config's** `subscribes`; the `types` argument is ignored |
+| `subscribe` | `async fn subscribe(&mut self, types: impl IntoSubscription) -> Result<MessageStream>` | Subscribe and get stream |
+| `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | Discover message types |
 | `get_my_subscriptions` | `async fn get_my_subscriptions(&self) -> Result<Vec<String>>` | Get configured subscriptions |
+| `get_topology` | `async fn get_topology(&self) -> Result<TopologyState>` | Publishes `system.request.topology` and waits up to 30 s for `system.response.topology`. The engine does not answer that request itself, so this returns `ClientError::Timeout` unless a handler in the topology does. Prefer `GET /api/topology` |
 | `name` | `fn name(&self) -> &str` | Get sink name |
+| `subscribed_types` | `fn subscribed_types(&self) -> &[String]` | Types passed to the last `subscribe` call |
 | `disconnect` | `async fn disconnect(&self) -> Result<()>` | Gracefully disconnect |
 
 ### EmergentMessage
@@ -163,10 +191,17 @@ let output = EmergentMessage::new("domain.processed")
     .with_causation_from_message(input.id())
     .with_payload(processed_data);
 
-// With correlation ID (request-response)
+// With correlation ID (request-response). The argument is a CorrelationId,
+// not a string: use emergent_client::types::CorrelationId, then
+// CorrelationId::new() to mint one or CorrelationId::parse(s)? to adopt one.
 let msg = EmergentMessage::new("api.request")
     .with_correlation_id(correlation_id)
     .with_payload(request_data);
+
+// Carry an inbound message's correlation forward (None is a no-op)
+let msg = EmergentMessage::new("api.response")
+    .with_correlation_id_option(input.correlation_id.as_ref())
+    .with_causation_from_message(input.id());
 
 // With metadata
 let msg = EmergentMessage::new("audit.event")
@@ -187,14 +222,18 @@ let msg = EmergentMessage::from_msgpack(&bytes)?;
 
 // Unwrap exec-source's {command, stdout, exit_code} envelope:
 // replaces the payload with the parsed .stdout content (JSON if parseable,
-// plain string otherwise). Usually unnecessary — set unwrap_stdout = true
+// plain string otherwise). Usually unnecessary: set unwrap_stdout = true
 // in the primitive's config and the SDK does this automatically.
 let msg = msg.unwrap_stdout();
 ```
 
 ### IntoSubscription Trait
 
+Every form names exact message types. There is no wildcard matching: a
+subscription to `"timer.*"` is accepted and never delivers anything.
+
 ```rust
+// `handler` must be a `let mut` binding for all of these
 handler.subscribe("timer.tick").await?;                        // Single string
 handler.subscribe(["timer.tick", "timer.filtered"]).await?;    // Array
 handler.subscribe(&["timer.tick"]).await?;                     // Slice
@@ -208,7 +247,7 @@ let mut stream = handler.subscribe(&["timer.tick"]).await?;
 while let Some(msg) = stream.next().await {
     // Process message
 }
-// Stream ends on: system.shutdown, connection close, or explicit unsubscribe
+// Stream ends on: system.shutdown, connection close, or stream.close()
 ```
 
 ### Streaming Publish (Batch)
@@ -216,7 +255,9 @@ while let Some(msg) = stream.next().await {
 Available on `EmergentSource` and `EmergentHandler` in all four SDKs.
 
 ```rust
-// Publish every message from an iterator; returns count published
+// Publish every message from an iterator; returns count published.
+// Each one goes through publish_ack, so this waits for the engine per message
+// and stops at the first error.
 let count = source.publish_all(messages).await?;
 
 // Publish from an async stream (e.g., a channel); returns count published
@@ -257,10 +298,38 @@ Naming per SDK: Rust/Python `stream_offer` / `stream_consume`, TypeScript `strea
 ```rust
 use emergent_client::{
     EmergentSource, EmergentHandler, EmergentSink, EmergentMessage,
-    helpers::{run_source, run_handler, run_sink},
+    helpers::{run_source, run_sink},
 };
+use emergent_client::types::{CorrelationId, MessageId, MessageType};
 use serde_json::json;
+
+// Or everything at once: the three clients, EmergentMessage, create_message,
+// MessageStream, IntoSubscription, ClientError, Result, the system event
+// payload types, and futures::StreamExt.
+use emergent_client::prelude::*;
 ```
+
+`create_message("domain.event")` is a free-function alias for
+`EmergentMessage::new`. Other builder and accessor methods not shown above:
+`with_source(&str)`, `with_causation_id(id)`, `source() -> &PrimitiveName`, and
+`has_stdout_payload() -> bool`.
+
+### Environment variables the SDKs read
+
+The engine sets all of these for a managed primitive. They matter when you run
+a primitive by hand or wonder where its logs went.
+
+| Variable | Read by | Effect |
+|---|---|---|
+| `EMERGENT_SOCKET` | all four SDKs | Engine socket path. Rust falls back to the XDG default path when it is unset; Python, TypeScript, and Go fail to connect with an error naming the variable |
+| `EMERGENT_NAME` | the `run_*` helpers in all four SDKs | The primitive's name when the helper is given none (`None`, `undefined`, `""`). The low-level `connect(name)` does not read it |
+| `EMERGENT_LOG` | all four SDKs | `stderr` sends SDK logs to stderr. Otherwise they go to `~/.local/share/emergent/<name>/primitive.log`, which is why a managed primitive looks silent. Any other value is a log level (Rust takes a full tracing filter such as `emergent_client=trace`); TypeScript and Go also accept `off` |
+| `EMERGENT_UNWRAP_STDOUT` | all four SDKs | `true` replaces an exec-source `{command, stdout, exit_code}` payload with its parsed `stdout` before your code sees it. The engine sets it to `true` only when the config has `unwrap_stdout = true`. By hand: TypeScript needs exactly `true`, Rust and Go also take `1`, and Python treats any non-empty value (including `false`) as on |
+
+**Signals differ by SDK.** The Rust `run_*` helpers trap SIGTERM only, so
+Ctrl-C on a hand-run Rust primitive kills it without the graceful disconnect.
+Python, TypeScript, and Go trap both SIGTERM and SIGINT. Under the engine this
+does not matter: shutdown arrives as `system.shutdown` and then SIGTERM.
 
 ### Cargo.toml
 
@@ -339,11 +408,11 @@ await runSink("my_sink", ["sensor.reading"], async (msg) => {
 ### runHandler
 
 ```typescript
-import { runHandler, EmergentMessage } from "jsr:@govcraft/emergent";
+import { runHandler, createMessage } from "jsr:@govcraft/emergent";
 
 await runHandler("my_handler", ["data.raw"], async (msg, handler) => {
   const data = msg.payloadAs<Record<string, unknown>>();
-  const output = EmergentMessage.new("data.processed")
+  const output = createMessage("data.processed")
     .causedBy(msg.id)
     .payload({ ...data, processed: true });
   await handler.publish(output);
@@ -353,19 +422,28 @@ await runHandler("my_handler", ["data.raw"], async (msg, handler) => {
 ### runSource
 
 ```typescript
-import { runSource, EmergentMessage } from "jsr:@govcraft/emergent";
+import { runSource, createMessage } from "jsr:@govcraft/emergent";
 
 await runSource("my_source", async (source, shutdown) => {
   let count = 0;
   const timer = setInterval(async () => {
     count++;
-    const msg = EmergentMessage.new("timer.tick").payload({ count });
-    await source.publish(msg);
+    await source.publish(createMessage("timer.tick").payload({ count }));
   }, 3000);
-  await shutdown;
+
+  // `shutdown` is an AbortSignal, not a promise. `await shutdown` resolves at
+  // once and the source exits on startup, so wait for the abort event.
+  await new Promise<void>((resolve) => {
+    if (shutdown.aborted) return resolve();
+    shutdown.addEventListener("abort", () => resolve(), { once: true });
+  });
   clearInterval(timer);
 });
 ```
+
+Messages are built with `createMessage(type)`, which returns a builder with
+`.causedBy(id)`, `.payload(obj)`, and friends. `EmergentMessage` is the received
+type and has no `new`.
 
 ## Go SDK (`github.com/govcraft/emergent/sdks/go`)
 
@@ -394,15 +472,20 @@ func main() {
 package main
 
 import (
-    "context"
     emergent "github.com/govcraft/emergent/sdks/go"
 )
 
 func main() {
-    emergent.RunHandler("my_handler", []string{"sensor.reading"}, func(ctx context.Context, msg *emergent.EmergentMessage, handler *emergent.EmergentHandler) error {
-        data := msg.PayloadAs(map[string]any{})
-        output, _ := emergent.NewMessage("sensor.processed")
-        output.CausedBy(msg.ID())
+    emergent.RunHandler("my_handler", []string{"sensor.reading"}, func(msg *emergent.EmergentMessage, handler *emergent.EmergentHandler) error {
+        var data map[string]any
+        if err := msg.PayloadAs(&data); err != nil {
+            return err
+        }
+        output, err := emergent.NewMessage("sensor.processed")
+        if err != nil {
+            return err
+        }
+        output.WithCausationFromMessage(msg.ID)
         output.WithPayload(map[string]any{"processed": data, "handler": "go"})
         return handler.Publish(output)
     })
@@ -415,15 +498,19 @@ func main() {
 package main
 
 import (
-    "context"
     "fmt"
     emergent "github.com/govcraft/emergent/sdks/go"
 )
 
 func main() {
-    emergent.RunSink("my_sink", []string{"sensor.processed"}, func(ctx context.Context, msg *emergent.EmergentMessage) error {
-        fmt.Printf("Received: %v\n", msg.Payload())
+    emergent.RunSink("my_sink", []string{"sensor.processed"}, func(msg *emergent.EmergentMessage) error {
+        fmt.Printf("Received: %v\n", msg.Payload)
         return nil
     })
 }
 ```
+
+Only `RunSource`'s callback takes a `context.Context`. The handler and sink
+callbacks do not, and an unused `"context"` import is a compile error in Go. On
+a message, `ID` and `Payload` are struct fields, and `PayloadAs` fills a pointer
+and returns an `error`.
