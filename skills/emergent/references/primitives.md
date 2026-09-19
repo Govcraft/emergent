@@ -249,6 +249,14 @@ variable: `HTTP_SOURCE_PORT`, `HTTP_SOURCE_HOST`, `HTTP_SOURCE_PATH`,
 `emergent.toml`. After primitives 0.11.0 there is also `--trust-forwarded-for`
 (off), described below.
 
+`--path` is an exact axum route, not a prefix: `--path /inject` answers
+`/inject` and returns `404` for `/inject/extra`. Captures use braces,
+`/hook/{id}` or a final `/files/{*rest}`, and the published `path` is the
+concrete requested path. After primitives 0.11.0 an invalid value (no leading
+`/`, the old `:id` or `*rest` syntax, a wildcard that is not last) prints one
+line naming the value and the rule and exits 1. On 0.11.0 and earlier the same
+value panics at startup, which the engine reports as exit status 101.
+
 With a secret set, a request must carry an `X-Signature` header holding the hex
 HMAC-SHA256 of the raw body, with an optional `sha256=` prefix. A missing or
 wrong signature gets `401`. A published request gets `202`.
@@ -606,18 +614,33 @@ Live D3 force-directed view of the running pipeline.
 name = "topology"
 path = "~/.local/share/emergent/primitives/bin/topology-viewer"
 args = ["--port", "8009"]
-subscribes = ["system.response.topology"]
+subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
 ```
 
-**Flags:** `--port <PORT>` (8080). Open `/` in a browser; `/api/topology`
-returns the graph as JSON.
+**Flags:** `--port <PORT>` (8080). Open `/` in a browser.
 
-**Known limitation, verified against 0.12.0 (Govcraft/emergent-primitives#5).** The viewer ignores the config's
-`subscribes` and asks for three `system.*.*` wildcards itself. A wildcard has to
-be terminal (see `configuration.md`), so `system.*.*` never matches on any
-engine release: before 0.10.10 no wildcard delivered at all, and after it a
-mid-string star is refused. Either way the graph shows the engine node and
-nothing else. Until that is fixed, read the graph from the engine instead:
+| Route | Returns |
+|---|---|
+| `GET /api/topology` | `{nodes, edges, health}` as the viewer currently holds it |
+| `POST /api/refresh` | After primitives 0.11.0. One re-read of the engine topology, then the same body. `200` when the engine answered, `502` with the held state and the reason when it did not, `405` for other methods |
+| `GET /events` | The SSE stream the page uses: `topology:full`, `node:updated`, `edges:updated`, `health:updated` |
+
+After primitives 0.11.0 the viewer reads the engine's own
+`GET /api/topology` (on `EMERGENT_API_PORT`, which the engine sets) when it
+starts and every 5 seconds, so the graph is complete whatever the viewer missed
+while starting. Its wildcard subscriptions carry the live updates in between;
+they need an engine after 0.10.10 and a viewer built on an SDK that sends
+wildcards, and without them the graph is still right within 5 seconds. `health`
+says whether the graph can be trusted: `ok`, `pending` (no answer yet), `empty`
+(the engine reported nothing but itself) or `degraded` (the engine could not be
+read; `detail` says why). The page shows a banner for anything but `ok`, so
+check `health` before believing a sparse graph.
+
+**On 0.11.0 and earlier (Govcraft/emergent-primitives#5)** the viewer asks for
+three `system.*.*` wildcards, which no engine release delivers, so the graph
+shows the engine node and nothing else, and the refresh button first calls a
+hard-coded `localhost:8892` that nothing serves. On those versions read the
+graph from the engine instead:
 
 ```bash
 curl -s 127.0.0.1:<api_port>/api/topology | jq '.primitives[] | {name, kind, publishes, subscribes}'
