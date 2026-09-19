@@ -128,10 +128,10 @@ Every SDK subscribes to `system.shutdown` on its own and swallows it, so it is t
 |-------|-------------|
 | `system.request.subscriptions` | SDK subscription discovery. Payload `{name}`. Answered by the engine |
 | `system.response.subscriptions` | Engine's answer: `{subscribes}` from the config, with the request's `correlation_id` |
-| `system.request.topology` | Topology query via pub/sub. The engine does **not** answer it |
-| `system.response.topology` | Topology response, `{primitives: [...]}` in the HTTP API's format (what topology-viewer listens for) |
+| `system.request.topology` | Topology query via pub/sub. Answered by the engine after 0.10.10; 0.10.10 and earlier never answer it |
+| `system.response.topology` | Engine's answer: `{primitives: [...]}`, built by the same function as `GET /api/topology`, with the request's `correlation_id` |
 
-`system.request.subscriptions` is the only request the engine answers itself. It is how a primitive learns its config's `subscribes` list at runtime: the Rust SDK's `EmergentHandler::messages`, `EmergentSink::messages` and `get_my_subscriptions` use it, while a direct `subscribe([...])` call and the `run_*` helpers subscribe to the types the code passes in. A topology request is routed like any other message, so a response exists only if the topology contains a handler that subscribes to `system.request.topology`, reads the HTTP API, and publishes `system.response.topology`. The engine repo has one at `examples/handlers/topology-api`; no marketplace primitive does this. Without it, use `GET /api/topology`.
+The engine answers both requests itself and does not forward them to subscribers. `system.request.subscriptions` is how a primitive learns its config's `subscribes` list at runtime: the Rust SDK's `EmergentHandler::messages`, `EmergentSink::messages` and `get_my_subscriptions` use it, while a direct `subscribe([...])` call and the `run_*` helpers subscribe to the types the code passes in. On engine 0.10.10 and earlier a topology request got no answer at all (Govcraft/emergent#46), so there use `GET /api/topology`.
 
 ## HTTP API
 

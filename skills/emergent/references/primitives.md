@@ -546,10 +546,8 @@ returns the graph as JSON.
 **Known limitation, verified against 0.12.0 (Govcraft/emergent-primitives#5).** The viewer ignores the config's
 `subscribes` and asks for three `system.*.*` wildcards itself. Subscriptions are
 exact-match (see `configuration.md`), so those never deliver, and the graph
-shows the engine node and nothing else. It fills in only if something publishes
-`system.response.topology`, which no marketplace primitive does (the engine repo
-has an example handler, `examples/handlers/topology-api`). Until that is fixed,
-read the graph from the engine instead:
+shows the engine node and nothing else. Until that is fixed, read the graph from
+the engine instead:
 
 ```bash
 curl -s 127.0.0.1:<api_port>/api/topology | jq '.primitives[] | {name, kind, publishes, subscribes}'
