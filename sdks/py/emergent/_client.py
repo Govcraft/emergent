@@ -249,9 +249,10 @@ def discovery_info_from_response(response: IpcResponse) -> DiscoveryInfo:
 def parse_unwrap_flag(value: str | None) -> bool:
     """Decide whether ``EMERGENT_UNWRAP_STDOUT`` switches stdout unwrapping on.
 
-    Only ``"true"`` and ``"1"`` enable it, matching the Rust, Go, and
-    TypeScript SDKs. Anything else, including ``"false"``, ``"0"``, and an
-    unset variable, leaves it off.
+    Surrounding whitespace and letter case are ignored, and only ``"true"``
+    and ``"1"`` enable it, the same rule as the Rust, Go and TypeScript SDKs.
+    Anything else, including ``"false"``, ``"0"``, and an unset variable,
+    leaves it off.
     """
     return value is not None and value.strip().lower() in ("true", "1")
 
