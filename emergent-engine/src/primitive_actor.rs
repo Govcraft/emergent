@@ -20,8 +20,9 @@
 //! - Use **self-messaging** to update state when child spawns/exits
 //! - Use stored **PID for cleanup** (SIGTERM) in `before_stop`
 
+use crate::lifecycle::{LifecycleEvent, PrimitiveStatus, exit_error_message, next_status};
 use crate::messages::EmergentMessage;
-use crate::primitives::{PrimitiveInfo, PrimitiveState};
+use crate::primitives::PrimitiveInfo;
 use crate::supervision::{
     RestartDecision, RestartLimits, RestartPolicy, decide_restart, outcome_from_exit_code,
     prune_attempts,
@@ -226,16 +227,26 @@ pub fn sigkill_process_group(pid: u32) {
     warn!("SIGKILL not supported on this platform for pid {}", pid);
 }
 
-/// Message sent when a child process has been spawned.
+/// Message sent just before the actor spawns its child process.
+#[acton_message]
+pub struct ChildSpawning;
+
+/// Message sent when a child process has been spawned successfully.
 ///
-/// This message carries the PID and primitive info for state initialization.
-/// The Child handle is NOT included (doesn't implement Clone).
+/// This message carries the PID only. The Child handle is NOT included
+/// (doesn't implement Clone), and the primitive's info is already owned by
+/// the actor.
 #[acton_message]
 pub struct ChildSpawned {
     /// Process ID of the spawned child.
     pub pid: u32,
-    /// Primitive info to initialize actor state.
-    pub info: PrimitiveInfo,
+}
+
+/// Message sent when the child process could not be spawned at all.
+#[acton_message]
+pub struct ChildSpawnFailed {
+    /// Why the spawn failed.
+    pub error: String,
 }
 
 /// Message sent when a child process has exited.
@@ -282,6 +293,9 @@ pub struct EngineShuttingDown;
 #[derive(Default, Debug)]
 pub struct PrimitiveActorState {
     /// Information about the primitive (name, kind, state, etc.).
+    ///
+    /// The actor is the only writer of the live parts of this value: `state`,
+    /// `pid` and `error`.
     pub info: PrimitiveInfo,
     /// Process ID of the child (if running).
     pub child_pid: Option<u32>,
@@ -289,6 +303,40 @@ pub struct PrimitiveActorState {
     pub shutting_down: bool,
     /// Unix-millisecond timestamps of restarts inside the current window.
     pub restart_attempts: Vec<u64>,
+    /// Publishes the live info to whoever reads the topology.
+    ///
+    /// The process manager holds the matching receiver, so it reports what the
+    /// actor last published instead of a registration-time copy.
+    pub status_tx: Option<watch::Sender<PrimitiveInfo>>,
+}
+
+impl PrimitiveActorState {
+    /// The live status currently held in `info`.
+    fn status(&self) -> PrimitiveStatus {
+        PrimitiveStatus {
+            state: self.info.state,
+            pid: self.info.pid,
+            error: self.info.error.clone(),
+        }
+    }
+
+    /// Apply a lifecycle event and publish the resulting status.
+    ///
+    /// Every transition goes through the pure [`next_status`] function, so the
+    /// state, the pid and the error can never disagree, and the published copy
+    /// is written here and nowhere else.
+    fn apply(&mut self, event: &LifecycleEvent) {
+        let next = next_status(&self.status(), event);
+        self.info.state = next.state;
+        self.info.pid = next.pid;
+        self.info.error = next.error;
+        self.child_pid = next.pid;
+
+        if let Some(tx) = &self.status_tx {
+            // An error here only means nothing is watching any more.
+            let _ = tx.send(self.info.clone());
+        }
+    }
 }
 
 /// Configuration for building a primitive actor.
@@ -329,6 +377,10 @@ async fn spawn_primitive_child(
     let name = spawn_info.name.clone();
     let pid_watch = config.pid_watch.clone();
 
+    // Record the spawn attempt before it happens, so a slow or failing spawn
+    // is visible as `starting` rather than `configured`.
+    self_handle.send(ChildSpawning).await;
+
     let mut cmd = Command::new(&config.path);
     cmd.args(&config.args);
 
@@ -356,6 +408,11 @@ async fn spawn_primitive_child(
         Err(e) => {
             pid_watch.clear();
             error!("Failed to spawn {}: {}", name, e);
+            self_handle
+                .send(ChildSpawnFailed {
+                    error: e.to_string(),
+                })
+                .await;
             let event = create_system_event("system.error", &spawn_info, None, Some(e.to_string()));
             broker.broadcast(event).await;
             return;
@@ -365,6 +422,11 @@ async fn spawn_primitive_child(
     let Some(pid) = child.id() else {
         pid_watch.clear();
         error!("Failed to get PID for {}", name);
+        self_handle
+            .send(ChildSpawnFailed {
+                error: "Spawned child reported no PID".to_string(),
+            })
+            .await;
         return;
     };
 
@@ -377,11 +439,8 @@ async fn spawn_primitive_child(
     // (and if need be signal) this child.
     pid_watch.set(pid);
 
-    let mut info = spawn_info.clone();
-    info.pid = Some(pid);
-    info.state = PrimitiveState::Running;
-    info.error = None;
-    self_handle.send(ChildSpawned { pid, info }).await;
+    // Store the PID via self-message; the actor owns the live state.
+    self_handle.send(ChildSpawned { pid }).await;
 
     let event = match attempt {
         None => create_system_event("system.started", &spawn_info, Some(pid), None),
@@ -429,7 +488,7 @@ async fn spawn_primitive_child(
                 let error_msg = if clean {
                     None
                 } else {
-                    Some(format!("Exited with status: {}", exit_code))
+                    Some(exit_error_message(exit_code))
                 };
                 let event = create_system_event(event_type, &monitor_info, Some(pid), error_msg);
                 monitor_broker.broadcast(event).await;
@@ -453,14 +512,26 @@ async fn spawn_primitive_child(
 /// - Broadcast `system.restarted.<name>` after a successful respawn
 /// - Terminate the child via SIGTERM in `before_stop`
 /// - Broadcast `system.stopped.<name>` after shutdown
+///
+/// Returns the actor together with a receiver for its live [`PrimitiveInfo`].
+/// The actor owns that info and publishes every change to the receiver, which
+/// is what the process manager reports for topology queries.
 pub fn build_primitive_actor(
     runtime: &mut ActorRuntime,
     config: PrimitiveActorConfig,
-) -> ManagedActor<Idle, PrimitiveActorState> {
+) -> (
+    ManagedActor<Idle, PrimitiveActorState>,
+    watch::Receiver<PrimitiveInfo>,
+) {
     let name = config.info.name.clone();
 
-    // Create actor with default state - info is initialized via ChildSpawned
     let mut actor = runtime.new_actor_with_name::<PrimitiveActorState>(name);
+
+    // The actor owns the live info from the start, so a primitive that has not
+    // spawned yet still reports its own name, kind and wiring.
+    let (status_tx, status_rx) = watch::channel(config.info.clone());
+    actor.model.info = config.info.clone();
+    actor.model.status_tx = Some(status_tx);
 
     let start_config = config.clone();
     let restart_config = config.clone();
@@ -506,11 +577,18 @@ pub fn build_primitive_actor(
                 }
             }
         })
+        .mutate_on::<ChildSpawning>(|actor, _envelope| {
+            actor.model.apply(&LifecycleEvent::SpawnRequested);
+            Reply::ready()
+        })
         .mutate_on::<ChildSpawned>(|actor, envelope| {
-            let msg = envelope.message();
-            // Initialize actor state with info from the message
-            actor.model.child_pid = Some(msg.pid);
-            actor.model.info = msg.info.clone();
+            let pid = envelope.message().pid;
+            actor.model.apply(&LifecycleEvent::Spawned { pid });
+            Reply::ready()
+        })
+        .mutate_on::<ChildSpawnFailed>(|actor, envelope| {
+            let error = envelope.message().error.clone();
+            actor.model.apply(&LifecycleEvent::SpawnFailed { error });
             Reply::ready()
         })
         .mutate_on::<ChildExited>(move |actor, envelope| {
@@ -521,14 +599,10 @@ pub fn build_primitive_actor(
                 return Reply::ready();
             }
 
-            actor.model.child_pid = None;
-            actor.model.info.pid = None;
-            if is_clean_exit_code(msg.status) {
-                actor.model.info.state = PrimitiveState::Stopped;
-            } else {
-                actor.model.info.state = PrimitiveState::Failed;
-                actor.model.info.error = Some(format!("Exited with status: {}", msg.status));
-            }
+            actor.model.apply(&LifecycleEvent::Exited {
+                pid: msg.pid,
+                code: msg.status,
+            });
 
             let now_ms = Timestamp::now().as_millis();
             actor.model.restart_attempts =
@@ -550,7 +624,9 @@ pub fn build_primitive_actor(
                 }
                 RestartDecision::Restart { delay, attempt } => {
                     actor.model.restart_attempts.push(now_ms);
-                    actor.model.info.state = PrimitiveState::Starting;
+                    // The backoff is part of the respawn, so the primitive
+                    // reads as `starting` while it waits.
+                    actor.model.apply(&LifecycleEvent::SpawnRequested);
                     let self_handle = actor.handle().clone();
                     info!(
                         "Restarting {} in {} ms (attempt {} of {})",
@@ -573,8 +649,9 @@ pub fn build_primitive_actor(
                         attempts, window_ms
                     );
                     warn!("{} will not be restarted. {}", name, reason);
-                    actor.model.info.state = PrimitiveState::Failed;
-                    actor.model.info.error = Some(reason.clone());
+                    actor.model.apply(&LifecycleEvent::RestartsExhausted {
+                        reason: reason.clone(),
+                    });
                     let info = actor.model.info.clone();
                     let broker = actor.broker().clone();
                     Reply::pending(async move {
@@ -619,9 +696,10 @@ pub fn build_primitive_actor(
             // from here on is expected rather than a failure to recover from.
             actor.model.shutting_down = true;
 
-            if let Some(pid) = actor.model.child_pid {
-                actor.model.info.state = PrimitiveState::Stopping;
+            let child_pid = actor.model.child_pid;
+            actor.model.apply(&LifecycleEvent::StopRequested);
 
+            if let Some(pid) = child_pid {
                 // Send SIGTERM on Unix
                 #[cfg(unix)]
                 {
@@ -644,7 +722,7 @@ pub fn build_primitive_actor(
             Reply::ready()
         });
 
-    actor
+    (actor, status_rx)
 }
 
 /// Check whether an exit status represents a clean shutdown.
@@ -699,18 +777,6 @@ fn exit_code_from_status(status: &ExitStatus) -> i32 {
     }
 
     -1
-}
-
-/// Check whether an integer exit code represents a clean shutdown.
-///
-/// This is the integer-based counterpart to [`is_clean_exit`] for use
-/// in contexts where only the exit code integer is available (e.g.,
-/// the `ChildExited` message handler).
-///
-/// Returns `true` for exit codes 0 (success) and 143 (SIGTERM: 128+15).
-#[must_use]
-fn is_clean_exit_code(code: i32) -> bool {
-    code == 0 || code == 143
 }
 
 /// Create a system event message wrapped for IPC.
@@ -1015,26 +1081,6 @@ mod tests {
 
         let alive = wait_for_children_exit(&mut watched, std::time::Duration::ZERO).await;
         assert_eq!(alive, vec![("x".to_string(), 99)]);
-    }
-
-    #[test]
-    fn test_is_clean_exit_code_zero() {
-        assert!(is_clean_exit_code(0));
-    }
-
-    #[test]
-    fn test_is_clean_exit_code_sigterm_143() {
-        assert!(is_clean_exit_code(143));
-    }
-
-    #[test]
-    fn test_is_clean_exit_code_other_nonzero_is_error() {
-        assert!(!is_clean_exit_code(1));
-        assert!(!is_clean_exit_code(2));
-        assert!(!is_clean_exit_code(127));
-        assert!(!is_clean_exit_code(137)); // SIGKILL: 128+9
-        assert!(!is_clean_exit_code(139)); // SIGSEGV: 128+11
-        assert!(!is_clean_exit_code(-1));
     }
 
     #[cfg(unix)]

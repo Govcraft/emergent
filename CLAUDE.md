@@ -88,7 +88,8 @@ Emergent is an **event-driven workflow engine** built on **acton-reactive** (a R
 
 - `config.rs` — TOML config loading, path expansion, validation
 - `process_manager.rs` — Actor-based lifecycle for primitives
-- `primitive_actor.rs` — Per-primitive actor (spawns child process, monitors, broadcasts system events)
+- `primitive_actor.rs` — Per-primitive actor (spawns child process, monitors, broadcasts system events, owns the primitive's live state)
+- `lifecycle.rs`: pure state machine mapping a lifecycle event to a primitive's next state, pid and error
 - `event_store/` — JSON append-only logs + SQLite structured storage
 - `scaffold/` — Code generation for new primitives (Rust, Python, TypeScript templates)
 - `marketplace/` — Registry client for discovering and installing community primitives

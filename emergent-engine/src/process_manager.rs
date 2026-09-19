@@ -78,11 +78,21 @@ pub enum ProcessManagerError {
 struct ActorEntry {
     /// Handle to the running actor.
     handle: ActorHandle,
-    /// Primitive information (name, kind, state, etc.).
-    info: PrimitiveInfo,
+    /// Kind of the primitive. It never changes, so it is kept here to avoid
+    /// reading the live info just to filter by tier.
+    kind: PrimitiveKind,
+    /// Live primitive information, published by the actor that owns it.
+    status: watch::Receiver<PrimitiveInfo>,
     /// Live child PID, or `None` when no child is running. Shutdown waits on
     /// this instead of sleeping, and reads it to escalate to SIGKILL.
     pid_rx: watch::Receiver<Option<u32>>,
+}
+
+impl ActorEntry {
+    /// The primitive's information as its actor last published it.
+    fn info(&self) -> PrimitiveInfo {
+        self.status.borrow().clone()
+    }
 }
 
 /// A primitive as the shutdown sequence sees it.
@@ -198,6 +208,7 @@ impl ProcessManager {
         supervision: &RestartConfig,
     ) -> Result<(), ProcessManagerError> {
         let name = info.name.clone();
+        let kind = info.kind;
 
         // Check for duplicates
         {
@@ -210,7 +221,7 @@ impl ProcessManager {
         // Build actor configuration
         let (pid_watch, pid_rx) = ChildPidWatch::new();
         let actor_config = PrimitiveActorConfig {
-            info: info.clone(),
+            info,
             path: path.to_path_buf(),
             args: args.to_vec(),
             env: env.clone(),
@@ -223,8 +234,9 @@ impl ProcessManager {
             restart_limits: supervision.limits(),
         };
 
-        // Build the actor (does not start it yet)
-        let actor = build_primitive_actor(runtime, actor_config);
+        // Build the actor (does not start it yet). The actor owns the live
+        // info; the receiver is how the manager reads it.
+        let (actor, status) = build_primitive_actor(runtime, actor_config);
 
         // Start the actor - this triggers after_start which spawns the process
         let handle = actor.start().await;
@@ -232,7 +244,8 @@ impl ProcessManager {
         // Store the entry
         let entry = ActorEntry {
             handle,
-            info,
+            kind,
+            status,
             pid_rx,
         };
 
@@ -295,13 +308,13 @@ impl ProcessManager {
     /// Get information about all registered primitives.
     pub async fn list_all(&self) -> Vec<PrimitiveInfo> {
         let actors = self.actors.read().await;
-        actors.values().map(|e| e.info.clone()).collect()
+        actors.values().map(ActorEntry::info).collect()
     }
 
     /// Get information about a specific primitive.
     pub async fn get_info(&self, name: &str) -> Option<PrimitiveInfo> {
         let actors = self.actors.read().await;
-        actors.get(name).map(|e| e.info.clone())
+        actors.get(name).map(ActorEntry::info)
     }
 
     /// Get the count of registered primitives.
@@ -321,8 +334,8 @@ impl ProcessManager {
         let actors = self.actors.read().await;
         actors
             .values()
-            .filter(|e| e.info.kind == kind)
-            .map(|e| e.info.clone())
+            .filter(|e| e.kind == kind)
+            .map(ActorEntry::info)
             .collect()
     }
 
@@ -379,7 +392,7 @@ impl ProcessManager {
         let actors = self.actors.read().await;
         actors
             .iter()
-            .filter(|(_, e)| e.info.kind == kind)
+            .filter(|(_, e)| e.kind == kind)
             .map(|(name, e)| ShutdownTarget {
                 name: name.clone(),
                 handle: e.handle.clone(),
@@ -467,6 +480,41 @@ fn still_running(watched: &[(String, watch::Receiver<Option<u32>>)]) -> Vec<(Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::PrimitiveState;
+
+    /// Build a source config for a real executable.
+    fn source_config(name: &str, path: &str, args: &[&str]) -> SourceConfig {
+        SourceConfig {
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            args: args.iter().map(|a| (*a).to_string()).collect(),
+            enabled: true,
+            publishes: Vec::new(),
+            env: HashMap::new(),
+            restart: RestartConfig::default(),
+        }
+    }
+
+    /// Poll the manager until a primitive satisfies `predicate`.
+    ///
+    /// The actor spawns its child in `after_start`, so the state a query sees
+    /// depends on how far that has got. Polling keeps the test honest without
+    /// fixing an arbitrary sleep.
+    async fn wait_for(
+        manager: &ProcessManager,
+        name: &str,
+        predicate: impl Fn(&PrimitiveInfo) -> bool,
+    ) -> Option<PrimitiveInfo> {
+        for _ in 0..100 {
+            if let Some(info) = manager.get_info(name).await
+                && predicate(&info)
+            {
+                return Some(info);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
 
     #[tokio::test]
     async fn test_process_manager_creation() {
@@ -479,5 +527,114 @@ mod tests {
         let manager = ProcessManager::new(PathBuf::from("/tmp/test.sock"), 8891);
         let primitives = manager.list_all().await;
         assert!(primitives.is_empty());
+    }
+
+    /// The defect behind Govcraft/emergent#40: every managed primitive reported
+    /// `Configured` with no pid for the life of the engine.
+    #[tokio::test]
+    async fn queries_report_the_live_state_of_each_primitive() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-40-test.sock"), 0);
+
+        let alive = source_config("alive", "/bin/sleep", &["30"]);
+        let one_shot = source_config("one-shot", "/bin/true", &[]);
+        let crasher = source_config("crasher", "/bin/false", &[]);
+
+        for config in [&alive, &one_shot, &crasher] {
+            assert!(manager.register_source(&mut runtime, config).await.is_ok());
+        }
+
+        let running = wait_for(&manager, "alive", |i| i.state == PrimitiveState::Running).await;
+        let Some(running) = running else {
+            panic!(
+                "alive never reported Running: {:?}",
+                manager.get_info("alive").await
+            );
+        };
+        assert!(running.pid.is_some(), "a running primitive reports its pid");
+        assert_eq!(running.error, None);
+
+        let stopped = wait_for(&manager, "one-shot", |i| i.state == PrimitiveState::Stopped).await;
+        let Some(stopped) = stopped else {
+            panic!(
+                "one-shot never reported Stopped: {:?}",
+                manager.get_info("one-shot").await
+            );
+        };
+        assert_eq!(stopped.pid, None, "a stopped primitive has no pid");
+        assert_eq!(stopped.error, None);
+
+        let failed = wait_for(&manager, "crasher", |i| i.state == PrimitiveState::Failed).await;
+        let Some(failed) = failed else {
+            panic!(
+                "crasher never reported Failed: {:?}",
+                manager.get_info("crasher").await
+            );
+        };
+        assert_eq!(failed.pid, None);
+        assert_eq!(failed.error.as_deref(), Some("Exited with status: 1"));
+
+        // list_all agrees with the per-primitive query, since both read the
+        // state the actors publish.
+        let all = manager.list_all().await;
+        assert_eq!(all.len(), 3);
+        assert!(
+            all.iter()
+                .any(|i| i.name == "alive" && i.state == PrimitiveState::Running)
+        );
+
+        let timings = ShutdownTimings {
+            drain: Duration::ZERO,
+            grace: Duration::from_secs(2),
+        };
+        manager.graceful_shutdown(&runtime.broker(), timings).await;
+
+        let after_stop = wait_for(&manager, "alive", |i| i.state != PrimitiveState::Running).await;
+        let Some(after_stop) = after_stop else {
+            panic!("alive stayed Running after stop_all");
+        };
+        assert_ne!(after_stop.state, PrimitiveState::Running);
+    }
+
+    #[tokio::test]
+    async fn a_restarting_primitive_ends_failed_with_the_exhaustion_reason() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-40-restart.sock"), 0);
+
+        let mut flapper = source_config("flapper", "/bin/false", &[]);
+        flapper.restart = RestartConfig {
+            restart: "on-failure".to_string(),
+            restart_backoff_ms: 10,
+            restart_max_backoff_ms: 20,
+            restart_max_retries: 2,
+            restart_window_ms: 60_000,
+        };
+        assert!(
+            manager
+                .register_source(&mut runtime, &flapper)
+                .await
+                .is_ok()
+        );
+
+        let exhausted = wait_for(&manager, "flapper", |i| {
+            i.error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("Restarts exhausted"))
+        })
+        .await;
+        let Some(exhausted) = exhausted else {
+            panic!(
+                "flapper never reported exhaustion: {:?}",
+                manager.get_info("flapper").await
+            );
+        };
+        assert_eq!(exhausted.state, PrimitiveState::Failed);
+        assert_eq!(exhausted.pid, None);
+
+        let timings = ShutdownTimings {
+            drain: Duration::ZERO,
+            grace: Duration::from_secs(2),
+        };
+        manager.graceful_shutdown(&runtime.broker(), timings).await;
     }
 }

@@ -74,13 +74,21 @@ Each primitive in the response includes:
 |-------|------|-------------|
 | `name` | `string` | Primitive's configured name |
 | `kind` | `string` | `"source"`, `"handler"`, or `"sink"` |
-| `state` | `string` | `"running"`, `"stopped"`, or `"failed"` |
+| `state` | `string` | `"configured"`, `"starting"`, `"running"`, `"stopping"`, `"stopped"`, or `"failed"` |
 | `publishes` | `string[]` | Message types this primitive emits |
 | `subscribes` | `string[]` | Message types this primitive receives |
 | `pid` | `number \| null` | OS process ID |
 | `error` | `string \| null` | Error message if the primitive failed |
 
 The engine itself appears as the first entry with name `"emergent-engine"`.
+
+After engine 0.10.10, `state`, `pid` and `error` are live: a running primitive
+reports `"running"` with its pid, one that exited cleanly reports `"stopped"`
+with a null pid, and one that exited non-zero reports `"failed"` with the exit
+status in `error`. On 0.10.10 and earlier every managed primitive reported
+`"configured"` with a null pid for the life of the engine
+(Govcraft/emergent#40), so use the `system.started.*`, `system.stopped.*` and
+`system.error.*` events for health there.
 
 ## Topology via Pub/Sub
 

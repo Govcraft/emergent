@@ -553,8 +553,10 @@ the engine instead:
 curl -s 127.0.0.1:<api_port>/api/topology | jq '.primitives[] | {name, kind, publishes, subscribes}'
 ```
 
-Ignore `state` and `pid` in that response: managed primitives always report
-`"configured"` and `null`, even while running.
+On engine 0.10.10 and earlier, ignore `state` and `pid` in that response:
+managed primitives always report `"configured"` and `null`, even while running
+(Govcraft/emergent#40). After 0.10.10 both are live, so adding `state` and `pid`
+to that filter tells you what is actually running.
 
 Worth checking during design. Seeing the graph makes an under-decomposed topology
 obvious at a glance, because it renders as a short chain instead of a web.

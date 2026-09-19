@@ -23,6 +23,7 @@
 pub mod config;
 pub mod event_store;
 pub mod init;
+pub mod lifecycle;
 pub mod marketplace;
 pub mod messages;
 pub mod primitive_actor;
@@ -34,6 +35,7 @@ pub mod topology;
 pub mod update;
 
 pub use config::EmergentConfig;
+pub use lifecycle::{LifecycleEvent, PrimitiveStatus, next_status};
 pub use messages::EmergentMessage;
 pub use primitive_actor::{
     IpcSystemEvent, PrimitiveActorConfig, PrimitiveActorState, SystemEventPayload,
