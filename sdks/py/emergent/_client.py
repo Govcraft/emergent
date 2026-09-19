@@ -91,6 +91,28 @@ def _init_logging(name: str = "emergent") -> None:
 DEFAULT_TIMEOUT = 30.0
 
 
+def extract_shutdown_kind(notification_payload: Any) -> str | None:
+    """Read the primitive kind a ``system.shutdown`` broadcast targets.
+
+    The engine delivers the whole message envelope as the notification
+    payload, so the kind sits at ``payload.kind`` inside that envelope. A bare
+    ``{"kind": ...}`` object is accepted too, which keeps a hand-written
+    broadcast working. Returns ``None`` when no string kind is present. The
+    result is lowercased so callers can compare it against a primitive kind
+    directly.
+    """
+    if not isinstance(notification_payload, dict):
+        return None
+    inner = notification_payload.get("payload")
+    candidates = (inner, notification_payload)
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            kind = candidate.get("kind")
+            if isinstance(kind, str):
+                return kind.lower()
+    return None
+
+
 def parse_unwrap_flag(value: str | None) -> bool:
     """Decide whether ``EMERGENT_UNWRAP_STDOUT`` switches stdout unwrapping on.
 
@@ -836,27 +858,24 @@ class BaseClient:
 
             # Check for shutdown signal - SDK handles this internally
             if notification.message_type == "system.shutdown":
-                shutdown_payload = notification.payload
-                if isinstance(shutdown_payload, dict):
-                    shutdown_kind = shutdown_payload.get("kind", "").lower()
+                shutdown_kind = extract_shutdown_kind(notification.payload)
+                logger.info(
+                    "received shutdown signal primitive=%s kind=%s",
+                    self.name,
+                    shutdown_kind if shutdown_kind is not None else "unknown",
+                )
 
+                # Close stream if shutdown is for this primitive's kind
+                if (
+                    shutdown_kind == self.primitive_kind.lower()
+                    and self._message_stream is not None
+                ):
                     logger.info(
-                        "received shutdown signal primitive=%s kind=%s",
+                        "shutting down (engine requested) primitive=%s",
                         self.name,
-                        shutdown_kind,
                     )
-
-                    # Close stream if shutdown is for this primitive's kind
-                    if (
-                        shutdown_kind == self.primitive_kind.lower()
-                        and self._message_stream is not None
-                    ):
-                        logger.info(
-                            "shutting down (engine requested) primitive=%s",
-                            self.name,
-                        )
-                        self._message_stream.close()
-                        self._message_stream = None
+                    self._message_stream.close()
+                    self._message_stream = None
                 # Don't forward system.shutdown to user - it's internal
                 return
 
