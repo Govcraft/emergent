@@ -1,6 +1,7 @@
 """Pytest configuration and fixtures."""
 
 import asyncio
+import os
 import subprocess
 import tempfile
 import time
@@ -10,6 +11,23 @@ import pytest
 
 # Configure pytest-asyncio
 pytest_plugins = ["pytest_asyncio"]
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_data_home(tmp_path_factory: pytest.TempPathFactory):
+    """Keep SDK and engine log files out of the developer's real data directory.
+
+    Every client writes ``$XDG_DATA_HOME/emergent/<name>/primitive.log`` and the
+    test engine writes its own log beside it, so without this a test run leaves
+    directories in ``~/.local/share/emergent``.
+    """
+    previous = os.environ.get("XDG_DATA_HOME")
+    os.environ["XDG_DATA_HOME"] = str(tmp_path_factory.mktemp("xdg-data"))
+    yield
+    if previous is None:
+        os.environ.pop("XDG_DATA_HOME", None)
+    else:
+        os.environ["XDG_DATA_HOME"] = previous
 
 
 def _engine_binary() -> Path:
