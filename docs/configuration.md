@@ -183,15 +183,28 @@ subscribes = ["timer.filtered", "system.started.*"]
 
 ## Subscription Patterns
 
-Subscriptions support wildcards:
+A subscription is either an exact message type or a prefix ending in a single
+`*`:
 
 ```toml
 subscribes = [
     "timer.tick",           # Exact match
     "system.started.*",     # Matches system.started.timer, system.started.filter, etc.
     "system.error.*",       # All error events
+    "*",                    # Everything the engine publishes
 ]
 ```
+
+The `*` must be the last character. `system.*.error` could never match, so the
+engine refuses to start and names the primitive and the topic rather than
+running a primitive that would receive nothing.
+
+Overlapping entries deliver one copy each: a primitive subscribing to both
+`timer.tick` and `timer.*` receives a single `timer.tick`.
+
+Wildcard routing arrived after engine 0.10.10. On 0.10.10 and earlier a
+subscription containing `*` was accepted and then never delivered, so configs
+written for those releases name every type.
 
 ## Multi-Language Primitives
 

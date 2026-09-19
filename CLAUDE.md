@@ -119,6 +119,16 @@ Types are in `sdks/rust/src/types/` — `MessageId`, `MessageType`, `PrimitiveNa
 - `system.request.subscriptions` / `system.response.subscriptions` - SDK subscription discovery
 - `system.request.topology` / `system.response.topology` - topology queries via pub/sub
 
+### Subscription Matching
+
+A subscription is an exact message type or a prefix ending in a single trailing
+`*` (`system.error.*`, or `*` for everything). Matching lives in acton's
+`subscribe_patterns` API, not in an engine-side table, because the engine
+already forwards each message under its Emergent `message_type` string.
+Mid-string wildcards such as `system.*.error` are rejected by config validation
+and by the SDKs. Overlapping topics deliver one copy per message. Engine
+0.10.10 and earlier accepted wildcard subscriptions and never delivered them.
+
 ### IPC Protocol
 
 - Wire format: MessagePack (default) or JSON
@@ -219,6 +229,6 @@ Workspace-level clippy configuration denies `unwrap_used` and `expect_used`. Use
 
 ## Dependencies
 
-- **acton-reactive**: Published crate (version 8.2.0) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
+- **acton-reactive**: Published crate (version 9.3.0) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
 - Uses Rust 2024 edition
 - Release profile optimized for binary size: `opt-level = "z"`, LTO, single codegen unit, panic = abort, stripped

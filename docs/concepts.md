@@ -85,6 +85,12 @@ EmergentMessage {
 
 - Exact match: `"timer.tick"` matches only `timer.tick`
 - Wildcard: `"system.started.*"` matches `system.started.timer`, `system.started.filter`, etc.
+- Catch-all: `"*"` matches every message the engine publishes
+- The `*` is terminal. `"system.*.error"` can never match, and the engine
+  rejects the config instead of starting an idle primitive.
+- Subscribing to both `"timer.tick"` and `"timer.*"` delivers one copy, not two.
+- Wildcards route on engines after 0.10.10; on 0.10.10 and earlier they were
+  accepted and delivered nothing.
 
 **Fan-out**: Multiple primitives subscribe to the same message type. One source event reaches multiple handlers or sinks simultaneously.
 

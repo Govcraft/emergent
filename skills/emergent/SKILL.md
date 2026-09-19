@@ -627,8 +627,10 @@ never the answer for an error topic or for any event on a `stream-runner` ack
 path. For every router group, show that some arm matches any
 payload. An event nobody consumes and a payload no arm matches both vanish
 silently, and behind a `stream-runner` either one stalls the batch for good.
-Subscriptions are exact-match, so `"system.error.*"` and `"issue.*"` subscribe
-to nothing: list each type.
+After engine 0.10.10 a terminal wildcard is a real subscription, so
+`"system.error.*"` and `"issue.*"` do reach every matching type, and a `*` sink
+sees everything. On 0.10.10 and earlier both subscribed to nothing, so
+topologies targeting those releases list each type.
 
 **The script test.** List every primitive whose command is not a bare args
 array. For each, count the commands that touch the world. More than one fails.
