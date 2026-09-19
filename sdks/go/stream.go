@@ -60,14 +60,20 @@ func (s *MessageStream) TryNext() *EmergentMessage {
 }
 
 // Close closes the stream. Further pushes are discarded.
+//
+// The onClose callback runs after s.mu is released. The client's callback
+// takes c.mu, and the read loop calls push with c.mu held, so running the
+// callback under s.mu would order the two locks both ways round.
 func (s *MessageStream) Close() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return
 	}
 	s.closed = true
 	close(s.ch)
+	s.mu.Unlock()
+
 	if s.onClose != nil {
 		s.onClose()
 	}
@@ -86,17 +92,20 @@ func (s *MessageStream) Pending() int {
 }
 
 // push sends a message to the stream. Dropped if stream is closed.
+//
+// s.mu is held across the send so Close cannot close the channel between the
+// closed check and the send, which would panic. The send never blocks, so the
+// lock is held only briefly.
 func (s *MessageStream) push(msg *EmergentMessage) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
-		s.mu.Unlock()
 		return
 	}
-	s.mu.Unlock()
 
 	select {
 	case s.ch <- msg:
 	default:
-		// Buffer full — drop message to prevent blocking the read loop
+		// Buffer full: drop the message to prevent blocking the read loop
 	}
 }
