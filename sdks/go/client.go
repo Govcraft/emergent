@@ -61,6 +61,7 @@ type baseClient struct {
 	timeout       time.Duration
 	logger        *Logger
 
+	// mu guards the fields below it, including the three pending-request maps.
 	mu                          sync.Mutex
 	disposed                    bool
 	readBuffer                  []byte
@@ -708,6 +709,10 @@ func (c *baseClient) readLoop(ctx context.Context) {
 	}
 }
 
+// processFrames decodes every complete frame in the read buffer and dispatches
+// it. It holds c.mu for the whole pass, so handleFrame and every handler below
+// it run with c.mu held. That lock is what serializes the read loop's access
+// to the pending-request maps against callers and request timers.
 func (c *baseClient) processFrames() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -729,7 +734,9 @@ func (c *baseClient) processFrames() {
 }
 
 func (c *baseClient) handleFrame(msgType byte, payload any) {
-	// Must be called with c.mu held
+	// Must be called with c.mu held. The handlers it dispatches to inherit the
+	// lock and must not take c.mu themselves: sync.Mutex is not reentrant, so
+	// locking again would deadlock the read loop.
 	switch msgType {
 	case MsgTypeResponse:
 		c.handleResponse(payload)
@@ -740,6 +747,7 @@ func (c *baseClient) handleFrame(msgType byte, payload any) {
 	}
 }
 
+// handleResponse completes a pending request. Must be called with c.mu held.
 func (c *baseClient) handleResponse(payload any) {
 	payloadMap, ok := payload.(map[string]any)
 	if !ok {
@@ -781,6 +789,7 @@ func (c *baseClient) handleResponse(payload any) {
 	}
 }
 
+// handlePush routes a push notification. Must be called with c.mu held.
 func (c *baseClient) handlePush(payload any) {
 	payloadMap, ok := payload.(map[string]any)
 	if !ok {
@@ -840,6 +849,9 @@ func (c *baseClient) handleShutdown(payloadMap map[string]any) {
 	}
 }
 
+// handleTopologyResponse completes a pending GetTopology call.
+// Must be called with c.mu held: it reads and deletes from
+// c.pendingTopologyRequests, which callers and request timers also mutate.
 func (c *baseClient) handleTopologyResponse(payloadMap map[string]any) {
 	wirePayload, ok := payloadMap["payload"].(map[string]any)
 	if !ok {
@@ -904,6 +916,9 @@ func (c *baseClient) handleTopologyResponse(payloadMap map[string]any) {
 	}
 }
 
+// handleSubscriptionsResponse completes a pending GetMySubscriptions call.
+// Must be called with c.mu held: it reads and deletes from
+// c.pendingSubscriptionRequests, which callers and request timers also mutate.
 func (c *baseClient) handleSubscriptionsResponse(payloadMap map[string]any) {
 	wirePayload, ok := payloadMap["payload"].(map[string]any)
 	if !ok {
@@ -1003,4 +1018,3 @@ func resolveName(name, defaultName string) string {
 	}
 	return defaultName
 }
-
