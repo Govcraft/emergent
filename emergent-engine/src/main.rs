@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 use emergent_engine::scaffold;
 
@@ -455,13 +456,21 @@ async fn main() -> Result<()> {
         let log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(log_dir.join("emergent.log"))
-            .unwrap_or_else(|_| {
-                std::fs::File::open("/dev/null").unwrap_or_else(|_| panic!("cannot open /dev/null"))
-            });
+            .open(log_dir.join("emergent.log"));
+        // Without a writable log file, log to stderr rather than lose the logs
+        let writer = match log_file {
+            Ok(file) => BoxMakeWriter::new(std::sync::Mutex::new(file)),
+            Err(e) => {
+                eprintln!(
+                    "Cannot open {}: {e}. Logging to stderr instead.",
+                    log_dir.join("emergent.log").display()
+                );
+                BoxMakeWriter::new(std::io::stderr)
+            }
+        };
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
-            .with_writer(std::sync::Mutex::new(log_file))
+            .with_writer(writer)
             .with_ansi(false)
             .init();
     }
