@@ -533,15 +533,28 @@ Live D3 force-directed view of the running pipeline.
 name = "topology"
 path = "~/.local/share/emergent/primitives/bin/topology-viewer"
 args = ["--port", "8009"]
-subscribes = ["system.started.*", "system.stopped.*", "system.error.*", "system.response.topology"]
+subscribes = ["system.response.topology"]
 ```
 
-**Flags:** `--port <PORT>` (8080). It subscribes to those four types itself
-regardless of the config, so the `subscribes` line is there for the topology
-graph to be truthful. Open `/` in a browser; `/api/topology` returns the graph
-as JSON.
+**Flags:** `--port <PORT>` (8080). Open `/` in a browser; `/api/topology`
+returns the graph as JSON.
 
-Worth adding during design. Seeing the graph makes an under-decomposed topology
+**Known limitation, verified against 0.12.0.** The viewer ignores the config's
+`subscribes` and asks for three `system.*.*` wildcards itself. Subscriptions are
+exact-match (see `configuration.md`), so those never deliver, and the graph
+shows the engine node and nothing else. It fills in only if something publishes
+`system.response.topology`, which no marketplace primitive does (the engine repo
+has an example handler, `examples/handlers/topology-api`). Until that is fixed,
+read the graph from the engine instead:
+
+```bash
+curl -s 127.0.0.1:<api_port>/api/topology | jq '.primitives[] | {name, kind, publishes, subscribes}'
+```
+
+Ignore `state` and `pid` in that response: managed primitives always report
+`"configured"` and `null`, even while running.
+
+Worth checking during design. Seeing the graph makes an under-decomposed topology
 obvious at a glance, because it renders as a short chain instead of a web.
 
 ---

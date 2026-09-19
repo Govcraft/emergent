@@ -1,6 +1,14 @@
 # Emergent Configuration Reference
 
-Configuration is stored in TOML format, typically `emergent.toml`.
+Configuration is stored in TOML format, typically `emergent.toml`. The engine
+looks for `--config/-c FILE`, then `./emergent.toml`, then
+`~/.config/emergent/emergent.toml`. `--socket/-s PATH` overrides `socket_path`,
+and `--verbose/-v` logs to stderr instead of
+`~/.local/share/emergent/<engine.name>/emergent.log`.
+
+Unknown keys are ignored without a warning, so a typo such as `subscribe =`
+produces a primitive that loads and receives nothing. Check spelling first when a
+primitive is silent.
 
 ## Complete Example
 
@@ -19,7 +27,7 @@ name = "emergent"
 socket_path = "auto"
 
 # HTTP API port (default: 8891, set 0 to disable)
-# Serves GET /api/topology — returns all primitives with state, publishes, subscribes, PID
+# Serves GET /api/topology on 127.0.0.1: every enabled primitive with its kind, publishes, subscribes
 api_port = 8891
 
 # =============================================================================
@@ -35,7 +43,7 @@ json_log_dir = "auto"
 # "auto" — uses XDG data directory
 sqlite_path = "auto"
 
-# How many days to retain events before cleanup
+# Parsed but not enforced: no cleanup runs, so prune the store yourself
 retention_days = 30
 
 # =============================================================================
@@ -51,9 +59,8 @@ publishes = ["exec.output"]
 [[sources]]
 name = "webhook"
 path = "~/.local/share/emergent/primitives/bin/http-source"
-args = ["--port", "8080", "--secret", "$HTTP_WEBHOOK_SECRET"]
+args = ["--host", "127.0.0.1", "--port", "8080"]   # secret: export HTTP_SOURCE_SECRET before starting the engine
 publishes = ["http.request"]
-env = { HTTP_WEBHOOK_SECRET = "" }
 
 # =============================================================================
 # Handlers - Transformation (subscribe + publish)
@@ -70,7 +77,7 @@ publishes = ["data.transformed"]
 name = "ws"
 path = "~/.local/share/emergent/primitives/bin/websocket-handler"
 args = ["--prefix", "ws"]
-subscribes = ["ws.connect", "ws.send"]
+subscribes = ["ws.connect", "ws.send", "ws.disconnect"]
 publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
 
 # =============================================================================
@@ -93,7 +100,7 @@ subscribes = ["data.transformed"]
 name = "topology"
 path = "~/.local/share/emergent/primitives/bin/topology-viewer"
 args = ["--port", "8009"]
-subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
+subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ticker"]
 ```
 
 ## Section Reference
@@ -106,26 +113,43 @@ subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
 | `socket_path` | String | `"auto"` | Unix socket path (`"auto"` for XDG default) |
 | `api_port` | Integer | `8891` | HTTP API port (`0` to disable) |
 
-There is no `wire_format` option — IPC is always MessagePack. The option was removed because setting `"json"` silently broke all SDK communication. For human-readable inspection, read the event store's JSON logs.
+Leave `wire_format` unset. The key still parses (`"messagepack"` or `"json"`) but has no effect: IPC is always MessagePack. For human-readable inspection, read the event store's JSON logs.
 
 ### [event_store]
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `json_log_dir` | Path | `"auto"` | Directory for JSON log files (`"auto"` for XDG data dir) |
-| `sqlite_path` | Path | `"auto"` | SQLite database path (`"auto"` for XDG data dir) |
-| `retention_days` | Integer | `30` | Days to retain events |
+| `json_log_dir` | Path | `"auto"` | Directory for JSON log files. `"auto"` is `~/.local/share/emergent/<engine.name>/logs` on Linux |
+| `sqlite_path` | Path | `"auto"` | SQLite database path. `"auto"` is `~/.local/share/emergent/<engine.name>/events.db` on Linux |
+| `retention_days` | Integer | `30` | Parsed but not enforced. Nothing prunes either store |
+
+Both stores are always on. `~` is **not** expanded in `json_log_dir`,
+`sqlite_path`, or `socket_path`; only a primitive's `path` gets tilde expansion.
+
+The JSON log is one file per UTC day, `events-YYYY-MM-DD.jsonl`, one line per
+event: `{"timestamp": "<RFC3339>", "message": <envelope>}`.
+
+The SQLite table is `events(id, message_type, source, correlation_id,
+causation_id, timestamp_ms, payload_json, metadata_json, created_at)`, indexed on
+`message_type`, `timestamp_ms`, `source`, and `correlation_id`. Tracing a run is
+one query:
+
+```bash
+sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
+  "SELECT message_type, source, payload_json FROM events
+   WHERE correlation_id = 'cor_...' ORDER BY timestamp_ms"
+```
 
 ### [[sources]]
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | String | Yes | Unique identifier for this source |
-| `path` | Path | Yes | Path to executable (supports `~` expansion, bare commands via PATH) |
+| `name` | String | Yes | Unique across sources, handlers, and sinks combined. Lowercase letter first, then `a-z 0-9 - _`, at most 64 characters. The config loader does not check this, and an invalid name (a space, an uppercase letter) hangs the engine during startup |
+| `path` | Path | Yes | Path to executable. See Path Resolution. Must exist for every enabled primitive or the engine refuses to start |
 | `args` | Array[String] | No | Command-line arguments |
 | `enabled` | Boolean | No | Enable/disable (default: `true`) |
-| `publishes` | Array[String] | No | Message types this source publishes |
-| `env` | Map[String, String] | No | Environment variables |
+| `publishes` | Array[String] | No | Message types this source publishes. Types use `a-z 0-9 . _ -` with no leading, trailing, or doubled dots. Marketplace primitives read this array and it overrides their topic flags by position |
+| `env` | Map[String, String] | No | Environment variables, as literals. See Secrets Management before putting anything here |
 
 ### [[handlers]]
 
@@ -135,9 +159,9 @@ There is no `wire_format` option — IPC is always MessagePack. The option was r
 | `path` | Path | Yes | Path to executable |
 | `args` | Array[String] | No | Command-line arguments |
 | `enabled` | Boolean | No | Enable/disable (default: `true`) |
-| `subscribes` | Array[String] | Yes | Message types to subscribe to |
+| `subscribes` | Array[String] | No (default `[]`) | Message types to subscribe to. This list is what the SDK actually subscribes to, so an empty one receives nothing |
 | `publishes` | Array[String] | No | Message types this handler publishes |
-| `env` | Map[String, String] | No | Environment variables |
+| `env` | Map[String, String] | No | Environment variables, as literals. See Secrets Management before putting anything here |
 | `unwrap_stdout` | Boolean | No | When `true`, the SDK auto-extracts and parses the `.stdout` field from exec-source's `{command, stdout, exit_code}` envelope before delivering messages (engine sets `EMERGENT_UNWRAP_STDOUT=true` for the primitive) |
 
 ### [[sinks]]
@@ -148,27 +172,38 @@ There is no `wire_format` option — IPC is always MessagePack. The option was r
 | `path` | Path | Yes | Path to executable |
 | `args` | Array[String] | No | Command-line arguments |
 | `enabled` | Boolean | No | Enable/disable (default: `true`) |
-| `subscribes` | Array[String] | Yes | Message types to subscribe to |
-| `env` | Map[String, String] | No | Environment variables |
+| `subscribes` | Array[String] | No (default `[]`) | Message types to subscribe to. This list is what the SDK actually subscribes to, so an empty one receives nothing |
+| `env` | Map[String, String] | No | Environment variables, as literals. See Secrets Management before putting anything here |
 | `unwrap_stdout` | Boolean | No | Same as for handlers — auto-unwrap exec-source's stdout envelope |
 
-## Subscription Patterns
+## Subscriptions are exact-match
 
-Subscriptions support wildcards:
+A subscription matches one message type, character for character. **There is no
+wildcard routing.** `system.error.*` and `timer.*` load without complaint and
+then receive nothing, which makes this the quietest way to build a sink that
+never fires.
 
-| Pattern | Matches |
-|---------|---------|
-| `timer.tick` | Exact match only |
-| `system.started.*` | `system.started.timer`, `system.started.filter`, etc. |
-| `system.*` | `system.started`, `system.stopped`, etc. (one level) |
+List every type explicitly. System events are typed per primitive, so watching
+two primitives for failure is two entries:
+
+```toml
+subscribes = ["system.error.poll-issues", "system.error.score-severity"]
+```
 
 ## Path Resolution
 
 The engine resolves `path` in three ways:
 
-1. **Tilde expansion**: `~/bin/app` → `/home/user/bin/app`
-2. **Bare command lookup**: `path = "uv"` → searches PATH for `uv`
-3. **"auto" for XDG paths**: Socket and event store paths support `"auto"`
+1. **Tilde expansion**: `~/bin/app` → `/home/user/bin/app`. Only a leading `~`
+   or `~/`; `~user/` is not expanded.
+2. **Bare command lookup**: `path = "uv"` searches PATH, but only when the value
+   contains no `/` and no file of that name exists in the working directory.
+3. **"auto" for XDG paths**: Socket and event store paths support `"auto"`.
+
+A relative `path` resolves against the engine's working directory, not the
+config file's directory. The marketplace install directory shown throughout,
+`~/.local/share/emergent/primitives/bin/`, is the Linux location; on macOS it is
+under `~/Library/Application Support/ai.govcraft.emergent/`.
 
 ## Socket Path Resolution
 
@@ -188,6 +223,10 @@ When spawning primitives, the engine sets:
 | `EMERGENT_NAME` | Name of this primitive (from config) |
 | `EMERGENT_PUBLISHES` | Comma-separated publish types |
 | `EMERGENT_SUBSCRIBES` | Comma-separated subscribe types |
+| `EMERGENT_API_PORT` | `[engine].api_port` (`0` when the HTTP API is disabled) |
+| `EMERGENT_UNWRAP_STDOUT` | `true` when `unwrap_stdout = true` |
+
+Engine-set variables win over same-named keys in a primitive's `env`.
 
 ## Multi-Language Paths
 
@@ -212,25 +251,29 @@ path = "./my_handler"
 
 ## Secrets Management
 
-Never hardcode tokens in TOML files. Use environment variables:
+Never put a secret in `emergent.toml`. Primitives inherit the engine's
+environment, so export the secret before starting the engine and read it inside
+the command:
 
 ```toml
-# Option 1: Environment variables (set before running)
 [[sinks]]
-name = "poster"
+name = "post-alert"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "data.post", "--", "sh", "-c", "curl -H \"Authorization: Bearer $API_TOKEN\" ..."]
-subscribes = ["data.post"]
-
-# Option 2: env field
-[[sources]]
-name = "webhook"
-path = "~/.local/share/emergent/primitives/bin/http-source"
-args = ["--port", "8080"]
-env = { HTTP_WEBHOOK_SECRET = "" }  # Set via export before running
-publishes = ["http.request"]
+args = ["-s", "alert.raised", "--", "sh", "-c",
+        "curl -sf -H \"Authorization: Bearer $API_TOKEN\" -d @- https://example.com/hook"]
+subscribes = ["alert.raised"]
 ```
 
-For production:
-- **Linux**: systemd-creds to encrypt secrets to TPM
-- **macOS**: Keychain via `$(security find-generic-password -s KEY -w)` in args
+Three traps:
+
+- **`args` and `env` values are literals.** Nothing expands `$VAR` or `$(...)`
+  in them. Expansion happens only inside an explicit `sh -c "..."` argument,
+  because then a shell is doing it.
+- **An `env` entry replaces the inherited value.** `env = { API_TOKEN = "" }`
+  does not mean "pass it through"; it blanks the exported token.
+- **Marketplace primitives that take a secret read an environment variable**
+  (`HTTP_SOURCE_SECRET`, `TYPESAFE_API_KEY`). Use that, not the flag, so the
+  secret stays out of the process table as well as the file.
+
+For production on Linux, a systemd unit for the engine with `EnvironmentFile=`
+or `LoadCredentialEncrypted=` keeps the secret out of your shell history too.
