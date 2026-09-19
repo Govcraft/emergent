@@ -97,7 +97,10 @@ fn every_shipped_config_parses_under_the_strict_schema() {
         }
     }
 
-    assert!(checked >= 8, "expected the shipped configs, found {checked}");
+    assert!(
+        checked >= 8,
+        "expected the shipped configs, found {checked}"
+    );
 }
 
 #[test]
@@ -117,7 +120,10 @@ fn every_full_config_in_the_docs_parses_under_the_strict_schema() {
         };
         for snippet in full_config_snippets(&content) {
             if let Err(error) = toml::from_str::<EmergentConfig>(&snippet) {
-                panic!("a config snippet in {} does not load: {error}", path.display());
+                panic!(
+                    "a config snippet in {} does not load: {error}",
+                    path.display()
+                );
             }
             checked += 1;
         }

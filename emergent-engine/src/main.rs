@@ -277,7 +277,15 @@ fn start_retention(event_store: &Arc<EventStoreWrapper>, config: &EmergentConfig
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            run_retention_pass(&store, &log_dir, retention_days);
+            let store = store.clone();
+            let log_dir = log_dir.clone();
+            // Deleting rows and files blocks, so keep it off the async runtime.
+            let pass = tokio::task::spawn_blocking(move || {
+                run_retention_pass(&store, &log_dir, retention_days);
+            });
+            if let Err(e) = pass.await {
+                warn!("Retention prune task failed: {}", e);
+            }
         }
     });
 }
