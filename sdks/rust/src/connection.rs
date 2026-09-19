@@ -7,6 +7,7 @@
 
 use crate::error::ClientError;
 use crate::message::EmergentMessage;
+use crate::publish_watch::{PublishStats, PublishWatcher};
 use crate::stream::MessageStream;
 use crate::subscribe::{
     IntoSubscription, needs_configured_topics, partition_topics, resolve_topics,
@@ -561,7 +562,9 @@ pub struct EmergentSource {
     /// Name of this source.
     name: String,
     /// Channel-based IPC client (no mutex, no drain task).
-    client: IpcClient,
+    client: Arc<IpcClient>,
+    /// Claims the engine's reply to every fire-and-forget publish.
+    watcher: PublishWatcher,
 }
 
 impl EmergentSource {
@@ -577,10 +580,7 @@ impl EmergentSource {
 
         info!(primitive.name = %name, primitive.kind = "source", "connected to engine");
 
-        Ok(Self {
-            name: name.to_string(),
-            client,
-        })
+        Ok(Self::with_client(name, client))
     }
 
     /// Connect to the Emergent engine at a specific socket path.
@@ -595,19 +595,47 @@ impl EmergentSource {
 
         info!(primitive.name = %name, primitive.kind = "source", "connected to engine");
 
-        Ok(Self {
+        Ok(Self::with_client(name, client))
+    }
+
+    /// Assemble a connected Source and start watching its publishes.
+    fn with_client(name: &str, client: IpcClient) -> Self {
+        let client = Arc::new(client);
+        let watcher = PublishWatcher::spawn(Arc::clone(&client), name.to_string());
+
+        Self {
             name: name.to_string(),
             client,
-        })
+            watcher,
+        }
     }
 
     /// Publish a message to the engine (fire-and-forget).
     ///
     /// The message will be routed to any Handlers or Sinks subscribed to its type.
     ///
+    /// # What `Ok(())` guarantees
+    ///
+    /// Only that the message was queued for the engine, in publish order. It
+    /// does **not** mean the engine took it. The engine answers every publish,
+    /// and the answer can be a refusal: the IPC connection is rate limited to
+    /// 100 messages per second with a burst of 50, and the broker can also
+    /// refuse a message because its mailbox is full or it is shutting down. A
+    /// refused message is never delivered to anyone.
+    ///
+    /// After engine 0.13.1 that refusal is no longer silent. The SDK claims the
+    /// engine's answer to every publish, logs a refusal at `WARN` with the
+    /// engine's own error text and the message type, and counts it in
+    /// [`publish_stats`](Self::publish_stats). Before that, `publish` reported
+    /// success and the refusal was dropped at `trace` level.
+    ///
+    /// Use [`publish_ack`](Self::publish_ack) when the caller must learn the
+    /// verdict of a specific message before moving on.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the message cannot be sent.
+    /// Returns an error if the message cannot be queued, which means the
+    /// connection to the engine is gone.
     pub async fn publish(&self, mut message: EmergentMessage) -> Result<()> {
         if message.source.is_default() {
             message.source = PrimitiveName::new(&self.name).map_err(|e| {
@@ -618,20 +646,39 @@ impl EmergentSource {
             })?;
         }
 
+        let message_type = message.message_type.clone();
         let envelope = build_publish_envelope(message)?;
-        self.client.send(envelope).await.map_err(|e| {
-            error!(primitive.name = %self.name, error = %e, "failed to publish message");
-            ClientError::ConnectionFailed(format!("publish failed: {e}"))
-        })
+        self.watcher.publish(envelope, message_type).await
+    }
+
+    /// What the engine has done with this Source's fire-and-forget publishes.
+    ///
+    /// Counts of accepted, rejected and unanswered publishes since the Source
+    /// connected. [`publish`](Self::publish) returns before the engine answers,
+    /// so the counts lag the calls and settle once the queue drains.
+    #[must_use]
+    pub fn publish_stats(&self) -> PublishStats {
+        self.watcher.stats()
     }
 
     /// Publish a message with broker acknowledgment (backpressure).
     ///
-    /// Unlike [`publish`], this waits for the engine's message broker to confirm
-    /// it has processed and forwarded the message before returning. This provides
-    /// natural backpressure — the caller cannot outpace the broker.
+    /// # What `Ok(())` guarantees
     ///
-    /// Used internally by [`publish_all`] and [`publish_stream`].
+    /// That the engine's message broker took this message: it stored the event
+    /// and handed it to every subscriber's queue before replying. That is the
+    /// strongest guarantee the SDK offers. It is not a delivery receipt from
+    /// the subscribing primitives, which consume their queues on their own.
+    ///
+    /// A rejection, including a rate limit, comes back as
+    /// [`ClientError::PublishFailed`] carrying the engine's own error text, so
+    /// the caller decides what to do about it. That is the difference from
+    /// [`publish`](Self::publish), which only logs and counts a rejection.
+    ///
+    /// The caller waits for a round trip per message, which is the
+    /// backpressure: it cannot outpace the broker. Used internally by
+    /// [`publish_all`](Self::publish_all) and
+    /// [`publish_stream`](Self::publish_stream).
     ///
     /// # Errors
     ///
@@ -647,6 +694,9 @@ impl EmergentSource {
         }
 
         let envelope = build_publish_request_envelope(message)?;
+        // Keep publish order: this frame is written straight to the client, so
+        // it must not overtake publishes still queued on the watcher.
+        self.watcher.flush().await;
         let response = self.client.request(envelope).await.map_err(|e| {
             error!(primitive.name = %self.name, error = %e, "publish_ack failed");
             ClientError::ConnectionFailed(format!("publish_ack failed: {e}"))
@@ -757,6 +807,7 @@ impl EmergentSource {
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
         info!(primitive.name = %self.name, "disconnecting from engine");
+        self.watcher.shutdown().await;
         self.client
             .disconnect()
             .await
@@ -818,6 +869,8 @@ pub struct EmergentHandler {
     client: Arc<IpcClient>,
     /// Currently subscribed message types.
     subscribed_types: Vec<String>,
+    /// Claims the engine's reply to every fire-and-forget publish.
+    watcher: PublishWatcher,
 }
 
 impl EmergentHandler {
@@ -831,11 +884,7 @@ impl EmergentHandler {
 
         info!(primitive.name = %name, primitive.kind = "handler", "connected to engine");
 
-        Ok(Self {
-            name: name.to_string(),
-            client: Arc::new(client),
-            subscribed_types: Vec::new(),
-        })
+        Ok(Self::with_client(name, client))
     }
 
     /// Connect to the Emergent engine at a specific socket path.
@@ -850,11 +899,20 @@ impl EmergentHandler {
 
         info!(primitive.name = %name, primitive.kind = "handler", "connected to engine");
 
-        Ok(Self {
+        Ok(Self::with_client(name, client))
+    }
+
+    /// Assemble a connected Handler and start watching its publishes.
+    fn with_client(name: &str, client: IpcClient) -> Self {
+        let client = Arc::new(client);
+        let watcher = PublishWatcher::spawn(Arc::clone(&client), name.to_string());
+
+        Self {
             name: name.to_string(),
-            client: Arc::new(client),
+            client,
             subscribed_types: Vec::new(),
-        })
+            watcher,
+        }
     }
 
     /// Subscribe to message types and return a stream of incoming messages.
@@ -929,9 +987,30 @@ impl EmergentHandler {
 
     /// Publish a message to the engine (fire-and-forget).
     ///
+    /// # What `Ok(())` guarantees
+    ///
+    /// Only that the message was queued for the engine, in publish order. It
+    /// does **not** mean the engine took it. The engine answers every publish,
+    /// and the answer can be a refusal: the IPC connection is rate limited to
+    /// 100 messages per second with a burst of 50, and the broker can also
+    /// refuse a message because its mailbox is full or it is shutting down. A
+    /// refused message is never delivered to anyone.
+    ///
+    /// After engine 0.13.1 that refusal is no longer silent. The SDK claims the
+    /// engine's answer to every publish, logs a refusal at `WARN` with the
+    /// engine's own error text and the message type, and counts it in
+    /// [`publish_stats`](Self::publish_stats). Before that, `publish` reported
+    /// success and the refusal was dropped at `trace` level.
+    ///
+    /// A Handler that emits one message per message it consumes stays under the
+    /// rate limit as long as its input does. A Handler that fans one message out
+    /// to many can exceed it, which is what [`publish_ack`](Self::publish_ack)
+    /// or [`publish_all`](Self::publish_all) are for.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the message cannot be sent.
+    /// Returns an error if the message cannot be queued, which means the
+    /// connection to the engine is gone.
     pub async fn publish(&self, mut message: EmergentMessage) -> Result<()> {
         if message.source.is_default() {
             message.source = PrimitiveName::new(&self.name).map_err(|e| {
@@ -942,20 +1021,39 @@ impl EmergentHandler {
             })?;
         }
 
+        let message_type = message.message_type.clone();
         let envelope = build_publish_envelope(message)?;
-        self.client.send(envelope).await.map_err(|e| {
-            error!(primitive.name = %self.name, error = %e, "failed to publish message");
-            ClientError::ConnectionFailed(format!("publish failed: {e}"))
-        })
+        self.watcher.publish(envelope, message_type).await
+    }
+
+    /// What the engine has done with this Handler's fire-and-forget publishes.
+    ///
+    /// Counts of accepted, rejected and unanswered publishes since the Handler
+    /// connected. [`publish`](Self::publish) returns before the engine answers,
+    /// so the counts lag the calls and settle once the queue drains.
+    #[must_use]
+    pub fn publish_stats(&self) -> PublishStats {
+        self.watcher.stats()
     }
 
     /// Publish a message with broker acknowledgment (backpressure).
     ///
-    /// Unlike [`publish`], this waits for the engine's message broker to confirm
-    /// it has processed and forwarded the message before returning. This provides
-    /// natural backpressure — the caller cannot outpace the broker.
+    /// # What `Ok(())` guarantees
     ///
-    /// Used internally by [`publish_all`] and [`publish_stream`].
+    /// That the engine's message broker took this message: it stored the event
+    /// and handed it to every subscriber's queue before replying. That is the
+    /// strongest guarantee the SDK offers. It is not a delivery receipt from
+    /// the subscribing primitives, which consume their queues on their own.
+    ///
+    /// A rejection, including a rate limit, comes back as
+    /// [`ClientError::PublishFailed`] carrying the engine's own error text, so
+    /// the caller decides what to do about it. That is the difference from
+    /// [`publish`](Self::publish), which only logs and counts a rejection.
+    ///
+    /// The caller waits for a round trip per message, which is the
+    /// backpressure: it cannot outpace the broker. Used internally by
+    /// [`publish_all`](Self::publish_all) and
+    /// [`publish_stream`](Self::publish_stream).
     ///
     /// # Errors
     ///
@@ -971,6 +1069,9 @@ impl EmergentHandler {
         }
 
         let envelope = build_publish_request_envelope(message)?;
+        // Keep publish order: this frame is written straight to the client, so
+        // it must not overtake publishes still queued on the watcher.
+        self.watcher.flush().await;
         let response = self.client.request(envelope).await.map_err(|e| {
             error!(primitive.name = %self.name, error = %e, "publish_ack failed");
             ClientError::ConnectionFailed(format!("publish_ack failed: {e}"))
@@ -1242,6 +1343,7 @@ impl EmergentHandler {
     /// Returns an error if the disconnection fails.
     pub async fn disconnect(&self) -> Result<()> {
         info!(primitive.name = %self.name, "disconnecting from engine");
+        self.watcher.shutdown().await;
         self.client
             .disconnect()
             .await
