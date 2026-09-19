@@ -20,7 +20,7 @@
 //! use emergent_client::types::{SystemEventPayload, SystemShutdownPayload};
 //!
 //! // Deserialize a system.started payload
-//! # fn example() -> Result<(), serde_json::Error> {
+//! # fn example() -> std::result::Result<(), serde_json::Error> {
 //! # let json = r#"{"name":"timer","kind":"source","pid":1234,"publishes":["timer.tick"],"subscribes":[]}"#;
 //! let payload: SystemEventPayload = serde_json::from_str(json)?;
 //! println!("Started: {} ({})", payload.name(), payload.kind());

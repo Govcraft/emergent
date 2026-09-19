@@ -4,11 +4,15 @@
 //! and running the event loop. Developers only need to provide their business logic
 //! as an async closure.
 //!
+//! Every example below is compiled as a doctest. They are marked `no_run`
+//! because they need a live engine to execute, but a signature change that
+//! breaks the documented closure shape now fails the build.
+//!
 //! # Examples
 //!
 //! ## Source with custom logic (interval-based timer)
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use emergent_client::helpers::run_source;
 //! use emergent_client::EmergentMessage;
 //! use serde_json::json;
@@ -39,7 +43,7 @@
 //!
 //! ## Source as HTTP webhook
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use emergent_client::helpers::run_source;
 //! use emergent_client::EmergentMessage;
 //!
@@ -47,15 +51,19 @@
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     run_source(Some("webhook"), |source, mut shutdown| async move {
 //!         // Start HTTP server, publish on each request
-//!         let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+//!         let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
+//!             .await
+//!             .map_err(|e| e.to_string())?;
 //!
 //!         loop {
 //!             tokio::select! {
 //!                 _ = shutdown.changed() => break,
 //!                 result = listener.accept() => {
-//!                     let (stream, _) = result?;
+//!                     let (_stream, _addr) = result.map_err(|e| e.to_string())?;
 //!                     // Parse request, publish message...
-//!                     source.publish(EmergentMessage::new("webhook.received")).await?;
+//!                     source.publish(EmergentMessage::new("webhook.received"))
+//!                         .await
+//!                         .map_err(|e| e.to_string())?;
 //!                 }
 //!             }
 //!         }
@@ -67,7 +75,7 @@
 //!
 //! ## Source as one-shot function
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use emergent_client::helpers::run_source;
 //! use emergent_client::EmergentMessage;
 //!
@@ -75,7 +83,9 @@
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     run_source(Some("one_shot"), |source, _shutdown| async move {
 //!         // Run once and exit
-//!         source.publish(EmergentMessage::new("startup.complete")).await?;
+//!         source.publish(EmergentMessage::new("startup.complete"))
+//!             .await
+//!             .map_err(|e| e.to_string())?;
 //!         Ok(())
 //!     }).await?;
 //!     Ok(())
@@ -84,7 +94,7 @@
 //!
 //! ## Handler with message transformation
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use emergent_client::helpers::run_handler;
 //! use emergent_client::EmergentMessage;
 //! use serde_json::json;
@@ -107,7 +117,7 @@
 //!
 //! ## Sink with message consumption
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use emergent_client::helpers::run_sink;
 //!
 //! #[tokio::main]
@@ -208,12 +218,13 @@ pub type ShutdownReceiver = watch::Receiver<bool>;
 ///
 /// # Example: Interval-based timer
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use emergent_client::helpers::run_source;
 /// use emergent_client::EmergentMessage;
 /// use serde_json::json;
 /// use std::time::Duration;
 ///
+/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 /// run_source(Some("my_timer"), |source, mut shutdown| async move {
 ///     let mut interval = tokio::time::interval(Duration::from_secs(3));
 ///     let mut count = 0u64;
@@ -231,15 +242,24 @@ pub type ShutdownReceiver = watch::Receiver<bool>;
 ///     }
 ///     Ok(())
 /// }).await?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// # Example: One-shot source
 ///
-/// ```rust,ignore
+/// ```rust,no_run
+/// # use emergent_client::helpers::run_source;
+/// # use emergent_client::EmergentMessage;
+/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 /// run_source(Some("init"), |source, _shutdown| async move {
-///     source.publish(EmergentMessage::new("system.init")).await?;
+///     source.publish(EmergentMessage::new("system.init"))
+///         .await
+///         .map_err(|e| e.to_string())?;
 ///     Ok(())
 /// }).await?;
+/// # Ok(())
+/// # }
 /// ```
 pub async fn run_source<F, Fut>(name: Option<&str>, run_fn: F) -> HelperResult<()>
 where
@@ -292,7 +312,10 @@ where
 /// * `name` - Optional name for this handler. Falls back to `EMERGENT_NAME` env var,
 ///   then to the default `"handler"`.
 /// * `subscriptions` - Message types to subscribe to.
-/// * `process_fn` - Async function called for each message with `(msg, &handler)`.
+/// * `process_fn` - Async function called for each message with `(msg, handler)`.
+///   The handler is passed by value: it is a cheap clone of the connected
+///   handler, sharing one IPC connection, so the returned future can own it
+///   and publish across `.await` points.
 ///
 /// # Returns
 ///
@@ -300,11 +323,12 @@ where
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use emergent_client::helpers::run_handler;
 /// use emergent_client::EmergentMessage;
 /// use serde_json::json;
 ///
+/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 /// run_handler(
 ///     Some("my_handler"),
 ///     &["timer.tick"],
@@ -315,6 +339,8 @@ where
 ///         handler.publish(output).await.map_err(|e| e.to_string())
 ///     }
 /// ).await?;
+/// # Ok(())
+/// # }
 /// ```
 pub async fn run_handler<F, Fut>(
     name: Option<&str>,
@@ -322,7 +348,7 @@ pub async fn run_handler<F, Fut>(
     process_fn: F,
 ) -> HelperResult<()>
 where
-    F: Fn(EmergentMessage, &EmergentHandler) -> Fut + Send + Sync,
+    F: Fn(EmergentMessage, EmergentHandler) -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), String>> + Send,
 {
     let resolved_name = resolve_name(name, "handler");
@@ -352,7 +378,7 @@ where
             msg = stream.next() => {
                 match msg {
                     Some(msg) => {
-                        if let Err(e) = process_fn(msg, &handler).await {
+                        if let Err(e) = process_fn(msg, handler.clone()).await {
                             return Err(HelperError::UserFunction(e));
                         }
                     }
@@ -391,9 +417,10 @@ where
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use emergent_client::helpers::run_sink;
 ///
+/// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 /// run_sink(
 ///     Some("my_sink"),
 ///     &["timer.processed"],
@@ -402,6 +429,8 @@ where
 ///         Ok(())
 ///     }
 /// ).await?;
+/// # Ok(())
+/// # }
 /// ```
 pub async fn run_sink<F, Fut>(
     name: Option<&str>,

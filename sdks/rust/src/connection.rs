@@ -711,6 +711,14 @@ impl EmergentSource {
 ///     handler.publish(output).await?;
 /// }
 /// ```
+///
+/// # Cloning
+///
+/// Cloning an `EmergentHandler` is cheap: the clone shares the same IPC
+/// connection through an `Arc` and can publish independently. A clone carries
+/// a snapshot of `subscribed_types` taken at the moment of the clone, so
+/// subscribe on the original before cloning.
+#[derive(Clone)]
 pub struct EmergentHandler {
     /// Name of this handler.
     name: String,
