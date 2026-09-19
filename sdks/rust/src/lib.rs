@@ -107,20 +107,24 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Result type for client operations.
 pub type Result<T> = std::result::Result<T, ClientError>;
 
-/// Discovery information about the engine.
+/// What the engine's IPC layer reports about itself.
+///
+/// These are acton IPC type names and IPC-exposed actors (`SystemEvent`,
+/// `message_broker`), not Emergent topics or primitives. For those, ask a sink
+/// for the topology or read `GET /api/topology`.
 #[derive(Debug, Clone)]
 pub struct DiscoveryInfo {
-    /// Available message types that can be subscribed to.
+    /// IPC message type names the engine has registered.
     pub message_types: Vec<String>,
-    /// List of connected primitives.
+    /// Actors the engine exposes over IPC.
     pub primitives: Vec<PrimitiveInfo>,
 }
 
-/// Information about a registered primitive.
+/// One IPC-exposed actor from a discovery reply.
 #[derive(Debug, Clone)]
 pub struct PrimitiveInfo {
-    /// Name of the primitive.
+    /// Name of the actor.
     pub name: String,
-    /// Type of primitive (Source, Handler, Sink).
+    /// Always empty: the engine's discovery reply carries no kind.
     pub kind: String,
 }
