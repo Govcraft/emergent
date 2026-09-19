@@ -29,6 +29,7 @@ pub mod messages;
 pub mod primitive_actor;
 pub mod primitives;
 pub mod process_manager;
+pub mod readiness;
 pub mod retention;
 pub mod scaffold;
 pub mod supervision;
@@ -43,6 +44,7 @@ pub use primitive_actor::{
     build_primitive_actor,
 };
 pub use primitives::{PrimitiveKind, PrimitiveState};
+pub use readiness::{Evidence, TierMember, TierVerdict, classify, evaluate_tier};
 pub use supervision::{
     ExitOutcome, RestartDecision, RestartLimits, RestartPolicy, backoff_delay, decide_restart,
 };

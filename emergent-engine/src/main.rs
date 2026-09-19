@@ -101,7 +101,8 @@ use emergent_engine::config::EmergentConfig;
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
-use emergent_engine::process_manager::{ProcessManager, ShutdownTimings};
+use emergent_engine::process_manager::{ProcessManager, ShutdownTimings, StartupReadiness};
+use emergent_engine::readiness::ActonSubscriberProbe;
 use emergent_engine::retention;
 use emergent_engine::topology::build_topology_payload;
 
@@ -566,9 +567,15 @@ async fn main() -> Result<()> {
     let sub_mgr_for_emergent = sub_mgr_clone.clone();
     let pm_for_subscriptions = process_manager.clone();
     let pm_for_topology = process_manager.clone();
+    let pm_for_contact = process_manager.clone();
     broker_actor.mutate_on::<IpcEmergentMessage>(move |actor, envelope| {
         let msg = envelope.message();
         actor.model.message_count += 1;
+
+        // Every message names the primitive it came from, which is the only
+        // readiness signal startup can attribute to a name. See
+        // emergent_engine::readiness.
+        pm_for_contact.note_primitive_contact(msg.inner.source.as_str());
 
         // Log to event store
         if let Err(e) = event_store_for_emergent.store(&msg.inner) {
@@ -782,6 +789,15 @@ async fn main() -> Result<()> {
     let total_primitives = enabled_sinks.len() + enabled_handlers.len() + enabled_sources.len();
     info!("Starting {} primitive(s)...", total_primitives);
 
+    // Startup waits for each tier to reach the engine before starting the next.
+    let startup_readiness = StartupReadiness {
+        timeout: config.engine.startup_ready_timeout(),
+        peers: Some(Arc::new(ActonSubscriberProbe::new(
+            subscription_manager.clone(),
+            listener_handle.stats.clone(),
+        ))),
+    };
+
     // Start all registered processes in order: Sinks → Handlers → Sources
     // Each primitive is started by its actor in after_start, which broadcasts system.started.*
     if total_primitives > 0
@@ -791,6 +807,7 @@ async fn main() -> Result<()> {
                 &enabled_sinks,
                 &enabled_handlers,
                 &enabled_sources,
+                &startup_readiness,
             )
             .await
     {

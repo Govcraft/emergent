@@ -15,21 +15,28 @@ use crate::primitive_actor::{
     ChildPidWatch, EngineShuttingDown, PrimitiveActorConfig, StopPrimitive, build_primitive_actor,
     create_shutdown_event, sigkill_process_group, wait_for_children_exit,
 };
-use crate::primitives::{PrimitiveInfo, PrimitiveKind};
+use crate::primitives::{PrimitiveInfo, PrimitiveKind, PrimitiveState};
+use crate::readiness::{SETTLE, SubscribedPeers, TierMember, classify, evaluate_tier};
 use acton_reactive::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// How long to wait for a SIGKILLed child to be reaped before giving up.
 ///
 /// SIGKILL is not catchable, so this only covers the kernel delivering the
 /// signal and the monitor task observing the exit.
 const REAP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How often the startup wait re-reads what it can observe about a tier.
+///
+/// Short enough that a healthy tier is left almost the instant it is ready,
+/// and the loop only runs while a tier is actually being waited on.
+const READY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Time budgets for the shutdown sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +62,37 @@ impl ShutdownTimings {
             drain: engine.shutdown_drain(),
             grace: engine.shutdown_grace(),
         }
+    }
+}
+
+/// What startup waits on between tiers.
+///
+/// `timeout` bounds the wait; `peers` is the optional view of live IPC
+/// connections that turns an inference into a confirmation. Without it the wait
+/// falls back to IPC traffic by name alone.
+pub struct StartupReadiness {
+    /// Deadline for one tier, from `[engine].startup_ready_timeout_ms`.
+    pub timeout: Duration,
+    /// How to see which processes hold a subscribed IPC connection.
+    pub peers: Option<Arc<dyn SubscribedPeers>>,
+}
+
+impl StartupReadiness {
+    /// Readiness with no view of IPC connections, for tests and for a process
+    /// manager driven without a listener.
+    #[must_use]
+    pub const fn unobserved(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            peers: None,
+        }
+    }
+
+    /// The processes currently holding a subscribed IPC connection.
+    fn subscribed_pids(&self) -> HashSet<u32> {
+        self.peers
+            .as_ref()
+            .map_or_else(HashSet::new, |p| p.subscribed_pids())
     }
 }
 
@@ -115,6 +153,12 @@ pub struct ProcessManager {
     api_port: u16,
     /// Actor handles by name.
     actors: Arc<RwLock<HashMap<String, ActorEntry>>>,
+    /// When the engine first heard from each primitive over IPC, by name. This
+    /// is the only readiness signal it can attribute to a name; see
+    /// [`crate::readiness`]. Written from the broker's message handler, which
+    /// is synchronous, so it uses a std lock rather than the async one the
+    /// actor map uses. The critical section holds no await.
+    first_contact: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl ProcessManager {
@@ -125,13 +169,42 @@ impl ProcessManager {
             socket_path,
             api_port,
             actors: Arc::new(RwLock::new(HashMap::new())),
+            first_contact: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Record that the engine has received IPC traffic from `name`.
+    ///
+    /// Called for every message the broker receives, from the message's
+    /// `source`. Only the first contact matters, so later calls are cheap
+    /// no-ops. A poisoned lock is ignored: losing a readiness observation costs
+    /// at worst a tier that waits to its deadline, which is not worth failing
+    /// the engine over.
+    pub fn note_primitive_contact(&self, name: &str) {
+        let Ok(mut contacts) = self.first_contact.lock() else {
+            return;
+        };
+        if !contacts.contains_key(name) {
+            contacts.insert(name.to_string(), Instant::now());
+        }
+    }
+
+    /// How long ago the engine first heard from each named primitive.
+    fn contact_ages(&self) -> HashMap<String, Duration> {
+        let Ok(contacts) = self.first_contact.lock() else {
+            return HashMap::new();
+        };
+        let now = Instant::now();
+        contacts
+            .iter()
+            .map(|(name, at)| (name.clone(), now.saturating_duration_since(*at)))
+            .collect()
     }
 
     /// Register a source from configuration.
     ///
     /// Creates a PrimitiveActor for the source but does not start it.
-    /// Call `start_all` or `start_one` to begin the lifecycle.
+    /// Call `start_all` to begin the lifecycle.
     pub async fn register_source(
         &self,
         runtime: &mut ActorRuntime,
@@ -264,12 +337,17 @@ impl ProcessManager {
     /// 1. Sinks are ready to receive messages
     /// 2. Handlers are ready to process messages
     /// 3. Sources start producing messages
+    ///
+    /// Each tier is waited on before the next one starts, so a slow-starting
+    /// subscriber does not miss the first events. The wait is bounded by
+    /// `ready_timeout`; see [`Self::wait_for_tier`].
     pub async fn start_all(
         &self,
         runtime: &mut ActorRuntime,
         sinks: &[&SinkConfig],
         handlers: &[&HandlerConfig],
         sources: &[&SourceConfig],
+        readiness: &StartupReadiness,
     ) -> Result<(), ProcessManagerError> {
         // Register and start sinks first
         for sink in sinks {
@@ -278,9 +356,8 @@ impl ProcessManager {
                 error!("Failed to start sink {}: {}", sink.name, e);
                 return Err(e);
             }
-            // Small delay to ensure IPC connection is established
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
+        self.wait_for_tier(PrimitiveKind::Sink, readiness).await;
 
         // Then handlers
         for handler in handlers {
@@ -289,8 +366,8 @@ impl ProcessManager {
                 error!("Failed to start handler {}: {}", handler.name, e);
                 return Err(e);
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
+        self.wait_for_tier(PrimitiveKind::Handler, readiness).await;
 
         // Finally sources
         for source in sources {
@@ -299,10 +376,87 @@ impl ProcessManager {
                 error!("Failed to start source {}: {}", source.name, e);
                 return Err(e);
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
 
         Ok(())
+    }
+
+    /// Wait until every primitive of `kind` that declares subscriptions has
+    /// been heard from, or until `timeout` passes.
+    ///
+    /// Sources declare no subscriptions, so their tier returns at once and no
+    /// caller has to special-case them. At the deadline the engine names the
+    /// primitives it never heard from and carries on: one that never connects
+    /// costs the tier its deadline, not the engine its startup.
+    ///
+    /// The decision is [`evaluate_tier`]; this is the loop that feeds it. The
+    /// signal it feeds on is "the engine has received IPC traffic from this
+    /// primitive", which is the strongest thing acton-reactive 9.3.0 lets the
+    /// engine attribute to a name. [`crate::readiness`] documents why, and why
+    /// a short settle after that signal stands in for the subscription
+    /// confirmation the engine cannot see.
+    async fn wait_for_tier(&self, kind: PrimitiveKind, readiness: &StartupReadiness) {
+        let timeout = readiness.timeout;
+        let started = Instant::now();
+        loop {
+            let subscribed = readiness.subscribed_pids();
+            let members = self.tier_members(kind, SETTLE, &subscribed).await;
+            let verdict = evaluate_tier(&members);
+            if verdict.ready {
+                if !members.is_empty() {
+                    debug!(
+                        "{} tier ready after {} ms",
+                        kind.as_str(),
+                        started.elapsed().as_millis()
+                    );
+                }
+                return;
+            }
+
+            if started.elapsed() >= timeout {
+                warn!(
+                    "Starting the next tier after {} ms without hearing from {} {}(s): {}. \
+                     Events published now may not reach them. Raise \
+                     [engine].startup_ready_timeout_ms if they are only slow to start.",
+                    timeout.as_millis(),
+                    verdict.waiting_on.len(),
+                    kind.as_str(),
+                    verdict.waiting_on.join(", ")
+                );
+                return;
+            }
+
+            tokio::time::sleep(READY_POLL_INTERVAL).await;
+        }
+    }
+
+    /// Snapshot the primitives of one kind as the readiness decision sees them.
+    async fn tier_members(
+        &self,
+        kind: PrimitiveKind,
+        settle: Duration,
+        subscribed_pids: &HashSet<u32>,
+    ) -> Vec<TierMember> {
+        let ages = self.contact_ages();
+        let actors = self.actors.read().await;
+        actors
+            .values()
+            .filter(|e| e.kind == kind)
+            .map(|e| {
+                let info = e.info();
+                let running =
+                    !matches!(info.state, PrimitiveState::Stopped | PrimitiveState::Failed);
+                let confirmed = e
+                    .pid_rx
+                    .borrow()
+                    .is_some_and(|pid| subscribed_pids.contains(&pid));
+                TierMember {
+                    declares_subscriptions: !info.subscribes.is_empty(),
+                    evidence: classify(running, confirmed, ages.get(&info.name).copied(), settle),
+                    name: info.name,
+                }
+            })
+            .collect()
     }
 
     /// Get information about all registered primitives.
@@ -480,7 +634,6 @@ fn still_running(watched: &[(String, watch::Receiver<Option<u32>>)]) -> Vec<(Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::PrimitiveState;
 
     /// Build a source config for a real executable.
     fn source_config(name: &str, path: &str, args: &[&str]) -> SourceConfig {
@@ -594,6 +747,145 @@ mod tests {
             panic!("alive stayed Running after stop_all");
         };
         assert_ne!(after_stop.state, PrimitiveState::Running);
+    }
+
+    /// Build a sink config for a real executable.
+    fn sink_config(name: &str, path: &str, args: &[&str], subscribes: &[&str]) -> SinkConfig {
+        SinkConfig {
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            args: args.iter().map(|a| (*a).to_string()).collect(),
+            enabled: true,
+            subscribes: subscribes.iter().map(|s| (*s).to_string()).collect(),
+            env: HashMap::new(),
+            unwrap_stdout: false,
+            restart: RestartConfig::default(),
+        }
+    }
+
+    /// Govcraft/emergent#66: the wait must be bounded. `/bin/sleep` never
+    /// connects to the engine, so nothing will ever satisfy the tier and only
+    /// the deadline can end it.
+    #[tokio::test]
+    async fn a_primitive_that_never_connects_holds_its_tier_only_to_the_deadline() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-66-deadline.sock"), 0);
+        let readiness = StartupReadiness::unobserved(Duration::from_millis(200));
+
+        let mute = sink_config("mute", "/bin/sleep", &["30"], &["burst.event"]);
+
+        let started = Instant::now();
+        assert!(
+            manager
+                .start_all(&mut runtime, &[&mute], &[], &[], &readiness)
+                .await
+                .is_ok()
+        );
+        let waited = started.elapsed();
+
+        assert!(
+            waited >= Duration::from_millis(200),
+            "start_all returned before the deadline: {waited:?}"
+        );
+        assert!(
+            waited < Duration::from_secs(2),
+            "start_all overran the deadline: {waited:?}"
+        );
+
+        let timings = ShutdownTimings {
+            drain: Duration::ZERO,
+            grace: Duration::from_secs(2),
+        };
+        manager.graceful_shutdown(&runtime.broker(), timings).await;
+    }
+
+    /// A sink that declares no subscriptions has nothing to be ready for, so
+    /// its tier must not wait at all.
+    #[tokio::test]
+    async fn a_tier_with_nothing_to_subscribe_does_not_wait() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-66-nowait.sock"), 0);
+        let readiness = StartupReadiness::unobserved(Duration::from_secs(30));
+
+        let quiet = sink_config("quiet", "/bin/sleep", &["30"], &[]);
+
+        let started = Instant::now();
+        assert!(
+            manager
+                .start_all(&mut runtime, &[&quiet], &[], &[], &readiness)
+                .await
+                .is_ok()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a tier with no subscribers waited: {:?}",
+            started.elapsed()
+        );
+
+        let timings = ShutdownTimings {
+            drain: Duration::ZERO,
+            grace: Duration::from_secs(2),
+        };
+        manager.graceful_shutdown(&runtime.broker(), timings).await;
+    }
+
+    /// A primitive that exits during the wait can never become ready, so it
+    /// must release the tier instead of holding it to the deadline.
+    #[tokio::test]
+    async fn a_primitive_that_exits_during_the_wait_releases_its_tier() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-66-exits.sock"), 0);
+        let readiness = StartupReadiness::unobserved(Duration::from_secs(30));
+
+        let gone = sink_config("gone", "/bin/true", &[], &["burst.event"]);
+
+        let started = Instant::now();
+        assert!(
+            manager
+                .start_all(&mut runtime, &[&gone], &[], &[], &readiness)
+                .await
+                .is_ok()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "an exited primitive held its tier: {:?}",
+            started.elapsed()
+        );
+
+        let timings = ShutdownTimings {
+            drain: Duration::ZERO,
+            grace: Duration::from_secs(2),
+        };
+        manager.graceful_shutdown(&runtime.broker(), timings).await;
+    }
+
+    /// The readiness signal is the message's `source`, which is what the broker
+    /// hands over for every message it receives.
+    #[tokio::test]
+    async fn noted_contact_is_recorded_once_and_ages() {
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-66-contact.sock"), 0);
+        assert!(manager.contact_ages().is_empty());
+
+        manager.note_primitive_contact("console");
+        let first = manager
+            .contact_ages()
+            .get("console")
+            .copied()
+            .unwrap_or_default();
+
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        // A later message must not reset the clock, or a chatty primitive would
+        // never settle.
+        manager.note_primitive_contact("console");
+        let later = manager
+            .contact_ages()
+            .get("console")
+            .copied()
+            .unwrap_or_default();
+
+        assert!(later > first, "contact age did not advance: {later:?}");
+        assert!(later >= Duration::from_millis(15));
+        assert_eq!(manager.contact_ages().len(), 1);
     }
 
     #[tokio::test]

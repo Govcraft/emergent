@@ -113,6 +113,17 @@ pub struct EngineConfig {
     /// SIGKILL, in milliseconds.
     #[serde(default = "default_shutdown_grace_ms")]
     pub shutdown_grace_ms: u64,
+
+    /// How long startup waits for the primitives of one tier to reach the
+    /// engine over IPC before starting the next tier, in milliseconds.
+    ///
+    /// The wait ends as soon as every primitive in the tier that declares
+    /// `subscribes` has been heard from, so this only bites when one of them
+    /// never connects. At the deadline the engine logs which ones it is still
+    /// missing and carries on. `0` disables the wait, which is the fixed-sleep
+    /// behaviour of 0.10.10 and earlier.
+    #[serde(default = "default_startup_ready_timeout_ms")]
+    pub startup_ready_timeout_ms: u64,
 }
 
 fn default_engine_name() -> String {
@@ -139,6 +150,13 @@ const fn default_shutdown_grace_ms() -> u64 {
     2_000
 }
 
+/// Default startup readiness deadline: long enough for a cold Python or Deno
+/// primitive to get through its runtime start, short enough that one primitive
+/// that never connects does not look like a hang.
+const fn default_startup_ready_timeout_ms() -> u64 {
+    5_000
+}
+
 impl EngineConfig {
     /// Returns whether the HTTP API server is enabled.
     #[must_use]
@@ -157,6 +175,12 @@ impl EngineConfig {
     pub const fn shutdown_grace(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.shutdown_grace_ms)
     }
+
+    /// The startup readiness deadline as a [`std::time::Duration`].
+    #[must_use]
+    pub const fn startup_ready_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.startup_ready_timeout_ms)
+    }
 }
 
 impl Default for EngineConfig {
@@ -169,6 +193,7 @@ impl Default for EngineConfig {
             max_connections: None,
             shutdown_drain_ms: default_shutdown_drain_ms(),
             shutdown_grace_ms: default_shutdown_grace_ms(),
+            startup_ready_timeout_ms: default_startup_ready_timeout_ms(),
         }
     }
 }
@@ -1828,6 +1853,7 @@ subscribes = ["tick.out"]
 #[cfg(test)]
 mod restart_config_tests {
     use super::*;
+    use std::time::Duration;
 
     const BASE: &str = r#"
 [[handlers]]
@@ -1950,5 +1976,36 @@ restart_max_retries = 9
         assert_eq!(config.engine.shutdown_drain_ms, 50);
         assert_eq!(config.engine.shutdown_grace_ms, 250);
         Ok(())
+    }
+
+    #[test]
+    fn the_startup_readiness_deadline_defaults_and_is_configurable() -> Result<(), ConfigError> {
+        let engine = EngineConfig::default();
+        assert_eq!(engine.startup_ready_timeout_ms, 5_000);
+        assert_eq!(engine.startup_ready_timeout(), Duration::from_secs(5));
+
+        let config = parse_no_io("[engine]\nstartup_ready_timeout_ms = 1500\n")?;
+        assert_eq!(config.engine.startup_ready_timeout_ms, 1_500);
+        assert_eq!(
+            config.engine.startup_ready_timeout(),
+            Duration::from_millis(1_500)
+        );
+
+        // 0 asks for no wait at all.
+        let none = parse_no_io("[engine]\nstartup_ready_timeout_ms = 0\n")?;
+        assert_eq!(none.engine.startup_ready_timeout(), Duration::ZERO);
+        Ok(())
+    }
+
+    /// `[engine]` denies unknown fields, so a typo must name the key and the
+    /// table rather than being silently ignored.
+    #[test]
+    fn a_misspelled_startup_deadline_is_a_load_error() {
+        let err = parse_no_io("[engine]\nstartup_ready_timeout = 1500\n");
+        let Err(err) = err else {
+            panic!("a misspelled [engine] key loaded without error");
+        };
+        let message = err.to_string();
+        assert!(message.contains("startup_ready_timeout"), "{message}");
     }
 }
