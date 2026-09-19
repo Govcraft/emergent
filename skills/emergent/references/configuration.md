@@ -159,7 +159,7 @@ sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
 | `path` | Path | Yes | Path to executable |
 | `args` | Array[String] | No | Command-line arguments |
 | `enabled` | Boolean | No | Enable/disable (default: `true`) |
-| `subscribes` | Array[String] | No (default `[]`) | Message types to subscribe to. This list is what the SDK actually subscribes to, so an empty one receives nothing |
+| `subscribes` | Array[String] | No (default `[]`) | Message types the primitive consumes. It reaches the primitive as `EMERGENT_SUBSCRIBES` and draws the topology graph, but a primitive that calls `subscribe([...])` with its own list ignores it: the exec primitives subscribe to their `-s` flags and `stream-runner` to its topic flags. Keep the two in agreement |
 | `publishes` | Array[String] | No | Message types this handler publishes |
 | `env` | Map[String, String] | No | Environment variables, as literals. See Secrets Management before putting anything here |
 | `unwrap_stdout` | Boolean | No | When `true`, the SDK auto-extracts and parses the `.stdout` field from exec-source's `{command, stdout, exit_code}` envelope before delivering messages (engine sets `EMERGENT_UNWRAP_STDOUT=true` for the primitive) |
@@ -172,7 +172,7 @@ sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
 | `path` | Path | Yes | Path to executable |
 | `args` | Array[String] | No | Command-line arguments |
 | `enabled` | Boolean | No | Enable/disable (default: `true`) |
-| `subscribes` | Array[String] | No (default `[]`) | Message types to subscribe to. This list is what the SDK actually subscribes to, so an empty one receives nothing |
+| `subscribes` | Array[String] | No (default `[]`) | Message types the primitive consumes. It reaches the primitive as `EMERGENT_SUBSCRIBES` and draws the topology graph, but a primitive that calls `subscribe([...])` with its own list ignores it: the exec primitives subscribe to their `-s` flags and `stream-runner` to its topic flags. Keep the two in agreement |
 | `env` | Map[String, String] | No | Environment variables, as literals. See Secrets Management before putting anything here |
 | `unwrap_stdout` | Boolean | No | Same as for handlers — auto-unwrap exec-source's stdout envelope |
 
