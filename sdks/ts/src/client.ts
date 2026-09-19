@@ -46,6 +46,18 @@ import { createLogger, type Logger } from "./logger.ts";
 // ============================================================================
 
 /**
+ * Decide whether `EMERGENT_UNWRAP_STDOUT` switches stdout unwrapping on.
+ *
+ * Only `"true"` and `"1"` enable it, matching the Rust, Go, and Python SDKs.
+ * Anything else, including `"false"`, `"0"`, and an unset variable, leaves it
+ * off.
+ */
+export function parseUnwrapFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "true" || normalized === "1";
+}
+
+/**
  * Get the socket path from environment variable.
  *
  * The Emergent engine sets `EMERGENT_SOCKET` for managed processes.
@@ -135,7 +147,9 @@ export class BaseClient {
     this.primitiveKind = kind;
     this.#timeoutMs = options?.timeout ?? DEFAULT_TIMEOUT_MS;
     this.#logger = createLogger(name);
-    this.#unwrapStdout = Deno.env.get("EMERGENT_UNWRAP_STDOUT") === "true";
+    this.#unwrapStdout = parseUnwrapFlag(
+      Deno.env.get("EMERGENT_UNWRAP_STDOUT"),
+    );
   }
 
   /**

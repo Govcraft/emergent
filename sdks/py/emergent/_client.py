@@ -90,6 +90,16 @@ def _init_logging(name: str = "emergent") -> None:
 DEFAULT_TIMEOUT = 30.0
 
 
+def parse_unwrap_flag(value: str | None) -> bool:
+    """Decide whether ``EMERGENT_UNWRAP_STDOUT`` switches stdout unwrapping on.
+
+    Only ``"true"`` and ``"1"`` enable it, matching the Rust, Go, and
+    TypeScript SDKs. Anything else, including ``"false"``, ``"0"``, and an
+    unset variable, leaves it off.
+    """
+    return value is not None and value.strip().lower() in ("true", "1")
+
+
 def get_socket_path() -> str:
     """
     Get the socket path from environment variable.
@@ -193,8 +203,8 @@ class BaseClient:
 
     def __post_init__(self) -> None:
         """Read env-based configuration once at construction time."""
-        env_val = os.environ.get("EMERGENT_UNWRAP_STDOUT", "")
-        object.__setattr__(self, "_unwrap_stdout", env_val != "")
+        env_val = os.environ.get("EMERGENT_UNWRAP_STDOUT")
+        object.__setattr__(self, "_unwrap_stdout", parse_unwrap_flag(env_val))
 
     def subscribed_types(self) -> list[str]:
         """Get the list of currently subscribed message types."""

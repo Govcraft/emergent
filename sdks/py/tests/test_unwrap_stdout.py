@@ -2,6 +2,9 @@
 
 import json
 
+import pytest
+
+from emergent._client import parse_unwrap_flag
 from emergent.types import EmergentMessage
 
 
@@ -127,3 +130,15 @@ class TestUnwrapStdoutNoStdoutField:
 
         result = msg.unwrap_stdout()
         assert result is msg
+
+
+class TestParseUnwrapFlag:
+    """The env flag enables unwrapping only for the values every SDK accepts."""
+
+    @pytest.mark.parametrize("value", ["true", "1", "TRUE", "True", " true "])
+    def test_enabling_values(self, value: str) -> None:
+        assert parse_unwrap_flag(value) is True
+
+    @pytest.mark.parametrize("value", [None, "", "false", "0", "no", "off", "yes", "2"])
+    def test_everything_else_leaves_it_off(self, value: str | None) -> None:
+        assert parse_unwrap_flag(value) is False
