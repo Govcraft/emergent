@@ -167,6 +167,57 @@ splitter instead. What you must not do is respond to "I want parallelism" by
 removing the splitter, which leaves you with no way to turn a collection into
 events at all.
 
+## Inside a primitive: compose commands, never write programs
+
+The stopping rules say how small a primitive must be. This says what it may be
+made of. Take the first rung that expresses the step, and justify every step
+down out loud.
+
+1. **A marketplace primitive used as itself.** `stream-runner` to split and
+   pace, `http-source` to receive, `jev-handler` to judge, `sse-sink` to push.
+   Flags only, no command. Someone already wrote, tested, and documented this
+   behavior, and its events are already in the shape everything else expects.
+2. **An exec primitive around one existing command, as an args array.**
+   `"--", "jq", "-c", "select(.confidence >= 0.8)"` or
+   `"--", "gh", "issue", "edit", ...`. No shell. This is where most of a good
+   topology lives: routers, projections, unwraps, guards.
+3. **An exec primitive around one shell pipe of the form `shape | act | shape`.**
+   Exactly one command in the pipe touches the world (an API, a model, a file, a
+   queue). Everything else is pure `jq`. The shell is there because a pipe needs
+   one, not because there is logic to hold.
+4. **An SDK primitive**, only for the three cases in "When a custom primitive
+   really is right" at the end of this document.
+
+There is no rung for a script file. A `score.sh` or `triage.py` referenced from
+`emergent.toml` is a program the topology cannot see into: its steps publish
+nothing, its branches route nothing, and the next requirement means editing it
+instead of adding a subscriber. When a script already exists, do not wire it in.
+Read it, list the acts it performs, and give each act its own primitive.
+
+A command has become a program when any of these is true. Each tell names its
+own split:
+
+| Tell | Split |
+|---|---|
+| Two commands that each touch the world, joined by `;`, `&&`, or a pipe | Two primitives with an event between them, so the first act is logged and the second is retryable alone |
+| `if`, `case`, `[ ... ] &&`, or a ternary that picks what happens next | Two routers with exclusive `jq select()` predicates |
+| `for`, `while`, `xargs` over items | `stream-runner`, or a splitter whose loop body only publishes |
+| A variable that outlives one pipe, a temp file, a lock | An event carrying that state, or one small accumulator primitive |
+| A retry loop or a `sleep` between attempts at the same act | The error topic, a delay handler, and a guard. See `references/patterns.md` |
+| It would read better with a comment explaining its phases | It has phases. Each phase is a primitive |
+
+**One shell idiom is legitimate and worth recognizing.** `exec-handler` replaces
+the payload with the command's stdout, so an act whose output does not carry the
+item's identity (a model reply, a search result) would orphan it. Capturing the
+payload and merging it back is carry-through, not logic:
+
+```
+p=$(cat); jq -r .prompt <<< "$p" | claude -p | jq -c --argjson orig "$p" '. + {number: $orig.number}'
+```
+
+That is still rung 3: one capture, one act, one merge. The moment a second act
+appears between the capture and the merge, split it.
+
 ## Translating code constructs into topology
 
 Decomposition feels like a leap of faith only until you know the mechanical
@@ -405,6 +456,12 @@ because the sequence is now non-deterministic as well as hidden. The discipline
 that keeps non-deterministic routing honest: **the agent announces its decision
 as an event and stops; handlers own the consequences.**
 
+**The Script File.** A path to your own script in `args`, or a `bash -c` that
+needs scrolling. *Tell:* `./something.sh`, `something.py`, or a command with a
+loop, a conditional, or two world-touching calls in it. It is the most common
+way a decomposed-looking topology hides a monolith, because the TOML has many
+blocks and each one looks small. Count acts, not blocks.
+
 **The Black Box.** A step with a long timeout that publishes exactly one event
 when it finishes. *Tell:* `-t 900000` or larger. Nothing can observe or react to
 anything happening inside it.
@@ -459,6 +516,11 @@ independently, or does something serialize them? Trace one item's path and name
 every point where it could be waiting on a different item. Each one needs an
 external constraint justifying it, because otherwise you have capped throughput
 at one.
+
+**The script test.** List every primitive whose command is not a bare args
+array. For each, count the commands that touch the world. More than one fails.
+Any loop or conditional fails. Any file of your own on disk fails. For each
+failure, name the event that belongs between the two halves and split there.
 
 **The swap test.** Can you replace any single primitive's implementation, `jq`
 for Python, `claude` for `ollama`, without touching its neighbors?
