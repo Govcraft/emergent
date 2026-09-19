@@ -407,6 +407,35 @@ interface PendingPubSubRequest<T> {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+/** The part of a connection a frame is written through. */
+export interface FrameWriter {
+  write(bytes: Uint8Array): Promise<number>;
+}
+
+/**
+ * Write every byte of `bytes`.
+ *
+ * `Deno.Conn.write` resolves to the number of bytes it wrote, which can be
+ * fewer than it was given when the socket buffer is full. Half a frame on the
+ * wire costs the engine its framing for the rest of the connection.
+ *
+ * @throws {ConnectionError} If the writer takes no bytes, which would loop
+ *   forever
+ */
+export async function writeAll(
+  writer: FrameWriter,
+  bytes: Uint8Array,
+): Promise<void> {
+  let written = 0;
+  while (written < bytes.length) {
+    const n = await writer.write(bytes.subarray(written));
+    if (n <= 0) {
+      throw new ConnectionError("Socket accepted no bytes");
+    }
+    written += n;
+  }
+}
+
 // ============================================================================
 // Base Client
 // ============================================================================
@@ -442,6 +471,10 @@ export class BaseClient {
   #messageStream: MessageStream | null = null;
   #subscribedTypes: Set<string> = new Set();
   #timeoutMs: number;
+  /** Settles when the last queued frame is out, whether or not it failed. */
+  #writeTail: Promise<void> = Promise.resolve();
+  /** Frames written or waiting to be. Zero means the next one need not wait. */
+  #queuedWrites = 0;
 
   #unwrapStdout: boolean;
 
@@ -715,7 +748,7 @@ export class BaseClient {
 
     const frame = encodeFrame(MSG_TYPE_REQUEST, envelope);
     try {
-      await this.conn!.write(frame);
+      await this.#writeFrame(frame);
       this.#logger.debug("published message", {
         messageType: message.messageType,
         messageId: message.id,
@@ -1045,6 +1078,31 @@ export class BaseClient {
     }
   }
 
+  /**
+   * Write one whole frame, after every frame queued before it.
+   *
+   * Callers do not wait for each other, so without the queue a second frame
+   * could land between two slices of a partly written first one. With nothing
+   * queued the write starts at once, as it did before there was a queue.
+   */
+  #writeFrame(frame: Uint8Array): Promise<void> {
+    const send = async (): Promise<void> => {
+      // The connection may have closed while this frame waited its turn.
+      if (!this.conn) {
+        throw new ConnectionError("Not connected");
+      }
+      await writeAll(this.conn, frame);
+    };
+    const written = this.#queuedWrites === 0
+      ? send()
+      : this.#writeTail.then(send);
+    this.#queuedWrites++;
+    this.#writeTail = written.catch(() => {}).finally(() => {
+      this.#queuedWrites--;
+    });
+    return written;
+  }
+
   #sendRequest<T>(
     msgType: number,
     payload: T,
@@ -1063,7 +1121,7 @@ export class BaseClient {
       });
 
       const frame = encodeFrame(msgType, payload);
-      this.conn!.write(frame).catch((err) => {
+      this.#writeFrame(frame).catch((err) => {
         this.#pendingRequests.delete(correlationId);
         clearTimeout(timer);
         const errorMsg = err instanceof Error ? err.message : String(err);

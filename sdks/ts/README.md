@@ -313,6 +313,13 @@ After SDK release 0.13.1 it is logged and skipped, and the subscription stays
 open. On 0.13.1 and earlier one such frame ended the read loop and closed the
 stream.
 
+After SDK release 0.13.1 every frame is written to the socket in full, and
+frames are written one at a time, so two concurrent publishes cannot interleave.
+On 0.13.1 and earlier the SDK called `Deno.Conn.write` once per frame and
+ignored the byte count, so a socket that took only part of a large frame left
+half a frame on the wire and the engine lost framing for the rest of the
+connection.
+
 ## Message Shape
 
 Every message flowing through Emergent follows the same envelope:
