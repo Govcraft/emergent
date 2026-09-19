@@ -101,6 +101,7 @@ use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, Sq
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::ProcessManager;
+use emergent_engine::topology::build_topology_payload;
 
 // ============================================================================
 // IPC Message Registration
@@ -132,34 +133,6 @@ impl From<IpcEmergentMessage> for EmergentMessage {
     fn from(msg: IpcEmergentMessage) -> Self {
         msg.inner
     }
-}
-
-/// Information about a primitive in the topology response.
-///
-/// Used in `system.response.topology` message payloads.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct TopologyPrimitive {
-    /// Unique name of the primitive.
-    name: String,
-    /// Kind of primitive (source, handler, sink).
-    kind: String,
-    /// Current state (running, stopped, failed, etc.).
-    state: String,
-    /// Message types this primitive publishes.
-    publishes: Vec<String>,
-    /// Message types this primitive subscribes to.
-    subscribes: Vec<String>,
-    /// Process ID if running.
-    pid: Option<u32>,
-    /// Error message if failed.
-    error: Option<String>,
-}
-
-/// Payload for topology response messages.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct TopologyResponsePayload {
-    /// All primitives in the system.
-    primitives: Vec<TopologyPrimitive>,
 }
 
 /// Payload for subscriptions response messages.
@@ -465,11 +438,13 @@ async fn main() -> Result<()> {
         runtime.new_actor_with_name::<MessageBrokerState>("message_broker".to_string());
 
     // Handle IpcEmergentMessage (from external clients)
-    // system.request.subscriptions is handled directly by the engine (SDK needs it)
-    // system.request.topology flows through normal pub/sub to topology-query handler
+    // system.request.subscriptions and system.request.topology are both answered
+    // directly by the engine, because the engine is the only holder of that state
+    // and SDKs block on the answer.
     let event_store_for_emergent = event_store_clone.clone();
     let sub_mgr_for_emergent = sub_mgr_clone.clone();
     let pm_for_subscriptions = process_manager.clone();
+    let pm_for_topology = process_manager.clone();
     broker_actor.mutate_on::<IpcEmergentMessage>(move |actor, envelope| {
         let msg = envelope.message();
         actor.model.message_count += 1;
@@ -529,8 +504,38 @@ async fn main() -> Result<()> {
             });
         }
 
+        // system.request.topology is handled directly by the engine because the
+        // process manager is the only source of truth for primitive state. The
+        // response carries the request's correlation_id on the envelope, which is
+        // where every SDK matches it.
+        if msg.inner.message_type.as_str() == "system.request.topology" {
+            let pm = pm_for_topology.clone();
+            let inner = msg.inner.clone();
+
+            return Reply::pending(async move {
+                let payload = build_topology_payload(std::process::id(), pm.list_all().await);
+
+                info!(
+                    "system.request.topology from '{}': {} primitive(s)",
+                    inner.source,
+                    payload.primitives.len()
+                );
+
+                let response = EmergentMessage::new("system.response.topology")
+                    .with_source("emergent-engine")
+                    .with_correlation_id_option(inner.correlation_id.as_ref())
+                    .with_payload(serde_json::to_value(&payload).unwrap_or_default());
+
+                let notification = IpcPushNotification::new(
+                    response.message_type.to_string(),
+                    Some(response.source.to_string()),
+                    serde_json::to_value(&response).unwrap_or_default(),
+                );
+                sub_mgr.forward_to_subscribers(&notification);
+            });
+        }
+
         // Forward all other messages to IPC subscribers based on the inner message_type
-        // This includes system.request.topology which goes to the topology-query handler
         let notification = IpcPushNotification::new(
             msg.inner.message_type.to_string(),
             Some(msg.inner.source.to_string()),
@@ -611,41 +616,17 @@ async fn main() -> Result<()> {
                 get(move || {
                     let pm = pm_for_http.clone();
                     async move {
-                        // Build the engine primitive
-                        let engine_primitive = TopologyPrimitive {
-                            name: "emergent-engine".to_string(),
-                            kind: "source".to_string(),
-                            state: "running".to_string(),
-                            publishes: vec![
-                                "system.started.*".to_string(),
-                                "system.stopped.*".to_string(),
-                                "system.error.*".to_string(),
-                                "system.shutdown".to_string(),
-                            ],
-                            subscribes: vec![],
-                            pid: Some(std::process::id()),
-                            error: None,
-                        };
+                        // Same pure mapping the pub/sub answer uses, so the two
+                        // transports always report the same topology.
+                        let payload =
+                            build_topology_payload(std::process::id(), pm.list_all().await);
 
-                        // Get all registered primitives
-                        let all_primitives = pm.list_all().await;
+                        info!(
+                            "HTTP /api/topology: {} primitive(s)",
+                            payload.primitives.len()
+                        );
 
-                        let mut primitives: Vec<TopologyPrimitive> =
-                            Vec::with_capacity(all_primitives.len() + 1);
-                        primitives.push(engine_primitive);
-                        primitives.extend(all_primitives.into_iter().map(|p| TopologyPrimitive {
-                            name: p.name,
-                            kind: p.kind.to_string().to_lowercase(),
-                            state: p.state.to_string().to_lowercase(),
-                            publishes: p.publishes,
-                            subscribes: p.subscribes,
-                            pid: p.pid,
-                            error: p.error,
-                        }));
-
-                        info!("HTTP /api/topology: {} primitive(s)", primitives.len());
-
-                        Json(TopologyResponsePayload { primitives })
+                        Json(payload)
                     }
                 }),
             );
