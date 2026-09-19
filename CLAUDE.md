@@ -181,7 +181,7 @@ git add -A && git commit -S -m "chore: bump to X.Y.Z"
 git push && git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 ```
 
-Tagging triggers two GitHub Actions:
+Tagging triggers two GitHub Actions. The release workflow first runs `ci.yml` (the Rust, Python, TypeScript and Go gates) as its quality gate, and the builds, the GitHub release and the crates.io publish all wait for it:
 - **Release workflow** — builds engine binaries for Linux/macOS
 - **PyPI workflow** — publishes Python SDK to PyPI
 - TypeScript SDK (JSR) is published manually by the maintainer
