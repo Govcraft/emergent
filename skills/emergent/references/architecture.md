@@ -99,7 +99,8 @@ The type is concrete, one per primitive, and subscriptions are exact-match, so n
 |-------|---------|-------------|
 | `system.started.<name>` | `{name, kind, pid, publishes, subscribes}` | Process spawned. Fires right after the spawn, before the child has connected to the socket |
 | `system.stopped.<name>` | `{name, kind, pid, publishes, subscribes}` | Process exited with code 0, code 143, or on SIGTERM. This includes a primitive that exits on its own, not only an engine-requested stop |
-| `system.error.<name>` | `{name, kind, pid, publishes, subscribes, error}` | Any other exit (`error` is `"Exited with status: N"`), or the spawn itself failed (`error` is the OS error text and there is no `pid`) |
+| `system.error.<name>` | `{name, kind, pid, publishes, subscribes, error}` | Any other exit (`error` is `"Exited with status: N"`), or the spawn itself failed (`error` is the OS error text and there is no `pid`). After 0.10.10 also `"Restarts exhausted: N attempts within W ms"` when a restart policy gives up |
+| `system.restarted.<name>` | `{name, kind, pid, publishes, subscribes, restart_attempt}` | After 0.10.10 only. The restart policy respawned the primitive. `restart_attempt` is 1-based inside the current window. It follows the `system.error.<name>` or `system.stopped.<name>` that reported the exit |
 
 **Payload fields:**
 - `name: String`: primitive name
@@ -157,7 +158,9 @@ Within each tier, primitives start in config order with a fixed 50 ms pause afte
 
 A primitive whose `path` does not exist stops the engine at config load. A spawn that fails later does not: the engine emits `system.error.<name>` and carries on with the rest.
 
-**There is no supervision.** The engine never restarts a primitive that exits or fails to spawn. It emits `system.stopped.<name>` or `system.error.<name>` and the primitive stays down until the engine restarts. If a primitive must survive its own crashes, that is a design input: keep primitives small enough that they do not crash, subscribe something to `system.error.<name>` so the failure is an event someone owns, and run the engine under a process supervisor.
+**Supervision is opt-in, and absent on 0.10.10 and earlier.** By default the engine does not restart a primitive that exits or fails to spawn. It emits `system.stopped.<name>` or `system.error.<name>` and the primitive stays down until the engine restarts. After 0.10.10 a primitive can set `restart = "on-failure"` or `"always"` (see the configuration reference): the engine respawns it with a doubling backoff, emits `system.restarted.<name>`, and gives up with a `system.error.<name>` of `"Restarts exhausted: ..."` once `restart_max_retries` restarts land inside `restart_window_ms`. It never restarts anything during shutdown.
+
+A restart is a new process. Whatever the old one held in memory is gone: a `stream-runner` forgets its batch, a stateful SDK handler forgets its accumulator. So a restart policy suits stateless primitives, which is one more reason to keep state in events. Either way, subscribe something to `system.error.<name>` so the failure is an event someone owns, and on 0.10.10 and earlier run the engine under a process supervisor.
 
 ### Shutdown Order (Three-Phase Drain)
 
@@ -166,26 +169,28 @@ On SIGTERM or Ctrl+C the engine broadcasts `system.shutdown.requested`, then run
 1. **Phase 1: Stop Sources**
    - Broadcast `system.shutdown` with `kind: "source"` (sources cannot subscribe, so nothing receives it)
    - Send SIGTERM to every source
-   - Sleep 2 s
    - No new messages enter the system
 
 2. **Phase 2: Drain Handlers**
    - Broadcast `system.shutdown` with `kind: "handler"`
-   - Sleep 500 ms
+   - Give handlers a drain window to exit on their own
    - Send SIGTERM to every handler still running
-   - Sleep 2 s
 
 3. **Phase 3: Drain Sinks**
    - Broadcast `system.shutdown` with `kind: "sink"`
-   - Sleep 500 ms
+   - Give sinks a drain window to exit on their own
    - Send SIGTERM to every sink still running
-   - Sleep 2 s
 
-The timers are fixed and none is configurable. Nothing waits on an actual exit: the sleeps add up to 7 s whether the topology is idle or busy, and a measured shutdown of a two-primitive topology took between 6 and 14 s end to end. Design for that:
+The timing depends on the engine version.
 
-- In-flight work has about 500 ms after `system.shutdown` before SIGTERM arrives, then 2 s before the engine moves on. Anything longer is cut off, which is one more reason a primitive does one short act.
-- The engine never sends SIGKILL. A primitive that ignores SIGTERM outlives the engine as an orphan.
-- A clean stop is exit code 0, exit code 143, or death by SIGTERM. Anything else is recorded as `system.error.<name>` even during shutdown.
+**After 0.10.10** the two windows are deadlines, not sleeps, and both are configurable under `[engine]`: `shutdown_drain_ms` (default 500) is the window before SIGTERM, `shutdown_grace_ms` (default 2000) is the window after it. A phase moves on the moment every primitive in it has exited, so a well-behaved topology stops in about a second. A primitive still alive at the grace deadline gets SIGKILL, sent to its whole process group so anything it spawned dies with it, and the engine logs a warning naming it. Raise `shutdown_grace_ms` for a primitive that legitimately needs longer to flush, rather than letting it be killed mid-write.
+
+**On 0.10.10 and earlier** the same windows are fixed sleeps (500 ms before SIGTERM, 2 s after, for every phase) and nothing waits on an actual exit: the sleeps add up to 7 s whether the topology is idle or busy, and a measured shutdown of a two-primitive topology took between 6 and 14 s end to end. That engine never sends SIGKILL, so a primitive that ignores SIGTERM outlives it as an orphan.
+
+Design for both:
+
+- In-flight work has the drain window after `system.shutdown` before SIGTERM arrives, then the grace window before the engine moves on or kills it. Anything longer is cut off, which is one more reason a primitive does one short act.
+- A clean stop is exit code 0, exit code 143, or death by SIGTERM. Anything else is recorded as `system.error.<name>` even during shutdown, and that includes a SIGKILL at the grace deadline.
 
 ## Message Flow
 

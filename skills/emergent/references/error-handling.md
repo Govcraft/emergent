@@ -181,7 +181,8 @@ source.publish(message).await?;
 The closures passed to the `run_*` helpers return `Result<(), String>`, which is
 why the examples end calls with `.map_err(|e| e.to_string())`. An `Err` from
 the closure makes the helper return `HelperError::UserFunction`, which ends the
-primitive, and the engine does not restart it. Return `Err` only for a failure
+primitive, and the engine does not restart it unless the primitive's config sets
+a `restart` policy (after 0.10.10). Return `Err` only for a failure
 that should stop the process; for one bad message, log it (or publish a
 `<domain>.failed` event) and return `Ok(())`.
 

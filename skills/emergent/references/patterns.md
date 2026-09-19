@@ -969,9 +969,11 @@ publishes = ["triage.degraded"]
 ```
 
 This makes the system reflexive: the topology can respond to its own health the
-same way it responds to domain data. Remember what the engine does not do. It
-never restarts a primitive that exited, so `triage.degraded` is a page, not a
-self-heal.
+same way it responds to domain data. Remember what the engine does not do by
+default. It restarts a primitive only when that primitive's block sets `restart`
+(after 0.10.10), so without one `triage.degraded` is a page, not a self-heal.
+With one, subscribe to `system.restarted.<name>` as well, and treat
+`"Restarts exhausted"` on `system.error.<name>` as the page.
 
 ## Self-seeding
 

@@ -112,6 +112,8 @@ subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ti
 | `name` | String | `"emergent"` | Engine instance name |
 | `socket_path` | String | `"auto"` | Unix socket path (`"auto"` for XDG default) |
 | `api_port` | Integer | `8891` | HTTP API port (`0` to disable) |
+| `shutdown_drain_ms` | Integer | `500` | After 0.10.10. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
+| `shutdown_grace_ms` | Integer | `2000` | After 0.10.10. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
 
 Leave `wire_format` unset. The key still parses (`"messagepack"` or `"json"`) but has no effect: IPC is always MessagePack. For human-readable inspection, read the event store's JSON logs.
 
@@ -175,6 +177,20 @@ sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
 | `subscribes` | Array[String] | No (default `[]`) | Message types the primitive consumes. It reaches the primitive as `EMERGENT_SUBSCRIBES` and draws the topology graph, but a primitive that calls `subscribe([...])` with its own list ignores it: the exec primitives subscribe to their `-s` flags and `stream-runner` to its topic flags. Keep the two in agreement |
 | `env` | Map[String, String] | No | Environment variables, as literals. See Secrets Management before putting anything here |
 | `unwrap_stdout` | Boolean | No | Same as for handlers: auto-unwrap exec-source's stdout envelope |
+
+### Restart policy (any primitive, after 0.10.10)
+
+Engine 0.10.10 and earlier never restart a primitive and do not know these keys. After 0.10.10 every `[[sources]]`, `[[handlers]]` and `[[sinks]]` block also takes:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `restart` | String | `"never"` | `"never"`, `"on-failure"` (non-zero exit, or death by a signal other than SIGTERM) or `"always"` (any exit). Any other value stops the engine at config load with an error naming the primitive |
+| `restart_backoff_ms` | Integer | `500` | Delay before the first restart. Doubles each attempt |
+| `restart_max_backoff_ms` | Integer | `30000` | Ceiling for the doubling |
+| `restart_max_retries` | Integer | `5` | Restarts allowed inside the window. One more exit after that leaves the primitive failed, with `system.error.<name>` carrying `"Restarts exhausted: N attempts within W ms"` |
+| `restart_window_ms` | Integer | `60000` | Sliding window the restarts are counted over. Attempts age out, so a primitive that fails rarely is restarted indefinitely |
+
+Each respawn emits `system.restarted.<name>`. Do not put `restart = "always"` on a one-shot source: exiting is how it finishes, and the policy would turn it into a loop. Reach for `on-failure` on long-running primitives that hold no state worth keeping, and leave the default everywhere else.
 
 ## Subscriptions are exact-match
 
