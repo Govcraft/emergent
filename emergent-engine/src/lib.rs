@@ -29,6 +29,7 @@ pub mod primitive_actor;
 pub mod primitives;
 pub mod process_manager;
 pub mod scaffold;
+pub mod supervision;
 pub mod topology;
 pub mod update;
 
@@ -39,4 +40,7 @@ pub use primitive_actor::{
     build_primitive_actor,
 };
 pub use primitives::{PrimitiveKind, PrimitiveState};
+pub use supervision::{
+    ExitOutcome, RestartDecision, RestartLimits, RestartPolicy, backoff_delay, decide_restart,
+};
 pub use topology::{TopologyPrimitive, TopologyResponsePayload, build_topology_payload};

@@ -5,6 +5,10 @@
 //! - Event store settings (log directory, SQLite path, retention)
 //! - Sources, Handlers, and Sinks to manage
 
+use crate::supervision::{
+    RestartLimits, RestartPolicy, default_restart_backoff_ms, default_restart_max_backoff_ms,
+    default_restart_max_retries, default_restart_window_ms, parse_restart_policy,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -54,6 +58,16 @@ pub struct EngineConfig {
     /// HTTP API port for topology queries. Set to 0 to disable.
     #[serde(default = "default_api_port")]
     pub api_port: u16,
+
+    /// How long each shutdown phase waits for children to exit on the
+    /// `system.shutdown` broadcast alone, before SIGTERM, in milliseconds.
+    #[serde(default = "default_shutdown_drain_ms")]
+    pub shutdown_drain_ms: u64,
+
+    /// How long each shutdown phase waits after SIGTERM before escalating to
+    /// SIGKILL, in milliseconds.
+    #[serde(default = "default_shutdown_grace_ms")]
+    pub shutdown_grace_ms: u64,
 }
 
 fn default_engine_name() -> String {
@@ -68,11 +82,35 @@ const fn default_api_port() -> u16 {
     8891
 }
 
+/// Default drain window: matches the 500 ms the engine historically slept
+/// between broadcasting `system.shutdown` and sending SIGTERM.
+const fn default_shutdown_drain_ms() -> u64 {
+    500
+}
+
+/// Default grace window: matches the 2 s the engine historically slept after
+/// SIGTERM, so the default shutdown is never less patient than before.
+const fn default_shutdown_grace_ms() -> u64 {
+    2_000
+}
+
 impl EngineConfig {
     /// Returns whether the HTTP API server is enabled.
     #[must_use]
     pub fn api_enabled(&self) -> bool {
         self.api_port != 0
+    }
+
+    /// The drain window as a [`std::time::Duration`].
+    #[must_use]
+    pub const fn shutdown_drain(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.shutdown_drain_ms)
+    }
+
+    /// The post-SIGTERM grace window as a [`std::time::Duration`].
+    #[must_use]
+    pub const fn shutdown_grace(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.shutdown_grace_ms)
     }
 }
 
@@ -83,6 +121,8 @@ impl Default for EngineConfig {
             socket_path: default_socket_path(),
             wire_format: WireFormat::default(),
             api_port: default_api_port(),
+            shutdown_drain_ms: default_shutdown_drain_ms(),
+            shutdown_grace_ms: default_shutdown_grace_ms(),
         }
     }
 }
@@ -129,6 +169,75 @@ impl Default for EventStoreConfig {
     }
 }
 
+/// Per-primitive supervision settings.
+///
+/// These keys are flattened into each `[[sources]]`, `[[handlers]]` and
+/// `[[sinks]]` table, so a primitive's supervision story reads in one place
+/// next to the rest of its definition.
+///
+/// `restart` is kept as a `String` here rather than a `RestartPolicy` so that
+/// an unrecognised value produces a validation error naming the primitive and
+/// the offending value, instead of serde's anonymous "unknown variant".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestartConfig {
+    /// Restart policy: `"never"` (default), `"on-failure"` or `"always"`.
+    #[serde(default = "default_restart")]
+    pub restart: String,
+
+    /// Delay before the first restart attempt, in milliseconds.
+    #[serde(default = "default_restart_backoff_ms")]
+    pub restart_backoff_ms: u64,
+
+    /// Ceiling for the doubling backoff, in milliseconds.
+    #[serde(default = "default_restart_max_backoff_ms")]
+    pub restart_max_backoff_ms: u64,
+
+    /// Maximum restarts allowed inside `restart_window_ms`.
+    #[serde(default = "default_restart_max_retries")]
+    pub restart_max_retries: u32,
+
+    /// Sliding window over which restarts are counted, in milliseconds.
+    #[serde(default = "default_restart_window_ms")]
+    pub restart_window_ms: u64,
+}
+
+fn default_restart() -> String {
+    RestartPolicy::default().as_str().to_string()
+}
+
+impl Default for RestartConfig {
+    fn default() -> Self {
+        Self {
+            restart: default_restart(),
+            restart_backoff_ms: default_restart_backoff_ms(),
+            restart_max_backoff_ms: default_restart_max_backoff_ms(),
+            restart_max_retries: default_restart_max_retries(),
+            restart_window_ms: default_restart_window_ms(),
+        }
+    }
+}
+
+impl RestartConfig {
+    /// Parse the configured policy (pure function).
+    ///
+    /// Returns `None` when the value is not one of the documented spellings.
+    #[must_use]
+    pub fn policy(&self) -> Option<RestartPolicy> {
+        parse_restart_policy(&self.restart)
+    }
+
+    /// The pacing limits described by this configuration (pure function).
+    #[must_use]
+    pub const fn limits(&self) -> RestartLimits {
+        RestartLimits {
+            backoff_ms: self.restart_backoff_ms,
+            max_backoff_ms: self.restart_max_backoff_ms,
+            max_retries: self.restart_max_retries,
+            window_ms: self.restart_window_ms,
+        }
+    }
+}
+
 /// Configuration for a Source primitive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
@@ -153,6 +262,10 @@ pub struct SourceConfig {
     /// Environment variables to set.
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+
+    /// Supervision settings (`restart`, `restart_backoff_ms`, ...).
+    #[serde(flatten, default)]
+    pub restart: RestartConfig,
 }
 
 /// Configuration for a Handler primitive.
@@ -191,6 +304,10 @@ pub struct HandlerConfig {
     /// receive the raw data directly without needing a dedicated unwrap step.
     #[serde(default)]
     pub unwrap_stdout: bool,
+
+    /// Supervision settings (`restart`, `restart_backoff_ms`, ...).
+    #[serde(flatten, default)]
+    pub restart: RestartConfig,
 }
 
 /// Configuration for a Sink primitive.
@@ -225,6 +342,10 @@ pub struct SinkConfig {
     /// receive the raw data directly without needing a dedicated unwrap step.
     #[serde(default)]
     pub unwrap_stdout: bool,
+
+    /// Supervision settings (`restart`, `restart_backoff_ms`, ...).
+    #[serde(flatten, default)]
+    pub restart: RestartConfig,
 }
 
 const fn default_enabled() -> bool {
@@ -315,6 +436,9 @@ pub trait PrimitiveConfig {
 
     /// Returns whether this primitive is enabled.
     fn is_enabled(&self) -> bool;
+
+    /// Returns this primitive's supervision settings.
+    fn restart_config(&self) -> &RestartConfig;
 }
 
 impl PrimitiveConfig for SourceConfig {
@@ -328,6 +452,10 @@ impl PrimitiveConfig for SourceConfig {
 
     fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    fn restart_config(&self) -> &RestartConfig {
+        &self.restart
     }
 }
 
@@ -343,6 +471,10 @@ impl PrimitiveConfig for HandlerConfig {
     fn is_enabled(&self) -> bool {
         self.enabled
     }
+
+    fn restart_config(&self) -> &RestartConfig {
+        &self.restart
+    }
 }
 
 impl PrimitiveConfig for SinkConfig {
@@ -357,6 +489,10 @@ impl PrimitiveConfig for SinkConfig {
     fn is_enabled(&self) -> bool {
         self.enabled
     }
+
+    fn restart_config(&self) -> &RestartConfig {
+        &self.restart
+    }
 }
 
 /// Check for duplicate names across a collection of primitives (pure function).
@@ -369,6 +505,27 @@ fn check_duplicate_names<'a, T: PrimitiveConfig + 'a>(
             return Err(ConfigError::ValidationError(format!(
                 "Duplicate name: {}",
                 primitive.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Check that every primitive names a known restart policy (pure function).
+///
+/// The error names both the primitive and the offending value so a typo in a
+/// large config is findable without bisecting the file.
+fn check_restart_policies<'a, T: PrimitiveConfig + 'a>(
+    primitives: impl IntoIterator<Item = &'a T>,
+) -> Result<(), ConfigError> {
+    for primitive in primitives {
+        let cfg = primitive.restart_config();
+        if cfg.policy().is_none() {
+            return Err(ConfigError::ValidationError(format!(
+                "Invalid restart policy for primitive '{}': '{}' (expected one of {})",
+                primitive.name(),
+                cfg.restart,
+                RestartPolicy::variants().join(", ")
             )));
         }
     }
@@ -506,6 +663,14 @@ impl EmergentConfig {
         Ok(())
     }
 
+    /// Validate every primitive's `restart` value (pure function).
+    pub fn validate_restart_policies(&self) -> Result<(), ConfigError> {
+        check_restart_policies(&self.sources)?;
+        check_restart_policies(&self.handlers)?;
+        check_restart_policies(&self.sinks)?;
+        Ok(())
+    }
+
     /// Validate that all enabled primitive paths exist (impure function).
     ///
     /// Performs filesystem checks to verify executable paths exist.
@@ -522,6 +687,7 @@ impl EmergentConfig {
     /// and impure validation (path existence checks).
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.validate_unique_names()?;
+        self.validate_restart_policies()?;
         self.validate_paths()?;
         Ok(())
     }
@@ -703,6 +869,7 @@ wire_format = "messagepack"
                 enabled: true,
                 publishes: vec![],
                 env: std::collections::HashMap::new(),
+                restart: RestartConfig::default(),
             }],
             handlers: vec![HandlerConfig {
                 name: "handler1".to_string(),
@@ -713,6 +880,7 @@ wire_format = "messagepack"
                 publishes: vec![],
                 env: std::collections::HashMap::new(),
                 unwrap_stdout: false,
+                restart: RestartConfig::default(),
             }],
             sinks: vec![SinkConfig {
                 name: "sink1".to_string(),
@@ -722,6 +890,7 @@ wire_format = "messagepack"
                 subscribes: vec![],
                 env: std::collections::HashMap::new(),
                 unwrap_stdout: false,
+                restart: RestartConfig::default(),
             }],
             ..Default::default()
         };
@@ -741,6 +910,7 @@ wire_format = "messagepack"
                     enabled: true,
                     publishes: vec![],
                     env: std::collections::HashMap::new(),
+                    restart: RestartConfig::default(),
                 },
                 SourceConfig {
                     name: "duplicate".to_string(),
@@ -749,6 +919,7 @@ wire_format = "messagepack"
                     enabled: true,
                     publishes: vec![],
                     env: std::collections::HashMap::new(),
+                    restart: RestartConfig::default(),
                 },
             ],
             ..Default::default()
@@ -770,6 +941,7 @@ wire_format = "messagepack"
                 enabled: true,
                 publishes: vec![],
                 env: std::collections::HashMap::new(),
+                restart: RestartConfig::default(),
             }],
             sinks: vec![SinkConfig {
                 name: "shared_name".to_string(),
@@ -779,6 +951,7 @@ wire_format = "messagepack"
                 subscribes: vec![],
                 env: std::collections::HashMap::new(),
                 unwrap_stdout: false,
+                restart: RestartConfig::default(),
             }],
             ..Default::default()
         };
@@ -849,6 +1022,7 @@ wire_format = "messagepack"
             enabled: true,
             publishes: vec![],
             env: std::collections::HashMap::new(),
+            restart: RestartConfig::default(),
         };
 
         // Test trait implementation
@@ -917,6 +1091,7 @@ wire_format = "messagepack"
                 enabled: true,
                 publishes: vec![],
                 env: std::collections::HashMap::new(),
+                restart: RestartConfig::default(),
             }],
             handlers: vec![HandlerConfig {
                 name: "handler1".to_string(),
@@ -927,6 +1102,7 @@ wire_format = "messagepack"
                 publishes: vec![],
                 env: std::collections::HashMap::new(),
                 unwrap_stdout: false,
+                restart: RestartConfig::default(),
             }],
             sinks: vec![SinkConfig {
                 name: "sink1".to_string(),
@@ -936,6 +1112,7 @@ wire_format = "messagepack"
                 subscribes: vec![],
                 env: std::collections::HashMap::new(),
                 unwrap_stdout: false,
+                restart: RestartConfig::default(),
             }],
             ..Default::default()
         };
@@ -1039,6 +1216,134 @@ api_port = 0
         let config = EmergentConfig::parse(toml)?;
         assert_eq!(config.engine.api_port, 0);
         assert!(!config.engine.api_enabled());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod restart_config_tests {
+    use super::*;
+
+    const BASE: &str = r#"
+[[handlers]]
+name = "h1"
+path = "/bin/sh"
+subscribes = ["a"]
+publishes = ["b"]
+"#;
+
+    fn parse_no_io(content: &str) -> Result<EmergentConfig, ConfigError> {
+        let config: EmergentConfig = toml::from_str(content)?;
+        config.validate_unique_names()?;
+        config.validate_restart_policies()?;
+        Ok(config)
+    }
+
+    #[test]
+    fn restart_defaults_to_never() -> Result<(), ConfigError> {
+        let config = parse_no_io(BASE)?;
+        let handler = config
+            .handlers
+            .first()
+            .ok_or_else(|| ConfigError::ValidationError("expected one handler".to_string()))?;
+        assert_eq!(handler.restart.restart, "never");
+        assert_eq!(handler.restart.policy(), Some(RestartPolicy::Never));
+        assert_eq!(handler.restart.limits(), RestartLimits::default());
+        Ok(())
+    }
+
+    #[test]
+    fn restart_keys_are_read_from_the_primitive_table() -> Result<(), ConfigError> {
+        let content = format!(
+            "{BASE}restart = \"on-failure\"\nrestart_backoff_ms = 100\nrestart_max_backoff_ms = 900\nrestart_max_retries = 2\nrestart_window_ms = 7000\n"
+        );
+        let config = parse_no_io(&content)?;
+        let handler = config
+            .handlers
+            .first()
+            .ok_or_else(|| ConfigError::ValidationError("expected one handler".to_string()))?;
+        assert_eq!(handler.restart.policy(), Some(RestartPolicy::OnFailure));
+        assert_eq!(
+            handler.restart.limits(),
+            RestartLimits {
+                backoff_ms: 100,
+                max_backoff_ms: 900,
+                max_retries: 2,
+                window_ms: 7000,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_restart_value_names_the_primitive_and_the_value() {
+        let content = format!("{BASE}restart = \"sometimes\"\n");
+        let Err(err) = parse_no_io(&content) else {
+            panic!("expected a validation error");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("h1"),
+            "message should name the primitive: {msg}"
+        );
+        assert!(
+            msg.contains("sometimes"),
+            "message should name the bad value: {msg}"
+        );
+        assert!(
+            msg.contains("on-failure"),
+            "message should list valid values: {msg}"
+        );
+    }
+
+    #[test]
+    fn restart_applies_to_sources_and_sinks_too() -> Result<(), ConfigError> {
+        let content = r#"
+[[sources]]
+name = "s1"
+path = "/bin/sh"
+publishes = ["a"]
+restart = "always"
+
+[[sinks]]
+name = "k1"
+path = "/bin/sh"
+subscribes = ["a"]
+restart = "on-failure"
+restart_max_retries = 9
+"#;
+        let config = parse_no_io(content)?;
+        let source = config
+            .sources
+            .first()
+            .ok_or_else(|| ConfigError::ValidationError("expected a source".to_string()))?;
+        let sink = config
+            .sinks
+            .first()
+            .ok_or_else(|| ConfigError::ValidationError("expected a sink".to_string()))?;
+        assert_eq!(source.restart.policy(), Some(RestartPolicy::Always));
+        assert_eq!(sink.restart.policy(), Some(RestartPolicy::OnFailure));
+        assert_eq!(sink.restart.limits().max_retries, 9);
+        Ok(())
+    }
+
+    #[test]
+    fn engine_shutdown_timings_default_to_the_historical_waits() {
+        let engine = EngineConfig::default();
+        assert_eq!(engine.shutdown_drain_ms, 500);
+        assert_eq!(engine.shutdown_grace_ms, 2_000);
+        assert_eq!(
+            engine.shutdown_drain(),
+            std::time::Duration::from_millis(500)
+        );
+        assert_eq!(engine.shutdown_grace(), std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn engine_shutdown_timings_are_configurable() -> Result<(), ConfigError> {
+        let config = parse_no_io("[engine]\nshutdown_drain_ms = 50\nshutdown_grace_ms = 250\n")?;
+        assert_eq!(config.engine.shutdown_drain_ms, 50);
+        assert_eq!(config.engine.shutdown_grace_ms, 250);
         Ok(())
     }
 }
