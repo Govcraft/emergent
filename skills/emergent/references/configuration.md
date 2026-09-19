@@ -114,8 +114,21 @@ subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ti
 | `name` | String | `"emergent"` | Engine instance name |
 | `socket_path` | String | `"auto"` | Unix socket path (`"auto"` for XDG default) |
 | `api_port` | Integer | `8891` | HTTP API port (`0` to disable) |
+| `max_connections` | Integer | unset | After 0.10.10. Maximum concurrent IPC connections. Unset keeps what acton-reactive resolves, from `$XDG_CONFIG_HOME/acton/ipc.toml` or its own default. Setting it overrides both |
 | `shutdown_drain_ms` | Integer | `500` | After 0.10.10. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
 | `shutdown_grace_ms` | Integer | `2000` | After 0.10.10. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
+
+Every enabled primitive holds one IPC connection for the life of its process,
+so the connection ceiling is a hard cap on topology size. On engine 0.10.10 and
+earlier the engine never checked it: an oversized topology started, the
+primitives that lost the race to connect were dropped, and `/api/topology` still
+called them `running`. After 0.10.10 the engine refuses to start unless the
+effective limit covers every enabled primitive plus 4 reserved connections, one
+for a restarting primitive holding two at once and three for CLI or
+topology-viewer queries over the same socket. The error names the limit, the
+primitive count and the required total. The check reads the limit that actually
+took effect, so a ceiling set in `ipc.toml` is caught as readily as one set in
+`emergent.toml`.
 
 Leave `wire_format` unset. The key still parses (`"messagepack"` or `"json"`) but has no effect: IPC is always MessagePack. On engine 0.10.10 and earlier it was silently inert and the ready line echoed it back; after 0.10.10 setting it earns a warning at startup and the ready line no longer names a format. For human-readable inspection, read the event store's JSON logs.
 
