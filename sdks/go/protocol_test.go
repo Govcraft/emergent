@@ -189,3 +189,23 @@ func TestMultipleFramesInBuffer(t *testing.T) {
 		t.Errorf("second frame n=%v, want 2", p2["n"])
 	}
 }
+
+// TestTryDecodeFrame_EmptyBody covers the heartbeat, which is a bare header.
+// An empty body cannot be decoded in either format and must not be tried.
+func TestTryDecodeFrame_EmptyBody(t *testing.T) {
+	for _, format := range []byte{FormatJSON, FormatMsgPack} {
+		header := []byte{0x00, 0x00, 0x00, 0x00, ProtocolVersion, MsgTypeHeartbeat, format}
+		trailing := append(append([]byte{}, header...), 0xff)
+
+		frame, err := TryDecodeFrame(trailing)
+		if err != nil {
+			t.Fatalf("format %d: unexpected error: %v", format, err)
+		}
+		if frame == nil {
+			t.Fatalf("format %d: expected a frame", format)
+		}
+		if frame.MsgType != MsgTypeHeartbeat || frame.Payload != nil || frame.BytesConsumed != HeaderSize {
+			t.Errorf("format %d: unexpected frame: %+v", format, frame)
+		}
+	}
+}

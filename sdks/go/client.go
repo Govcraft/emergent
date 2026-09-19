@@ -889,50 +889,54 @@ func (c *baseClient) handleFrame(msgType byte, payload any) *MessageStream {
 	// locking again would deadlock the read loop. For the same reason they must
 	// not close a MessageStream, whose onClose callback takes c.mu.
 	switch msgType {
-	case MsgTypeResponse:
-		c.handleResponse(payload)
+	case MsgTypeResponse, MsgTypeError:
+		// The engine picks the frame type from the response's success field,
+		// so a failed request arrives as ERROR with the same body.
+		c.handleResponse(msgType, payload)
 	case MsgTypePush:
 		return c.handlePush(payload)
+	case MsgTypeHeartbeat, MsgTypeStream:
+		// The engine echoes a heartbeat only after receiving one, and streams
+		// only to a request that asked for a stream. This SDK sends neither,
+		// so there is nothing to route.
+		c.logger.Debug("ignoring frame", "msg_type", fmt.Sprintf("0x%02x", msgType))
 	default:
-		// Ignore unhandled message types (drain)
+		c.logger.Warn("ignoring frame of unknown type", "msg_type", fmt.Sprintf("0x%02x", msgType))
 	}
 	return nil
 }
 
-// handleResponse completes a pending request. Must be called with c.mu held.
-func (c *baseClient) handleResponse(payload any) {
-	payloadMap, ok := payload.(map[string]any)
+// handleResponse completes the pending request a RESPONSE or ERROR frame
+// answers. Must be called with c.mu held.
+//
+// An ERROR frame that matches no pending request is logged, because nothing
+// else will report it. That covers a request that already timed out, a body
+// with no usable correlation id, and the engine's connection-limit rejection,
+// which carries the sentinel id "__acton_connection_rejected__".
+func (c *baseClient) handleResponse(msgType byte, payload any) {
+	resp, ok := responseFromFrame(msgType, payload)
 	if !ok {
+		if msgType == MsgTypeError {
+			c.logger.Error("engine error matched no pending request",
+				"correlation_id", frameCorrelationID(payload), "error", errorFrameText(payload))
+			return
+		}
+		c.logger.Warn("dropping malformed response frame")
 		return
 	}
 
-	correlationID, _ := payloadMap["correlation_id"].(string)
-	if correlationID == "" {
-		return
-	}
-
-	pending, exists := c.pendingRequests[correlationID]
+	pending, exists := c.pendingRequests[resp.CorrelationID]
 	if !exists {
-		return // No pending request — drain
+		if msgType == MsgTypeError {
+			c.logger.Error("engine error matched no pending request",
+				"correlation_id", resp.CorrelationID, "error", errorFrameText(payload))
+		}
+		return // No pending request: drain
 	}
 
-	delete(c.pendingRequests, correlationID)
+	delete(c.pendingRequests, resp.CorrelationID)
 	if pending.timer != nil {
 		pending.timer.Stop()
-	}
-
-	resp := &IpcResponse{
-		CorrelationID: correlationID,
-	}
-	if success, ok := payloadMap["success"].(bool); ok {
-		resp.Success = success
-	}
-	resp.Payload = payloadMap["payload"]
-	if errStr, ok := payloadMap["error"].(string); ok {
-		resp.Error = errStr
-	}
-	if code, ok := payloadMap["error_code"].(string); ok {
-		resp.ErrorCode = code
 	}
 
 	select {

@@ -102,6 +102,34 @@ func fakeEngineReply(msgType byte, payload any) (fakeReply, bool) {
 	}
 }
 
+// fakeRejectionError and fakeRejectionCode are the error the fake engine
+// reports when it rejects a request. They are the text and code a real engine
+// gave for a request aimed at an actor that does not exist.
+const (
+	fakeRejectionError = "Actor not found: no_such_actor"
+	fakeRejectionCode  = "ACTOR_NOT_FOUND"
+)
+
+// fakeEngineRejection answers a request with the ERROR frame the engine sends
+// when the request failed: the usual response body, under frame type 0x03.
+// It is pure. A frame with no correlation id gets no answer.
+func fakeEngineRejection(payload any) (fakeReply, bool) {
+	payloadMap, _ := payload.(map[string]any)
+	correlationID, _ := payloadMap["correlation_id"].(string)
+	if correlationID == "" {
+		return fakeReply{}, false
+	}
+	return fakeReply{
+		msgType: MsgTypeError,
+		payload: &IpcResponse{
+			CorrelationID: correlationID,
+			Success:       false,
+			Error:         fakeRejectionError,
+			ErrorCode:     fakeRejectionCode,
+		},
+	}, true
+}
+
 func TestFakeEngineReply(t *testing.T) {
 	t.Run("subscribe is acknowledged with the same correlation id", func(t *testing.T) {
 		reply, ok := fakeEngineReply(MsgTypeSubscribe, map[string]any{"correlation_id": "sub_1"})
@@ -156,6 +184,9 @@ type fakeEngine struct {
 	// muteLookups drops pub/sub answers, so a lookup waits until its caller
 	// gives up.
 	muteLookups atomic.Bool
+	// rejectRequests answers every request with an ERROR frame, the way the
+	// engine answers a request that failed.
+	rejectRequests atomic.Bool
 
 	mu    sync.Mutex
 	conns []*fakeConn
@@ -280,6 +311,9 @@ func (e *fakeEngine) serve(conn *fakeConn) {
 			buffer = buffer[frame.BytesConsumed:]
 
 			reply, ok := fakeEngineReply(frame.MsgType, frame.Payload)
+			if e.rejectRequests.Load() {
+				reply, ok = fakeEngineRejection(frame.Payload)
+			}
 			if !ok {
 				continue
 			}
