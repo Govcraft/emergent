@@ -41,12 +41,21 @@ publishes = ["exec.output"]
 | Flag | Meaning |
 |---|---|
 | `-c, --command <CMD>` | Command to execute (required) |
-| `-a, --args <ARGS>` | Command arguments |
+| `-a, --args <ARGS>` | One string of arguments. Split on whitespace with no quote handling, unless `--shell` is set, in which case `<shell> -c "<command> <args>"` runs |
 | `-i, --interval <MS>` | Repeat interval; omit or 0 to run once |
 | `-s, --shell <SHELL>` | Shell to run through (`sh`, `bash`) |
-| `-w, --working-dir <DIR>` | Working directory |
+| `-d, --working-dir <DIR>` | Working directory |
 | `--correlate` | Mint one correlation ID at startup, stamp it on every published message |
-| `--correlation-id <ID>` | Adopt an existing `cor_<uuid_v7>` instead (env: `EMERGENT_CORRELATION_ID`) |
+| `--correlation-id <ID>` | Adopt an existing `cor_<uuid_v7>` instead (env: `EMERGENT_CORRELATION_ID`). Wins over `--correlate`. A malformed ID exits 1 before connecting |
+
+Every flag except `--correlate` also reads an environment variable:
+`EXEC_SOURCE_COMMAND`, `_ARGS`, `_INTERVAL`, `_WORKING_DIR`, `_SHELL`. Because
+`--correlation-id` reads `EMERGENT_CORRELATION_ID`, a value already present in
+the engine's own environment is adopted silently, even without `--correlate`.
+
+Without `--shell`, `--command` is executed directly, so a pipe or a redirect in
+it fails with "No such file or directory". Pass `--shell sh` for anything that
+is more than a program name.
 
 **Publishes:** `exec.output` (stdout), `exec.error` (stderr), `exec.exit`
 
@@ -57,11 +66,21 @@ Give each source its own topic names rather than letting several sources share
 `exec.output`, which otherwise forces downstream handlers to disambiguate by
 inspecting the payload.
 
-**Payload:** `{"command": "...", "stdout": "...", "exit_code": 0}`
+**Payloads**, one shape per topic:
 
-**One execution publishes exactly one event.** `stdout` is a single string
-holding all output, however many lines it has. Printing ten JSON objects does
-not publish ten events. See "Turning a collection into events" in
+| Topic (position in `publishes`) | Published when | Payload |
+|---|---|---|
+| first, stdout | stdout is non-blank | `{"command", "stdout", "exit_code"}` |
+| second, stderr | stderr is non-blank | `{"command", "stderr", "exit_code"}` |
+| third, exit | always | `{"command", "exit_code"}` |
+
+`command` is the bare `--command` value without `--args`. `exit_code` is `-1`
+when the process was killed by a signal. A command that prints nothing publishes
+only the exit event, so subscribe to the third topic when "it ran" matters.
+
+**One execution publishes at most one stdout event.** `stdout` is a single
+string holding all output, however many lines it has. Printing ten JSON objects
+does not publish ten events. See "Turning a collection into events" in
 `patterns.md`, because assuming otherwise is the most common way an otherwise
 sound topology fails on its first run.
 
@@ -99,11 +118,19 @@ publishes = ["output.topic"]
 
 | Flag | Meaning |
 |---|---|
-| `-s, --subscribe <TOPIC>` | Message type to subscribe to (repeatable) |
+| `-s, --subscribe <TOPIC>` | Message type to subscribe to (required, repeatable) |
 | `--publish-as <TOPIC>` | Message type for successful output (default `exec.output`) |
 | `-e, --error-as <TOPIC>` | Message type for errors (default `exec.error`) |
-| `-t, --timeout <MS>` | Per-execution timeout (default 30000) |
+| `-t, --timeout <MS>` | Per-execution timeout (default 30000). On expiry the command's whole process group gets SIGTERM |
+| `--kill-grace-ms <MS>` | How long a timed-out command may run after SIGTERM before SIGKILL (default 5000) |
+| `--max-concurrent <N>` | Commands running at once (default 1). At 1, strict arrival order. Above 1, outputs publish in completion order |
+| `--silent-exit-codes <CODES>` | Comma-separated exit codes treated as a silent filter when stderr is blank (default none) |
 | `-- <cmd> [args...]` | The command to run |
+
+**The `publishes` array overrides the topic flags, by position.** The engine
+passes the config's `publishes` to the primitive, and `publishes[0]` replaces
+`--publish-as` while `publishes[1]` replaces `--error-as`. Always order it
+`[success, error]`. Written the other way round, the topics swap silently.
 
 **Exit-code semantics, which are the basis of several idioms:**
 
@@ -111,12 +138,27 @@ publishes = ["output.topic"]
 |---|---|
 | exit 0, stdout non-empty | Publishes stdout as the success message |
 | exit 0, stdout empty | Silent. Nothing published. |
-| non-zero exit, stderr empty | Silent filter. Nothing published. |
-| non-zero exit, stderr non-empty | Publishes the error message |
+| non-zero exit, code listed in `--silent-exit-codes`, stderr blank | Silent filter. Nothing published. |
+| any other non-zero exit | Publishes the error message |
+| timeout, or the command could not be spawned | Publishes the error message |
 
-The two silent cases are load-bearing. `jq select()` exits non-zero when its
-predicate is false, which makes filtering zero-code. The empty-stdout case is
-what makes the accumulate-until-complete join work.
+The exit-0-empty-stdout case is load-bearing, and it is the only silence you get
+by default. `jq -c 'select(...)'` prints nothing and **exits 0** when its
+predicate is false, which is what makes routers and filters zero-code. Do not
+write `jq -e` in a router: it exits 4 on no output, which publishes an error
+event unless you also pass `--silent-exit-codes 4`.
+
+A non-zero exit is never silent by default, so a failure cannot vanish. That
+matters for shell idioms: `[ cond ] && cmd` exits 1 when the condition is false,
+which is an error event, not a filter. When a false condition is a normal
+outcome, declare it: `--silent-exit-codes 1`.
+
+**Error payload.** The inbound payload's fields are spread at the top level and a
+reserved `error` object is added: `{"exit_code", "stderr", "command"}`. An
+inbound payload that is not a JSON object is carried under `input` instead, and
+an inbound key named `error` is overwritten. A timeout gives
+`exit_code: null, stderr: "process timed out"`. Because the original fields
+survive, a retry handler can republish the item from the error event alone.
 
 **One execution publishes exactly one event.** stdout is parsed as a *single*
 JSON value; if that parse fails it is wrapped as `{"output": "<all stdout>"}`.
@@ -132,8 +174,13 @@ failure meanings land on one topic and neither is declared in `publishes`. Give
 handler errors a domain name (`--error-as invoice.extract-failed`) and declare
 it.
 
-Published messages inherit the inbound `correlation_id` and set `causation_id`
-to the message they came from, so tracing works without any effort on your part.
+Published messages, success and error alike, inherit the inbound
+`correlation_id` and set `causation_id` to the message they came from, so
+tracing works without any effort on your part.
+
+A message is pulled only when a slot is free, so a slow command backpressures
+the engine rather than queueing unboundedly inside the handler. On SIGTERM,
+in-flight executions drain and publish before the handler disconnects.
 
 A long `-t` value is the standard tell for a merged step. If you are reaching
 for minutes, ask what events should be flowing during that time.
@@ -142,8 +189,9 @@ for minutes, ask what events should be flowing during that time.
 
 ## exec-sink (Sink)
 
-Pipe an event payload through an executable. Output is discarded; this is
-fire-and-forget egress.
+Pipe an event payload through an executable. Nothing is published; this is
+fire-and-forget egress. The command's stdout and stderr are not captured: they
+pass through to the engine's terminal or journal.
 
 ```toml
 [[sinks]]
@@ -153,8 +201,15 @@ args = ["-s", "data.processed", "--", "jq", "."]
 subscribes = ["data.processed"]
 ```
 
-**Flags:** `-s, --subscribe <TOPIC>` (repeatable), `-t, --timeout <MS>`,
-`-- <cmd> [args...]`
+**Flags:** `-s, --subscribe <TOPIC>` (required, repeatable),
+`-t, --timeout <MS>` (30000), `--kill-grace-ms <MS>` (5000),
+`--max-concurrent <N>` (1), `--silent-exit-codes <CODES>`, `-- <cmd> [args...]`
+
+A failing command publishes nothing. The sink writes
+`exec-sink: <cmd>: exit code N (caused by <message id>)` to its stderr and moves
+on, and codes listed in `--silent-exit-codes` are not reported at all. If a
+failed delivery must be reactable, use an `exec-handler` instead and route its
+error topic.
 
 Common uses that replace dedicated primitives entirely:
 
@@ -164,16 +219,15 @@ exec-sink -s alert.fired  -- curl -s -X POST -d @- https://hooks…   # webhook
 exec-sink -s data.done    -- tee -a /var/log/events.jsonl           # file log
 ```
 
-Note that the child receives only the payload, with no topic metadata. When a
-sink needs to know which topic fired (for example when fanning several topics
-into one forwarder), pass the topic as a literal argument and use one block per
-topic.
+stdin carries only the payload. When a sink needs to know which topic fired
+(for example when fanning several topics into one forwarder), read
+`$EMERGENT_MESSAGE_TYPE`. See "Envelope environment variables" below.
 
 ---
 
 ## http-source (Source)
 
-Receive HTTP POSTs as events.
+Receive HTTP requests as events. Every method is accepted, not only POST.
 
 ```toml
 [[sources]]
@@ -183,12 +237,25 @@ args = ["--port", "8080"]
 publishes = ["http.request"]
 ```
 
-**Flags:** `-p, --port <PORT>` (8080), `-H, --host <HOST>` (0.0.0.0),
-`--path <PATH>` (`/`), `-s, --secret <SECRET>` for HMAC-SHA256 signature
-validation (env `HTTP_WEBHOOK_SECRET`)
+**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (0.0.0.0; bind
+`127.0.0.1` unless the caller is remote), `--path <PATH>` (`/`),
+`--secret <SECRET>` for signature validation. Each reads an environment
+variable: `HTTP_SOURCE_PORT`, `HTTP_SOURCE_HOST`, `HTTP_SOURCE_PATH`,
+`HTTP_SOURCE_SECRET`. Prefer the variable for the secret so it stays out of
+`emergent.toml`.
 
-**Publishes:** `http.request` with
-`{"method", "path", "headers", "body", "remote_addr"}`
+With a secret set, a request must carry an `X-Signature` header holding the hex
+HMAC-SHA256 of the raw body, with an optional `sha256=` prefix. A missing or
+wrong signature gets `401`. A published request gets `202`.
+
+**Publishes:** the first entry of `publishes` (default `http.request`) with
+`{"method", "path", "headers", "body", "remote_addr"}`. `body` is the parsed
+JSON, or the raw body as a string when it is not JSON. `path` is always `"/"`
+and `remote_addr` is always `null` today, so do not route on either.
+
+The request body never becomes an event of its own type. It arrives nested under
+`.body`, with no `correlation_id` and no `causation_id`, so the first handler
+downstream is normally a `jq -c .body` unwrap.
 
 Beyond real webhooks, an `http-source` is the standard way to make a topology
 injectable: you can POST any event into it by hand, which is exactly what the
@@ -206,7 +273,7 @@ means the connection itself is event-driven rather than configured.
 name = "ws"
 path = "~/.local/share/emergent/primitives/bin/websocket-handler"
 args = ["--prefix", "ws"]
-subscribes = ["ws.connect", "ws.send"]
+subscribes = ["ws.connect", "ws.send", "ws.disconnect"]
 publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
 ```
 
@@ -214,8 +281,23 @@ publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
 
 **Subscribes:** `{prefix}.connect` (payload `{url}`), `{prefix}.send`,
 `{prefix}.disconnect`
-**Publishes:** `{prefix}.connected`, `{prefix}.frame` (payload `{data}`),
-`{prefix}.closed`, `{prefix}.error`
+
+**Publishes:**
+
+| Topic | Payload |
+|---|---|
+| `{prefix}.connected` | `{url}` |
+| `{prefix}.frame` | `{data}`. A text frame is JSON-parsed, falling back to the raw string. A binary frame is base64 |
+| `{prefix}.closed` | `{url, code, reason}` |
+| `{prefix}.error` | `{url, error}` |
+
+Topic names are resolved by suffix (`.connect`, `.send`, `.frame`, and so on)
+from the config's `subscribes` and `publishes`, falling back to `--prefix`, so
+the config wins over the flag. One connection at a time: a new connect closes
+the old one. A send with no open socket publishes an error event, and a
+non-string send payload is JSON-stringified. Events carry `causation_id` but do
+**not** propagate `correlation_id`, so carry a key in the payload if you need to
+trace across the bridge.
 
 ---
 
@@ -236,6 +318,9 @@ subscribes = ["batch.load", "work.done"]
 publishes = ["work.item", "batch.complete"]
 ```
 
+As with `exec-handler`, the `publishes` array overrides the topic flags by
+position: keep it `[item, end]`.
+
 **Flags**
 
 | Flag | Default | Meaning |
@@ -253,14 +338,23 @@ same behavior: one item in flight until the ack fires.
 Two constraints to design around:
 
 - **One collection at a time.** A `load` arriving while a stream is still
-  running is logged and dropped, not queued. With an interval source, gate the
+  running is dropped, not queued, and the drop is only logged at
+  `RUST_LOG=warn` or lower, so by default it is silent. With an interval source, gate the
   poll on the end topic or size the interval so a batch drains first.
 - **A missing ack stalls the stream permanently.** Whatever you name as the ack
-  topic must be published on the failure path as well as the success path.
+  topic must be published on the failure path as well as the success path. The
+  runner stays in its streaming state, so every later load is dropped too, until
+  restart.
+- **Acks are not matched to items.** Any message on the ack topic advances the
+  stream, so a duplicate ack skips an item. Make sure exactly one ack fires per
+  item across all paths.
+- **A malformed load is dropped without an end event.** A payload missing
+  `--items-key`, or whose key is not an array, publishes nothing. An empty
+  collection publishes the end event `{"count": 0}` immediately.
 
 The ack topic is normally the downstream stage's own output, so consumption rate
 sets the pace. The load message's `correlation_id` is replayed onto every item
-and onto the end event, because acks are separate messages and cannot be trusted
+and onto the end event, and each carries `causation_id` of the load message, because acks are separate messages and cannot be trusted
 to carry it.
 
 Use this when the consumer is the bottleneck (rate-limited APIs, LLM calls). Use
@@ -301,7 +395,11 @@ publishes = ["mail.judged", "mail.judge-failed"]
 | `--max-concurrent` | `1` | Messages in flight. A message in retry backoff holds its slot |
 | `-t, --timeout` | `120000` | Whole-message budget in ms, retries included |
 | `--request-timeout` | `30000` | Single HTTP attempt in ms |
-| `--max-attempts` | `4` | Attempts per message. Only `429` and `5xx` retry |
+| `--max-attempts` | `4` | Attempts per message. `429`, `5xx`, and transport failures retry; any other `4xx` is fatal on the first attempt |
+| `--retry-base-ms` | `500` | First backoff step, doubled per attempt, with up to 25% jitter subtracted |
+| `--retry-max-delay-ms` | `30000` | Ceiling on a computed backoff |
+| `--max-retry-after-ms` | `60000` | Ceiling on a server-supplied `Retry-After` |
+| `--endpoint` | `https://api.typesafe.ai/v1/systemone` | Evaluation endpoint |
 
 The API key comes from the `TYPESAFE_API_KEY` environment variable and nowhere
 else. Let the primitive inherit it from the engine's environment; do not write it
@@ -315,7 +413,7 @@ key, so a router can write `.answers.<id>`:
 type = "noul"
 instructions = "Is this message unsolicited?"
 
-[questions.kind]              # choice: one of 2..=255 options. criteria required
+[questions.kind]              # choice: at least 2 options (the API caps it at 255). criteria required
 type = "choice"
 instructions = "What kind of message is this?"
 criteria = { phish = "Credential theft under a false identity.", vendor_notice = "An operational notice from a service already in use.", other = "None of the above." }
@@ -326,8 +424,9 @@ instructions = "How much time pressure does the message apply?"
 criteria = ["None.", "A soft deadline.", "Act now or lose access."]
 ```
 
-The model never sees the ids; all meaning lives in `instructions` and
-`criteria`. The file is validated before the engine connection, so a typo stops
+Ids must match `[A-Za-z_][A-Za-z0-9_]*`, unknown keys are rejected, and score
+levels must be distinct. The model never sees the ids; all meaning lives in
+`instructions` and `criteria`. The file is validated before the engine connection, so a typo stops
 the process at startup rather than producing a handler that looks healthy.
 Always give a choice an explicit none-of-the-above option, or the model is
 forced to pick a wrong one with confidence.
@@ -349,8 +448,16 @@ forced to pick a wrong one with confidence.
 A noul carries no `confidence`: the probability is the confidence. Do not reuse a
 noul threshold on a choice; they are calibrated differently.
 
-A failure spreads the inbound fields and adds a reserved `error` object:
+As with `exec-handler`, the `publishes` array overrides the topic flags by
+position (`[answered, error]`), and both message types inherit the inbound
+`correlation_id` with `causation_id` set to the inbound message. `input` is the
+whole inbound payload even when `--state-pointer` narrows what the model reads,
+and `usage` may be `null`.
+
+A failure spreads the inbound fields (a non-object payload goes under `input`)
+and adds a reserved `error` object:
 `{kind, status, attempts, message, endpoint, model, request_id, body, detail}`.
+Fields that do not apply are `null`, and `body` is truncated to 2 KiB.
 `error.kind` is one of `invalid_request`, `state_not_found` (the item or the
 questions are at fault, quarantine); `auth`, `billing`, `bad_response`,
 `answer_contract` (the item is fine and only a human can unblock it, hold it);
@@ -408,7 +515,12 @@ args = ["--port", "8081"]
 subscribes = ["monitor.metric"]
 ```
 
-**Flags:** `--port <PORT>` (8080). **Endpoints:** `GET /events`, `GET /health`
+**Flags:** `--port <PORT>` (8080). **Endpoints:** `GET /events`, and
+`GET /health` returning `{ok, clients}`.
+
+Each event is sent as an unnamed `data:` line holding
+`{id, type, source, timestamp, payload}`, with CORS open to `*`. With no
+`subscribes` in the config it subscribes to `*`.
 
 ---
 
@@ -421,8 +533,13 @@ Live D3 force-directed view of the running pipeline.
 name = "topology"
 path = "~/.local/share/emergent/primitives/bin/topology-viewer"
 args = ["--port", "8009"]
-subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
+subscribes = ["system.started.*", "system.stopped.*", "system.error.*", "system.response.topology"]
 ```
+
+**Flags:** `--port <PORT>` (8080). It subscribes to those four types itself
+regardless of the config, so the `subscribes` line is there for the topology
+graph to be truthful. Open `/` in a browser; `/api/topology` returns the graph
+as JSON.
 
 Worth adding during design. Seeing the graph makes an under-decomposed topology
 obvious at a glance, because it renders as a short chain instead of a web.
@@ -447,8 +564,10 @@ invisible to a jq filter. It arrives in the environment instead:
 not carry is *removed* from the child's environment rather than left alone, so
 an ambient value cannot leak in and mislabel output.
 
-The engine also sets `EMERGENT_SOCKET`, `EMERGENT_NAME`, `EMERGENT_PUBLISHES`,
-and `EMERGENT_SUBSCRIBES` for every primitive.
+The engine also sets `EMERGENT_SOCKET`, `EMERGENT_NAME`, `EMERGENT_API_PORT`,
+`EMERGENT_PUBLISHES`, and `EMERGENT_SUBSCRIBES` for every primitive. The last
+two are how the config's arrays reach the primitive, which is why `publishes`
+order overrides the topic flags.
 
 ---
 
@@ -456,13 +575,13 @@ and `EMERGENT_SUBSCRIBES` for every primitive.
 
 | Field | Sources | Handlers | Sinks | Notes |
 |---|---|---|---|---|
-| `name` | required | required | required | Unique identifier |
-| `path` | required | required | required | Supports `~`, bare commands via PATH |
+| `name` | required | required | required | Unique across sources, handlers, and sinks combined |
+| `path` | required | required | required | Leading `~/` expands; a bare name with no `/` resolves via PATH. A missing path on an enabled primitive is a load error |
 | `args` | optional | optional | optional | Argument array |
 | `enabled` | optional | optional | optional | Default true |
-| `publishes` | optional | optional | n/a | Declared output types (drives topology view) |
-| `subscribes` | n/a | required | required | Types to receive |
-| `env` | optional | optional | optional | Environment map |
+| `publishes` | optional | optional | n/a | Declared output types. Drives the topology view **and** overrides the primitive's topic flags by position |
+| `subscribes` | n/a | optional | optional | Types to receive. Defaults to `[]`, which parses but receives nothing, so set it |
+| `env` | optional | optional | optional | Environment map. Do not put secrets here; primitives inherit the engine's environment |
 | `unwrap_stdout` | n/a | optional | optional | Auto-extract and parse `.stdout` from the exec envelope |
 
 Language paths:
@@ -496,5 +615,6 @@ args = ["-s", "issue.found", "--publish-as", "issue.scored", "--", "bash", "-c",
 Writing `"... \` with a single-quote basic string is a parse error, and it is
 the most common way a generated config fails to load.
 
-There is no `wire_format` option to set. IPC is always MessagePack. For
-human-readable inspection, read the event store's JSON logs.
+Leave `[engine] wire_format` unset. The key parses (`"messagepack"` by default,
+or `"json"`) but is currently only logged. For human-readable inspection, read
+the event store's JSON logs.
