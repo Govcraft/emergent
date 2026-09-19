@@ -33,11 +33,13 @@ from .errors import (
     TimeoutError,
 )
 from .stream import MessageStream
+from .topics import is_emergent_message_type, partition_topics
 from .types import (
     DiscoveryInfo,
     EmergentMessage,
     IpcDiscoverResponse,
     IpcEnvelope,
+    IpcPatternSubscribeRequest,
     IpcPushNotification,
     IpcResponse,
     IpcSubscribeRequest,
@@ -280,6 +282,11 @@ class BaseClient:
         """
         self._ensure_connected()
 
+        # Split before anything is sent, so a topic that could never match,
+        # such as "system.*.error", raises here instead of subscribing to
+        # silence.
+        exact_types, patterns = partition_topics(list(message_types))
+
         correlation_id = generate_correlation_id("sub")
 
         # Create stream and register close callback
@@ -287,14 +294,15 @@ class BaseClient:
         self._message_stream = stream
 
         # Add system.shutdown to subscriptions (SDK handles it internally)
-        all_types = list(message_types)
+        all_types = list(exact_types)
         if "system.shutdown" not in all_types:
             all_types.append("system.shutdown")
 
         logger.info(
-            "subscribing to message types primitive=%s types=%s",
+            "subscribing to message types primitive=%s types=%s patterns=%s",
             self.name,
-            message_types,
+            exact_types,
+            patterns,
         )
 
         response = await self._send_request(
@@ -314,6 +322,29 @@ class BaseClient:
             )
             stream.close()
             raise ConnectionError(response.error or "Subscription failed")
+
+        if patterns:
+            # Patterns travel on their own request because the engine keeps a
+            # separate index for them. A connection matching a message through
+            # both indexes still receives one copy.
+            pattern_correlation_id = generate_correlation_id("psub")
+            pattern_response = await self._send_request(
+                MessageType.SUBSCRIBE_PATTERNS,
+                IpcPatternSubscribeRequest(
+                    correlation_id=pattern_correlation_id,
+                    patterns=patterns,
+                ).model_dump(),
+                pattern_correlation_id,
+            )
+
+            if not pattern_response.success:
+                logger.error(
+                    "pattern subscription failed primitive=%s error=%s",
+                    self.name,
+                    pattern_response.error,
+                )
+                stream.close()
+                raise ConnectionError(pattern_response.error or "Pattern subscription failed")
 
         # Track subscribed types (exclude internal system.shutdown)
         for t in message_types:
@@ -339,13 +370,15 @@ class BaseClient:
             message_types,
         )
 
+        exact_types, patterns = partition_topics(list(message_types))
+
         correlation_id = generate_correlation_id("unsub")
 
         response = await self._send_request(
             MessageType.UNSUBSCRIBE,
             {
                 "correlation_id": correlation_id,
-                "message_types": message_types,
+                "message_types": exact_types,
             },
             correlation_id,
         )
@@ -355,9 +388,27 @@ class BaseClient:
             logger.warning(
                 "unsubscribe failed primitive=%s types=%s error=%s",
                 self.name,
-                message_types,
+                exact_types,
                 response.error,
             )
+
+        if patterns:
+            pattern_correlation_id = generate_correlation_id("punsub")
+            pattern_response = await self._send_request(
+                MessageType.UNSUBSCRIBE_PATTERNS,
+                {
+                    "correlation_id": pattern_correlation_id,
+                    "patterns": patterns,
+                },
+                pattern_correlation_id,
+            )
+            if not pattern_response.success:
+                logger.warning(
+                    "pattern unsubscribe failed primitive=%s patterns=%s error=%s",
+                    self.name,
+                    patterns,
+                    pattern_response.error,
+                )
 
         # Remove from tracked types
         for t in message_types:
@@ -913,6 +964,17 @@ class BaseClient:
                             )
                             subscriptions_pending.future.set_result(subscribes)
                 return  # Don't forward to message stream
+
+            # Skip the transport's own envelope broadcasts, which only a "*"
+            # subscription ever sees. The message inside each one arrives
+            # separately under its own Emergent message type.
+            if not is_emergent_message_type(notification.message_type):
+                logger.debug(
+                    "skipping non-Emergent IPC broadcast primitive=%s message_type=%s",
+                    self.name,
+                    notification.message_type,
+                )
+                return
 
             if self._message_stream is not None:
                 logger.debug(
