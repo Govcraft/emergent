@@ -153,7 +153,7 @@ api_port = 0
 [[sources]]
 name = "webhook"
 path = "~/.local/share/emergent/primitives/bin/http-source"
-args = ["--port", "8088"]
+args = ["--host", "127.0.0.1", "--port", "8088"]
 publishes = ["http.request"]
 
 [[handlers]]
@@ -169,12 +169,16 @@ path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "loop.iteration", "--", "jq", "."]
 subscribes = ["loop.iteration"]
 
-# Seeds on startup AND loops back on each iteration
+# Seeds on startup AND loops back on each iteration. One act (the POST); the
+# sleep is the loop's clock, and --retry-connrefused covers a webhook that has
+# been spawned but has not bound its port yet.
 [[sinks]]
 name = "loopback"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "loop.iteration", "-s", "system.started.webhook", "--",
-    "sh", "-c", "payload=$(jq -c '.body // {count:0}') && sleep 1 && echo \"$payload\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:8088"]
+    "sh", "-c",
+  '''sleep 1; jq -c '.body // {count: 0}' \
+     | curl -s --retry 5 --retry-connrefused -X POST -H 'Content-Type: application/json' -d @- http://127.0.0.1:8088''']
 subscribes = ["loop.iteration", "system.started.webhook"]
 ```
 

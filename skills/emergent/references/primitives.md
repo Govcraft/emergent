@@ -614,19 +614,23 @@ args = ["run", "--allow-env", "--allow-net=unix", "h.ts"]
 
 ### Quoting long commands
 
-A shell one-liner rarely fits on one line, and TOML basic strings (`"..."`)
-cannot span lines. Use a multi-line basic string (`"""..."""`) with a trailing
-backslash for continuation. Inner double quotes then need no escaping, which is
-worth it on its own:
+A shell one-liner rarely fits on one line, and single-line TOML strings cannot
+span lines. Use a multi-line **literal** string (`'''...'''`) with a trailing
+backslash for continuation. TOML leaves a literal string untouched, so the shell
+receives exactly what you typed, backslash-newline included:
 
 ```toml
 args = ["-s", "issue.found", "--publish-as", "issue.scored", "--", "bash", "-c",
-  """p=$(cat); n=$(jq -r .number <<< "$p"); \
-     gh issue view "$n" --json body | jq -c '{number: '"$n"', body: .body}'"""]
+  '''p=$(cat); gh issue view "$(jq -r .number <<< "$p")" --json body \
+     | jq -c --argjson orig "$p" '{number: $orig.number, body: .body}' ''']
 ```
 
-Writing `"... \` with a single-quote basic string is a parse error, and it is
-the most common way a generated config fails to load.
+Do not use a multi-line basic string (`"""..."""`) for a shell body. TOML
+processes escapes in it first: `\"` becomes a bare `"` and closes the shell's
+quote, `\n` becomes a real newline, and `\(` is a parse error. Each of those
+breaks a prompt or a jq program in a way that still loads and still runs. The
+only thing a literal string cannot hold is `'''` itself. End the body with a
+space before the closing `'''` when its last character is a single quote.
 
 Leave `[engine] wire_format` unset. The key parses (`"messagepack"` by default,
 or `"json"`) but is currently only logged. For human-readable inspection, read
