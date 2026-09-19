@@ -15,6 +15,7 @@ the step. Usually it does.
 - [http-source](#http-source-source)
 - [websocket-handler](#websocket-handler-handler)
 - [stream-runner](#stream-runner-handler)
+- [jev-handler](#jev-handler-handler)
 - [sse-sink](#sse-sink-sink)
 - [topology-viewer](#topology-viewer-sink)
 - [Envelope environment variables](#envelope-environment-variables)
@@ -264,6 +265,134 @@ to carry it.
 
 Use this when the consumer is the bottleneck (rate-limited APIs, LLM calls). Use
 plain fan-out when it is not.
+
+---
+
+## jev-handler (Handler)
+
+Ask [TypeSafe System One](https://docs.typesafe.ai) (the Jev model) a fixed set
+of typed questions about every payload and publish the answers with calibrated
+confidence. One API call per message, typically well under a second. This is the
+judge to reach for when the judgment is a yes/no, a pick from a known set, or a
+position on a rubric, and volume or latency rules out an LLM call per event.
+
+```toml
+[[handlers]]
+name = "judge-message"
+path = "~/.local/share/emergent/primitives/bin/jev-handler"
+args = ["-s", "mail.fetched", "--questions", "./questions.toml",
+        "--state-pointer", "/mail",
+        "--publish-as", "mail.judged", "-e", "mail.judge-failed",
+        "--max-concurrent", "4"]
+subscribes = ["mail.fetched"]
+publishes = ["mail.judged", "mail.judge-failed"]
+```
+
+**Flags**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-s, --subscribe` | required | Message types to judge (repeatable) |
+| `--questions` | required | `.toml` or `.json` questions file, read once at startup |
+| `--publish-as` | `jev.answered` | Topic for an answered message |
+| `-e, --error-as` | `jev.error` | Topic for a failed message |
+| `--state-pointer` | whole payload | JSON pointer to the slice of the payload the model reads |
+| `--model` | `jev-latest` | Alias or pinned id. Pin it in production so thresholds do not move under you |
+| `--max-concurrent` | `1` | Messages in flight. A message in retry backoff holds its slot |
+| `-t, --timeout` | `120000` | Whole-message budget in ms, retries included |
+| `--request-timeout` | `30000` | Single HTTP attempt in ms |
+| `--max-attempts` | `4` | Attempts per message. Only `429` and `5xx` retry |
+
+The API key comes from the `TYPESAFE_API_KEY` environment variable and nowhere
+else. Let the primitive inherit it from the engine's environment; do not write it
+into an `env` table in `emergent.toml`.
+
+**The questions file.** The table name is the question id and becomes the answer
+key, so a router can write `.answers.<id>`:
+
+```toml
+[questions.unwanted]          # noul: yes/no. criteria optional, keys "true"/"false" only
+type = "noul"
+instructions = "Is this message unsolicited?"
+
+[questions.kind]              # choice: one of 2..=255 options. criteria required
+type = "choice"
+instructions = "What kind of message is this?"
+criteria = { phish = "Credential theft under a false identity.", vendor_notice = "An operational notice from a service already in use.", other = "None of the above." }
+
+[questions.pressure]          # score: ordered rubric, 2+ levels. criteria required
+type = "score"
+instructions = "How much time pressure does the message apply?"
+criteria = ["None.", "A soft deadline.", "Act now or lose access."]
+```
+
+The model never sees the ids; all meaning lives in `instructions` and
+`criteria`. The file is validated before the engine connection, so a typo stops
+the process at startup rather than producing a handler that looks healthy.
+Always give a choice an explicit none-of-the-above option, or the model is
+forced to pick a wrong one with confidence.
+
+**Payloads**
+
+```json
+{"input": {"...": "the inbound payload, nested"},
+ "answers": {
+   "unwanted": {"type": "noul", "noul": 0.93},
+   "kind": {"type": "choice", "choice": "phish", "confidence": 0.99,
+            "probabilities": {"phish": 0.99, "vendor_notice": 0.01, "other": 0.0}},
+   "pressure": {"type": "score", "score": 2.0, "confidence": 1.0,
+                "legend": {"0": "None."}, "probabilities": {"2": 1.0}}},
+ "usage": {"input_tokens": 391, "output_tokens": 34},
+ "model": "jev-1.13.0", "request_id": "req_..."}
+```
+
+A noul carries no `confidence`: the probability is the confidence. Do not reuse a
+noul threshold on a choice; they are calibrated differently.
+
+A failure spreads the inbound fields and adds a reserved `error` object:
+`{kind, status, attempts, message, endpoint, model, request_id, body, detail}`.
+`error.kind` is one of `invalid_request`, `state_not_found` (the item or the
+questions are at fault, quarantine); `auth`, `billing`, `bad_response`,
+`answer_contract` (the item is fine and only a human can unblock it, hold it);
+`rate_limited`, `server_error`, `transport`, `timeout` (transient, requeue).
+
+**It judges; it never routes.** It publishes one verdict type, exactly like the
+`exec-handler` judge in SKILL.md's non-deterministic routing section. Confidence
+bands become message types through exclusive, exhaustive routers on the verdict:
+
+```toml
+[[handlers]]
+name = "route-settled"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "mail.judged", "--publish-as", "mail.settled", "--",
+        "jq", "-c", "select(.answers.kind.confidence >= 0.9)"]
+subscribes = ["mail.judged"]
+publishes = ["mail.settled"]
+
+[[handlers]]
+name = "route-uncertain"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "mail.judged", "--publish-as", "mail.uncertain", "--",
+        "jq", "-c", "select(.answers.kind.confidence < 0.9)"]
+subscribes = ["mail.judged"]
+publishes = ["mail.uncertain"]
+```
+
+Combining questions is a router predicate too
+(`.answers.unwanted.noul >= 0.5 or .answers.deceptive.noul >= 0.5`), never a
+reason to fork the primitive. Route the error topic the same way, with the last
+router matching by negation so a kind added later cannot vanish.
+
+Design around the model's limits:
+
+- **It reads literally and does no arithmetic.** It will not count, compare
+  dates, or sum. Compute those upstream and put the result in the state.
+- **Irrelevant state costs accuracy and money.** Use `--state-pointer` and an
+  upstream `jq` projection to send only what the questions need.
+- **It is not robust to prompt injection.** Treat the state as untrusted input
+  and never let a verdict alone authorize a destructive or trust-raising action.
+- **Criteria grounded in real examples beat generic labels** by a wide margin.
+  Describe each option by what actually belongs in it.
 
 ---
 

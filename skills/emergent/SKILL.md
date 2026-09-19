@@ -186,6 +186,7 @@ substitutions. Reach for these; they are the idiom.
 | a function call | Publish an event; subscribe to the response type. |
 | a config flag switching behavior | Two primitives, one enabled. Or two subscribers with predicates on the flag in the payload. |
 | a judgment call no rule can express | An `exec-handler` handing the decision to a model, publishing one verdict event, with routers turning it into the vocabulary. See non-deterministic routing below. |
+| a yes/no, pick-one, or rubric judgment at volume | `jev-handler` asking typed questions and publishing one calibrated verdict, with routers turning confidence bands into the vocabulary. |
 
 ### One execution, one event
 
@@ -332,6 +333,24 @@ Four properties make this the default:
 
 One silence remains: a clean exit with empty stdout publishes nothing. If that
 is plausible for your agent, add the reaper from `references/patterns.md`.
+
+### The fast judge: `jev-handler` for typed questions
+
+When the judgment fits a typed question (a yes/no, one option from a known set,
+a position on a rubric), the marketplace `jev-handler` is the same node at a
+fraction of the latency and cost: one sub-second API call per message, answers
+carrying calibrated confidence, errors already an event. It obeys the same rule
+as every judge here. It publishes one verdict type and never chooses a flow, so
+"auto-file above 0.9, send the rest to review" is two exclusive routers on
+`.answers.<id>.confidence`, not a flag on the primitive. A threshold change is a
+config edit, and the raw verdicts stay reusable by subscribers nobody has
+designed yet.
+
+Keep the agent judge for decisions that need reading files, using tools, or
+explaining themselves. A common shape uses both: `jev-handler` settles the
+confident majority, and its low-confidence band is the event an agent judge
+subscribes to. `references/primitives.md` has the flags, the questions file, the
+payload shapes, and the model's limits.
 
 ### The escalation: the agent re-enters through an `http-source`
 
