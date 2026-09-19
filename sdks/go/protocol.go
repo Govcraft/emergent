@@ -26,6 +26,13 @@ const (
 	MsgTypeUnsubscribe byte = 0x07
 	MsgTypeDiscover    byte = 0x08
 	MsgTypeStream      byte = 0x09
+
+	// MsgTypeSubscribePatterns subscribes to IPC prefix patterns.
+	// Requires engine 0.10.11 or later.
+	MsgTypeSubscribePatterns byte = 0x0a
+	// MsgTypeUnsubscribePatterns unsubscribes from IPC prefix patterns.
+	// Requires engine 0.10.11 or later.
+	MsgTypeUnsubscribePatterns byte = 0x0b
 )
 
 // Serialization format constants.

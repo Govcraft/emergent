@@ -164,7 +164,14 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 	}
 	c.mu.Unlock()
 
-	c.logger.Info("subscribing to message types", "types", messageTypes)
+	// Split before anything is sent, so a topic that could never match, such
+	// as "system.*.error", is reported here instead of subscribing to silence.
+	exactTypes, patterns, err := PartitionTopics(messageTypes)
+	if err != nil {
+		return nil, err
+	}
+
+	c.logger.Info("subscribing to message types", "types", exactTypes, "patterns", patterns)
 
 	correlationID := generateCorrelationID("sub")
 
@@ -181,8 +188,8 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 	c.mu.Unlock()
 
 	// Add system.shutdown to subscriptions (SDK handles internally)
-	allTypes := make([]string, len(messageTypes))
-	copy(allTypes, messageTypes)
+	allTypes := make([]string, len(exactTypes))
+	copy(allTypes, exactTypes)
 	hasShutdown := false
 	for _, t := range allTypes {
 		if t == "system.shutdown" {
@@ -212,6 +219,30 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 		return nil, &SubscriptionError{Msg: errMsg, MessageTypes: messageTypes}
 	}
 
+	if len(patterns) > 0 {
+		// Patterns travel on their own request because the engine keeps a
+		// separate index for them. A connection matching a message through both
+		// indexes still receives one copy.
+		patternCorrelationID := generateCorrelationID("psub")
+		patternResp, patternErr := c.sendRequest(ctx, MsgTypeSubscribePatterns, &IpcPatternSubscribeRequest{
+			CorrelationID: patternCorrelationID,
+			Patterns:      patterns,
+		}, patternCorrelationID)
+		if patternErr != nil {
+			stream.Close()
+			return nil, &SubscriptionError{Msg: patternErr.Error(), MessageTypes: patterns}
+		}
+		if !patternResp.Success {
+			stream.Close()
+			errMsg := patternResp.Error
+			if errMsg == "" {
+				errMsg = "pattern subscription failed"
+			}
+			c.logger.Error("pattern subscription failed", "patterns", patterns, "error", errMsg)
+			return nil, &SubscriptionError{Msg: errMsg, MessageTypes: patterns}
+		}
+	}
+
 	// Track subscribed types (exclude internal system.shutdown)
 	c.mu.Lock()
 	for _, t := range messageTypes {
@@ -239,17 +270,35 @@ func (c *baseClient) unsubscribeInternal(ctx context.Context, messageTypes []str
 
 	c.logger.Debug("unsubscribing from message types", "types", messageTypes)
 
+	exactTypes, patterns, partitionErr := PartitionTopics(messageTypes)
+	if partitionErr != nil {
+		return partitionErr
+	}
+
 	correlationID := generateCorrelationID("sub")
 	resp, err := c.sendRequest(ctx, MsgTypeUnsubscribe, &IpcSubscribeRequest{
 		CorrelationID: correlationID,
-		MessageTypes:  messageTypes,
+		MessageTypes:  exactTypes,
 	}, correlationID)
 	if err != nil {
-		c.logger.Warn("unsubscribe failed", "types", messageTypes, "error", err)
+		c.logger.Warn("unsubscribe failed", "types", exactTypes, "error", err)
 		return nil // Best effort
 	}
 	if !resp.Success {
-		c.logger.Warn("unsubscribe failed", "types", messageTypes, "error", resp.Error)
+		c.logger.Warn("unsubscribe failed", "types", exactTypes, "error", resp.Error)
+	}
+
+	if len(patterns) > 0 {
+		patternCorrelationID := generateCorrelationID("punsub")
+		patternResp, patternErr := c.sendRequest(ctx, MsgTypeUnsubscribePatterns, &IpcPatternSubscribeRequest{
+			CorrelationID: patternCorrelationID,
+			Patterns:      patterns,
+		}, patternCorrelationID)
+		if patternErr != nil {
+			c.logger.Warn("pattern unsubscribe failed", "patterns", patterns, "error", patternErr)
+		} else if !patternResp.Success {
+			c.logger.Warn("pattern unsubscribe failed", "patterns", patterns, "error", patternResp.Error)
+		}
 	}
 
 	c.mu.Lock()
@@ -804,6 +853,14 @@ func (c *baseClient) handlePush(payload any) {
 	// Handle system.response.subscriptions
 	if messageType == "system.response.subscriptions" {
 		c.handleSubscriptionsResponse(payloadMap)
+		return
+	}
+
+	// Skip the transport's own envelope broadcasts, which only a "*"
+	// subscription ever sees. The message inside each one arrives separately
+	// under its own Emergent message type.
+	if !IsEmergentMessageType(messageType) {
+		c.logger.Debug("skipping non-Emergent IPC broadcast", "message_type", messageType)
 		return
 	}
 

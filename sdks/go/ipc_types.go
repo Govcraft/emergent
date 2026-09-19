@@ -24,6 +24,14 @@ type IpcSubscribeRequest struct {
 	MessageTypes  []string `json:"message_types" msgpack:"message_types"`
 }
 
+// IpcPatternSubscribeRequest is the pattern subscription request payload.
+//
+// Patterns are a prefix followed by one "*", or "*" alone.
+type IpcPatternSubscribeRequest struct {
+	CorrelationID string   `json:"correlation_id" msgpack:"correlation_id"`
+	Patterns      []string `json:"patterns" msgpack:"patterns"`
+}
+
 // IpcPushNotification is a push notification from subscriptions.
 type IpcPushNotification struct {
 	NotificationID string `json:"notification_id" msgpack:"notification_id"`
