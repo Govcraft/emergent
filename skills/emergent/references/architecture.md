@@ -141,7 +141,7 @@ Axum-based server on configurable port (default: 8891, `api_port = 0` to disable
 
 The first entry is a synthetic `emergent-engine` of kind `"source"` whose `publishes` shows `system.started.*` style strings. Those are display labels, not subscribable types. Disabled primitives are absent.
 
-Use it for the graph (`name`, `kind`, `publishes`, `subscribes`), not for health. Verified against 0.10.10: every managed primitive reports `state: "configured"` and `pid: null` even while it is running, because the engine serves its registration-time copy. For liveness, read `system.started.<name>`, `system.stopped.<name>` and `system.error.<name>` from the event store.
+Use it for the graph (`name`, `kind`, `publishes`, `subscribes`) on any engine. Whether it is also good for health depends on the version. On engine 0.10.10 and earlier it is not: every managed primitive reports `state: "configured"` and `pid: null` even while it is running, because the engine serves its registration-time copy (Govcraft/emergent#40). There, read liveness from `system.started.<name>`, `system.stopped.<name>` and `system.error.<name>` in the event store. After 0.10.10 `state`, `pid` and `error` are live: a running primitive reports `running` with its pid, one that exited cleanly reports `stopped` with `pid: null`, and one that crashed reports `failed` with the exit status in `error`. `starting` and `stopping` show up around those transitions.
 
 ## Engine Lifecycle
 
