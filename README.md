@@ -189,6 +189,7 @@ emergent marketplace info exec-handler
 | `exec-source` | Source | Run any shell command on an interval, emit output as events |
 | `http-source` | Source | Receive HTTP webhooks |
 | `exec-handler` | Handler | Pipe event payloads through any executable |
+| `jev-handler` | Handler | Ask TypeSafe System One (Jev) typed questions about each payload, publish calibrated answers |
 | `stream-runner` | Handler | Emit a JSON collection one item at a time with ack-based flow control |
 | `websocket-handler` | Handler | Bidirectional WebSocket bridge |
 | `exec-sink` | Sink | Pipe event payloads through any executable (fire-and-forget) |
