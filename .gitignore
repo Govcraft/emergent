@@ -42,4 +42,7 @@ Thumbs.db
 # Allow docs folder and its markdown files
 !docs/
 !docs/**/*.md
+# Allow the coding-agent skill and its references
+!skills/
+!skills/**/*.md
 node_modules/
