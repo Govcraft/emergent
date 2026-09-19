@@ -56,6 +56,9 @@ func fakeEngineReply(msgType byte, payload any) (fakeReply, bool) {
 	}
 
 	switch msgType {
+	case MsgTypeDiscover:
+		correlationID, _ := payloadMap["correlation_id"].(string)
+		return fakeReply{msgType: MsgTypeResponse, payload: engineDiscoveryBody(correlationID)}, true
 	case MsgTypeSubscribe, MsgTypeUnsubscribe:
 		correlationID, _ := payloadMap["correlation_id"].(string)
 		return fakeReply{

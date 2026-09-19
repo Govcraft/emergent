@@ -158,13 +158,20 @@ const (
 	PrimitiveKindSink    PrimitiveKind = "Sink"
 )
 
-// PrimitiveInfo describes a registered primitive.
+// PrimitiveInfo names one entry of a discovery reply. The engine reports the
+// actors it exposes over IPC there, not the configured primitives, and sends
+// no kind for them, so Kind is empty.
 type PrimitiveInfo struct {
 	Name string        `json:"name" msgpack:"name"`
 	Kind PrimitiveKind `json:"kind" msgpack:"kind"`
 }
 
-// DiscoveryInfo contains discovery information from the engine.
+// DiscoveryInfo is what the engine's IPC layer reports about itself.
+//
+// MessageTypes holds IPC type names such as "SystemEvent" and
+// "EmergentMessage", and Primitives holds IPC-exposed actors such as
+// "message_broker". Neither holds Emergent topics or configured primitives:
+// use GetTopology for those.
 type DiscoveryInfo struct {
 	MessageTypes []string        `json:"message_types" msgpack:"message_types"`
 	Primitives   []PrimitiveInfo `json:"primitives" msgpack:"primitives"`

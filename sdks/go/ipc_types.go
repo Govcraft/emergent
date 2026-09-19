@@ -16,6 +16,11 @@ type IpcResponse struct {
 	Payload       any    `json:"payload,omitempty" msgpack:"payload,omitempty"`
 	Error         string `json:"error,omitempty" msgpack:"error,omitempty"`
 	ErrorCode     string `json:"error_code,omitempty" msgpack:"error_code,omitempty"`
+
+	// Body is the whole decoded frame body of a received response. Some
+	// replies, discovery among them, put their fields at the top level beside
+	// correlation_id and success instead of under payload. It is never sent.
+	Body map[string]any `json:"-" msgpack:"-"`
 }
 
 // IpcSubscribeRequest is the subscription request payload.
@@ -53,8 +58,29 @@ type WireMessage struct {
 	Metadata      any    `json:"metadata,omitempty" msgpack:"metadata,omitempty"`
 }
 
+// IpcDiscoverRequest is the body of a discovery request.
+type IpcDiscoverRequest struct {
+	CorrelationID       string `json:"correlation_id" msgpack:"correlation_id"`
+	IncludeActors       bool   `json:"include_actors" msgpack:"include_actors"`
+	IncludeMessageTypes bool   `json:"include_message_types" msgpack:"include_message_types"`
+}
+
+// IpcActorInfo is an actor the engine exposes over IPC.
+type IpcActorInfo struct {
+	Name string `json:"name" msgpack:"name"`
+	Ern  string `json:"ern,omitempty" msgpack:"ern,omitempty"`
+}
+
 // IpcDiscoverResponse is the response from a discovery request.
+//
+// The engine writes these fields at the top level of the frame body, beside
+// correlation_id and success, and not under payload. It leaves out whichever
+// list the request did not ask for.
 type IpcDiscoverResponse struct {
-	MessageTypes []string            `json:"message_types" msgpack:"message_types"`
-	Primitives   []map[string]string `json:"primitives" msgpack:"primitives"`
+	CorrelationID   string         `json:"correlation_id" msgpack:"correlation_id"`
+	Success         bool           `json:"success" msgpack:"success"`
+	Error           string         `json:"error,omitempty" msgpack:"error,omitempty"`
+	ProtocolVersion map[string]any `json:"protocol_version,omitempty" msgpack:"protocol_version,omitempty"`
+	Actors          []IpcActorInfo `json:"actors,omitempty" msgpack:"actors,omitempty"`
+	MessageTypes    []string       `json:"message_types,omitempty" msgpack:"message_types,omitempty"`
 }

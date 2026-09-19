@@ -28,7 +28,13 @@ func (s *EmergentSink) Unsubscribe(ctx context.Context, messageTypes []string) e
 	return s.unsubscribeInternal(ctx, messageTypes)
 }
 
-// Discover queries the engine for available message types and primitives.
+// Discover queries the engine's IPC layer for what it exposes.
+//
+// MessageTypes holds the IPC type names the transport registers, such as
+// "SystemEvent" and "EmergentMessage". Primitives holds the actors exposed
+// over IPC, such as "message_broker", with no kind. Neither list names an
+// Emergent topic or a configured primitive: system.request.topology answers
+// that question, which a sink reaches through GetTopology.
 func (s *EmergentSink) Discover(ctx context.Context) (*DiscoveryInfo, error) {
 	return s.discoverInternal(ctx)
 }

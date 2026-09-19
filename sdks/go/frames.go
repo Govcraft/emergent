@@ -25,7 +25,7 @@ func responseFromFrame(msgType byte, payload any) (*IpcResponse, bool) {
 		return nil, false
 	}
 
-	resp := &IpcResponse{CorrelationID: correlationID, Payload: body["payload"]}
+	resp := &IpcResponse{CorrelationID: correlationID, Payload: body["payload"], Body: body}
 	resp.Success, _ = body["success"].(bool)
 	resp.Error, _ = body["error"].(string)
 	resp.ErrorCode, _ = body["error_code"].(string)
@@ -65,4 +65,28 @@ func frameCorrelationID(payload any) string {
 		return id
 	}
 	return "unknown"
+}
+
+// discoveryInfoFromBody builds DiscoveryInfo from the body of a successful
+// discovery response.
+//
+// The engine writes actors and message_types at the top level of the body, and
+// leaves out whichever list was not asked for, which reads as empty here. Each
+// actor becomes a PrimitiveInfo with no kind, as in the Rust and Python SDKs,
+// because the response does not carry one. Entries of the wrong shape are
+// skipped.
+func discoveryInfoFromBody(body map[string]any) *DiscoveryInfo {
+	info := &DiscoveryInfo{MessageTypes: wireStrings(body["message_types"])}
+
+	actors, _ := body["actors"].([]any)
+	for _, raw := range actors {
+		actor, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := actor["name"].(string); name != "" {
+			info.Primitives = append(info.Primitives, PrimitiveInfo{Name: name})
+		}
+	}
+	return info
 }

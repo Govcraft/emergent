@@ -233,7 +233,13 @@ func (h *EmergentHandler) StreamConsume(ctx context.Context, messageType string,
 	return count, nil
 }
 
-// Discover queries the engine for available message types and primitives.
+// Discover queries the engine's IPC layer for what it exposes.
+//
+// MessageTypes holds the IPC type names the transport registers, such as
+// "SystemEvent" and "EmergentMessage". Primitives holds the actors exposed
+// over IPC, such as "message_broker", with no kind. Neither list names an
+// Emergent topic or a configured primitive: system.request.topology answers
+// that question, which a sink reaches through GetTopology.
 func (h *EmergentHandler) Discover(ctx context.Context) (*DiscoveryInfo, error) {
 	return h.discoverInternal(ctx)
 }

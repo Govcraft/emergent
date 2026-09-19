@@ -66,10 +66,28 @@ func TestResponseFromFrame(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := responseFromFrame(tt.msgType, tt.payload)
+			if got != nil {
+				// Body is the input itself. TestResponseFromFrame_KeepsTheBody
+				// covers it, so it is left out of the comparison here.
+				got.Body = nil
+			}
 			if ok != (tt.want != nil) || !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("responseFromFrame() = (%+v, %v), want %+v", got, ok, tt.want)
 			}
 		})
+	}
+}
+
+// TestResponseFromFrame_KeepsTheBody checks that fields beside the shared
+// ones survive, since discovery answers at the top level of the body.
+func TestResponseFromFrame_KeepsTheBody(t *testing.T) {
+	body := map[string]any{"correlation_id": "disc_1", "success": true, "message_types": []any{"SystemEvent"}}
+	resp, ok := responseFromFrame(MsgTypeResponse, body)
+	if !ok {
+		t.Fatal("expected a response")
+	}
+	if !reflect.DeepEqual(resp.Body, body) {
+		t.Errorf("Body = %v, want %v", resp.Body, body)
 	}
 }
 

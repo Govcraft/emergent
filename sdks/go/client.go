@@ -444,15 +444,11 @@ func (c *baseClient) discoverInternal(ctx context.Context) (*DiscoveryInfo, erro
 
 	correlationID := generateCorrelationID("req")
 
-	envelope := &IpcEnvelope{
-		CorrelationID: correlationID,
-		Target:        "broker",
-		MessageType:   "Discover",
-		Payload:       nil,
-		ExpectsReply:  true,
-	}
-
-	resp, err := c.sendRequest(ctx, MsgTypeDiscover, envelope, correlationID)
+	resp, err := c.sendRequest(ctx, MsgTypeDiscover, &IpcDiscoverRequest{
+		CorrelationID:       correlationID,
+		IncludeActors:       true,
+		IncludeMessageTypes: true,
+	}, correlationID)
 	if err != nil {
 		return nil, &DiscoveryError{Msg: err.Error()}
 	}
@@ -464,32 +460,9 @@ func (c *baseClient) discoverInternal(ctx context.Context) (*DiscoveryInfo, erro
 		return nil, &DiscoveryError{Msg: errMsg}
 	}
 
-	// Parse discovery response from payload
-	info := &DiscoveryInfo{}
-	payloadMap, ok := resp.Payload.(map[string]any)
-	if ok {
-		if types, ok := payloadMap["message_types"].([]any); ok {
-			for _, t := range types {
-				if s, ok := t.(string); ok {
-					info.MessageTypes = append(info.MessageTypes, s)
-				}
-			}
-		}
-		if primitives, ok := payloadMap["primitives"].([]any); ok {
-			for _, p := range primitives {
-				if pm, ok := p.(map[string]any); ok {
-					pi := PrimitiveInfo{}
-					if name, ok := pm["name"].(string); ok {
-						pi.Name = name
-					}
-					if kind, ok := pm["kind"].(string); ok {
-						pi.Kind = PrimitiveKind(kind)
-					}
-					info.Primitives = append(info.Primitives, pi)
-				}
-			}
-		}
-	}
+	// The engine answers with actors and message_types at the top level of
+	// the response body, not under payload.
+	info := discoveryInfoFromBody(resp.Body)
 
 	c.logger.Debug("discovery complete", "message_types", len(info.MessageTypes), "primitives", len(info.Primitives))
 	return info, nil
