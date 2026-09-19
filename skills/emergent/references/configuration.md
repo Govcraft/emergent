@@ -36,11 +36,11 @@ api_port = 8891
 
 [event_store]
 # Directory for JSON log files (append-only, one file per day)
-# "auto" — uses XDG data directory
+# "auto": uses XDG data directory
 json_log_dir = "auto"
 
 # Path to SQLite database for structured event storage
-# "auto" — uses XDG data directory
+# "auto": uses XDG data directory
 sqlite_path = "auto"
 
 # Parsed but not enforced: no cleanup runs, so prune the store yourself
@@ -174,7 +174,7 @@ sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
 | `enabled` | Boolean | No | Enable/disable (default: `true`) |
 | `subscribes` | Array[String] | No (default `[]`) | Message types the primitive consumes. It reaches the primitive as `EMERGENT_SUBSCRIBES` and draws the topology graph, but a primitive that calls `subscribe([...])` with its own list ignores it: the exec primitives subscribe to their `-s` flags and `stream-runner` to its topic flags. Keep the two in agreement |
 | `env` | Map[String, String] | No | Environment variables, as literals. See Secrets Management before putting anything here |
-| `unwrap_stdout` | Boolean | No | Same as for handlers — auto-unwrap exec-source's stdout envelope |
+| `unwrap_stdout` | Boolean | No | Same as for handlers: auto-unwrap exec-source's stdout envelope |
 
 ## Subscriptions are exact-match
 
@@ -237,7 +237,7 @@ path = "~/.local/share/emergent/primitives/bin/exec-handler"
 # Rust (compiled binary)
 path = "./target/release/my_handler"
 
-# Python (via uv — recommended)
+# Python (via uv, recommended)
 path = "uv"
 args = ["run", "--with", "emergent-client", "my_handler.py"]
 

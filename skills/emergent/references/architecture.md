@@ -40,11 +40,11 @@ pub struct EmergentMessage {
 ### Message Type Convention
 
 Use `{domain}.{action}` naming:
-- `timer.tick` — Timer emitted a tick
-- `http.request` — HTTP request received
-- `metric.cpu` — CPU metric collected
-- `slack.frame` — WebSocket frame from Slack
-- `life.tick` — Game of Life generation clock
+- `timer.tick`: Timer emitted a tick
+- `http.request`: HTTP request received
+- `metric.cpu`: CPU metric collected
+- `slack.frame`: WebSocket frame from Slack
+- `life.tick`: Game of Life generation clock
 
 ## IPC Protocol
 
@@ -149,9 +149,9 @@ Use it for the graph (`name`, `kind`, `publishes`, `subscribes`), not for health
 
 The engine starts primitives in dependency order:
 
-1. **Sinks first** — Ready to receive messages
-2. **Handlers second** — Ready to transform messages
-3. **Sources last** — Begin emitting messages
+1. **Sinks first**: Ready to receive messages
+2. **Handlers second**: Ready to transform messages
+3. **Sources last**: Begin emitting messages
 
 Within each tier, primitives start in config order with a fixed 50 ms pause after each one. That ordering is the whole guarantee. There is no readiness handshake, so a subscriber that takes longer than that to connect and subscribe can miss early messages. A source that publishes the instant it starts (an `exec-source` with no interval) is the usual way to find this out.
 
