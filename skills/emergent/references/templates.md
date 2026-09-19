@@ -233,10 +233,12 @@ Use these when you need **persistent state**, **complex computation**, or **cust
 
 ### Rust: Stateful Handler
 
-This uses the low-level loop rather than `run_handler`. The helper's current
-bound rejects a closure that borrows `handler` across an `.await`, so a handler
-that publishes does not compile with it (see `sdk-api.md`). The loop also owns
-its state outright, so it needs no `Arc` or `Mutex`.
+This uses the low-level loop rather than `run_handler`, because the loop owns
+its state outright and so needs no `Arc` or `Mutex`. On emergent-client 0.13.1
+and earlier the loop was the only option for a handler that publishes at all:
+the helper's bound rejected a closure that borrows `handler` across an `.await`
+(Govcraft/emergent#41, see `sdk-api.md`). After 0.13.1 `run_handler` takes the
+handler by value and a publishing closure compiles.
 
 ```rust
 use emergent_client::{EmergentHandler, EmergentMessage};
