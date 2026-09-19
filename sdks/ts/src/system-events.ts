@@ -76,7 +76,7 @@ export interface SystemShutdownPayload {
  * Type guard to check if a payload is a system event payload.
  */
 export function isSystemEventPayload(
-  payload: unknown
+  payload: unknown,
 ): payload is SystemEventPayload {
   if (typeof payload !== "object" || payload === null) return false;
   const p = payload as Record<string, unknown>;
@@ -91,7 +91,7 @@ export function isSystemEventPayload(
  * Type guard to check if a payload is a shutdown payload.
  */
 export function isSystemShutdownPayload(
-  payload: unknown
+  payload: unknown,
 ): payload is SystemShutdownPayload {
   if (typeof payload !== "object" || payload === null) return false;
   const p = payload as Record<string, unknown>;

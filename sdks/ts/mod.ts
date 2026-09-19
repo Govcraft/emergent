@@ -80,12 +80,12 @@ export type {
   SystemShutdownPayload,
 } from "./src/system-events.ts";
 export {
-  isSystemEventPayload,
-  isSystemShutdownPayload,
   isErrorEvent,
-  isSourceEvent,
   isHandlerEvent,
   isSinkEvent,
+  isSourceEvent,
+  isSystemEventPayload,
+  isSystemShutdownPayload,
 } from "./src/system-events.ts";
 
 // ============================================================================
@@ -139,12 +139,7 @@ export { getSocketPath, socketExists } from "./src/client.ts";
 // Helpers
 // ============================================================================
 
-export {
-  HelperError,
-  runHandler,
-  runSink,
-  runSource,
-} from "./src/helpers.ts";
+export { HelperError, runHandler, runSink, runSource } from "./src/helpers.ts";
 export type {
   HandlerProcessFn,
   SinkConsumeFn,

@@ -239,7 +239,9 @@ export class EmergentHandler extends BaseClient
     pullStream: MessageStream,
     timeout = 30000,
   ): Promise<number> {
-    const streamId = `strm_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    const streamId = `strm_${Date.now()}_${
+      Math.random().toString(36).slice(2, 10)
+    }`;
 
     // Announce stream
     await this.publish(
@@ -262,14 +264,16 @@ export class EmergentHandler extends BaseClient
       const msg = await Promise.race([
         pullStream.next(),
         new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error("stream_offer timed out waiting for pull")), timeout)
+          setTimeout(
+            () => reject(new Error("stream_offer timed out waiting for pull")),
+            timeout,
+          )
         ),
       ]);
 
       if (msg === null) break;
 
-      const isPull =
-        msg.messageType === "stream.pull" &&
+      const isPull = msg.messageType === "stream.pull" &&
         typeof msg.payload === "object" &&
         msg.payload !== null &&
         (msg.payload as Record<string, unknown>).stream_id === streamId;
@@ -316,7 +320,13 @@ export class EmergentHandler extends BaseClient
       const msg = await Promise.race([
         sourceStream.next(),
         new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error("stream_consume timed out waiting for stream.ready")), timeout)
+          setTimeout(
+            () =>
+              reject(
+                new Error("stream_consume timed out waiting for stream.ready"),
+              ),
+            timeout,
+          )
         ),
       ]);
 
@@ -344,7 +354,11 @@ export class EmergentHandler extends BaseClient
       const msg = await Promise.race([
         sourceStream.next(),
         new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error("stream_consume timed out waiting for item")), timeout)
+          setTimeout(
+            () =>
+              reject(new Error("stream_consume timed out waiting for item")),
+            timeout,
+          )
         ),
       ]);
 

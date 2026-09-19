@@ -134,8 +134,10 @@ export class BaseClient {
   #readLoopRunning = false;
   #readBuffer: Uint8Array = new Uint8Array(0);
   #pendingRequests: Map<string, PendingRequest> = new Map();
-  #pendingTopologyRequests: Map<string, PendingPubSubRequest<TopologyState>> = new Map();
-  #pendingSubscriptionsRequests: Map<string, PendingPubSubRequest<string[]>> = new Map();
+  #pendingTopologyRequests: Map<string, PendingPubSubRequest<TopologyState>> =
+    new Map();
+  #pendingSubscriptionsRequests: Map<string, PendingPubSubRequest<string[]>> =
+    new Map();
   #messageStream: MessageStream | null = null;
   #subscribedTypes: Set<string> = new Set();
   #timeoutMs: number;
@@ -181,7 +183,10 @@ export class BaseClient {
 
     const path = socketPath ?? getSocketPath();
 
-    this.#logger.info("connecting to engine", { kind: this.primitiveKind, path });
+    this.#logger.info("connecting to engine", {
+      kind: this.primitiveKind,
+      path,
+    });
 
     // Check if socket exists
     if (!(await socketExists(path))) {
@@ -251,7 +256,10 @@ export class BaseClient {
     );
 
     if (!response.success) {
-      this.#logger.error("subscription failed", { types: messageTypes, error: response.error });
+      this.#logger.error("subscription failed", {
+        types: messageTypes,
+        error: response.error,
+      });
       stream.close();
       throw new ConnectionError(response.error ?? "Subscription failed");
     }
@@ -277,7 +285,9 @@ export class BaseClient {
   protected async unsubscribeInternal(messageTypes: string[]): Promise<void> {
     this.#ensureConnected();
 
-    this.#logger.debug("unsubscribing from message types", { types: messageTypes });
+    this.#logger.debug("unsubscribing from message types", {
+      types: messageTypes,
+    });
 
     const correlationId = generateCorrelationId("unsub");
 
@@ -292,7 +302,10 @@ export class BaseClient {
 
     if (!response.success) {
       // Log but don't fail - unsubscribe is best-effort
-      this.#logger.warn("unsubscribe failed", { types: messageTypes, error: response.error });
+      this.#logger.warn("unsubscribe failed", {
+        types: messageTypes,
+        error: response.error,
+      });
     }
 
     // Remove from tracked types
@@ -308,7 +321,10 @@ export class BaseClient {
   protected async publishInternal(message: EmergentMessage): Promise<void> {
     this.#ensureConnected();
 
-    this.#logger.debug("publishing message", { messageType: message.messageType, messageId: message.id });
+    this.#logger.debug("publishing message", {
+      messageType: message.messageType,
+      messageId: message.id,
+    });
 
     // Convert to wire format and set source
     const wireMessage: WireMessage = {
@@ -337,10 +353,17 @@ export class BaseClient {
     const frame = encodeFrame(MSG_TYPE_REQUEST, envelope);
     try {
       await this.conn!.write(frame);
-      this.#logger.debug("published message", { messageType: message.messageType, messageId: message.id });
+      this.#logger.debug("published message", {
+        messageType: message.messageType,
+        messageId: message.id,
+      });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.#logger.error("failed to publish message", { messageType: message.messageType, messageId: message.id, error: errorMsg });
+      this.#logger.error("failed to publish message", {
+        messageType: message.messageType,
+        messageId: message.id,
+        error: errorMsg,
+      });
       throw err;
     }
   }
@@ -356,7 +379,10 @@ export class BaseClient {
   protected async publishInternalAck(message: EmergentMessage): Promise<void> {
     this.#ensureConnected();
 
-    this.#logger.debug("publishing message (ack)", { messageType: message.messageType, messageId: message.id });
+    this.#logger.debug("publishing message (ack)", {
+      messageType: message.messageType,
+      messageId: message.id,
+    });
 
     const wireMessage: WireMessage = {
       id: message.id,
@@ -385,11 +411,17 @@ export class BaseClient {
     );
 
     if (!response.success) {
-      this.#logger.error("publish_ack failed", { messageType: message.messageType, error: response.error });
+      this.#logger.error("publish_ack failed", {
+        messageType: message.messageType,
+        error: response.error,
+      });
       throw new ConnectionError(response.error ?? "Broker returned error");
     }
 
-    this.#logger.debug("publish_ack succeeded", { messageType: message.messageType, messageId: message.id });
+    this.#logger.debug("publish_ack succeeded", {
+      messageType: message.messageType,
+      messageId: message.id,
+    });
   }
 
   /**
@@ -468,7 +500,7 @@ export class BaseClient {
 
     if (!subResponse.success) {
       throw new ConnectionError(
-        subResponse.error ?? "Failed to subscribe to response type"
+        subResponse.error ?? "Failed to subscribe to response type",
       );
     }
 
@@ -476,7 +508,12 @@ export class BaseClient {
     const resultPromise = new Promise<string[]>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pendingSubscriptionsRequests.delete(correlationId);
-        reject(new TimeoutError("GetSubscriptions request timed out", this.#timeoutMs));
+        reject(
+          new TimeoutError(
+            "GetSubscriptions request timed out",
+            this.#timeoutMs,
+          ),
+        );
       }, this.#timeoutMs);
 
       this.#pendingSubscriptionsRequests.set(correlationId, {
@@ -532,7 +569,7 @@ export class BaseClient {
 
     if (!subResponse.success) {
       throw new ConnectionError(
-        subResponse.error ?? "Failed to subscribe to response type"
+        subResponse.error ?? "Failed to subscribe to response type",
       );
     }
 
@@ -540,7 +577,9 @@ export class BaseClient {
     const resultPromise = new Promise<TopologyState>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pendingTopologyRequests.delete(correlationId);
-        reject(new TimeoutError("GetTopology request timed out", this.#timeoutMs));
+        reject(
+          new TimeoutError("GetTopology request timed out", this.#timeoutMs),
+        );
       }, this.#timeoutMs);
 
       this.#pendingTopologyRequests.set(correlationId, {
@@ -564,7 +603,9 @@ export class BaseClient {
 
     // Wait for response
     const result = await resultPromise;
-    this.#logger.debug("received topology", { primitiveCount: result.primitives.length });
+    this.#logger.debug("received topology", {
+      primitiveCount: result.primitives.length,
+    });
     return result;
   }
 
@@ -574,7 +615,9 @@ export class BaseClient {
   close(): void {
     if (this.disposed) return;
 
-    this.#logger.info("disconnecting from engine", { kind: this.primitiveKind });
+    this.#logger.info("disconnecting from engine", {
+      kind: this.primitiveKind,
+    });
 
     this.#readLoopRunning = false;
 
@@ -733,7 +776,9 @@ export class BaseClient {
         this.#handleFrame(result.msgType, result.payload);
       } catch (err) {
         if (err instanceof ProtocolError) {
-          this.#logger.error("protocol error while processing frame", { error: err.message });
+          this.#logger.error("protocol error while processing frame", {
+            error: err.message,
+          });
           // Reset buffer on protocol error
           this.#readBuffer = new Uint8Array(0);
           break;
@@ -790,8 +835,12 @@ export class BaseClient {
               this.#pendingTopologyRequests.delete(correlationId);
               if (pending.timer) clearTimeout(pending.timer);
               // Extract primitives from payload
-              const responsePayload = wireMessage.payload as { primitives?: TopologyPrimitive[] };
-              pending.resolve({ primitives: responsePayload?.primitives ?? [] });
+              const responsePayload = wireMessage.payload as {
+                primitives?: TopologyPrimitive[];
+              };
+              pending.resolve({
+                primitives: responsePayload?.primitives ?? [],
+              });
             }
           }
           break; // Don't forward to message stream
@@ -802,12 +851,16 @@ export class BaseClient {
           const wireMessage = notification.payload as WireMessage;
           const correlationId = wireMessage.correlation_id;
           if (correlationId) {
-            const pending = this.#pendingSubscriptionsRequests.get(correlationId);
+            const pending = this.#pendingSubscriptionsRequests.get(
+              correlationId,
+            );
             if (pending) {
               this.#pendingSubscriptionsRequests.delete(correlationId);
               if (pending.timer) clearTimeout(pending.timer);
               // Extract subscribes from payload
-              const responsePayload = wireMessage.payload as { subscribes?: string[] };
+              const responsePayload = wireMessage.payload as {
+                subscribes?: string[];
+              };
               pending.resolve(responsePayload?.subscribes ?? []);
             }
           }
@@ -822,11 +875,16 @@ export class BaseClient {
           let message = EmergentMessage.fromWire(wireMessage);
 
           // Auto-unwrap stdout payloads when enabled (skip system messages)
-          if (this.#unwrapStdout && !message.messageType.startsWith("system.")) {
+          if (
+            this.#unwrapStdout && !message.messageType.startsWith("system.")
+          ) {
             message = message.unwrapStdout();
           }
 
-          this.#logger.debug("received message", { messageType: message.messageType, source: message.source });
+          this.#logger.debug("received message", {
+            messageType: message.messageType,
+            source: message.source,
+          });
 
           this.#messageStream.push(message);
         }

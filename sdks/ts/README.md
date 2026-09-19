@@ -22,7 +22,11 @@ deno add jsr:@govcraft/emergent
 Then import:
 
 ```typescript
-import { EmergentSink, EmergentSource, EmergentHandler } from "@govcraft/emergent";
+import {
+  EmergentHandler,
+  EmergentSink,
+  EmergentSource,
+} from "@govcraft/emergent";
 ```
 
 Or import directly without a local install:
@@ -36,11 +40,11 @@ import { EmergentSink } from "jsr:@govcraft/emergent";
 Every Emergent workflow is composed of Sources, Handlers, and Sinks. Each
 primitive has a single, well-defined role:
 
-| Primitive     | Subscribe | Publish | Role                                         |
-| ------------- | --------- | ------- | -------------------------------------------- |
-| **Source**    | --        | Yes     | Ingress -- bring data into the system        |
-| **Handler**   | Yes       | Yes     | Processing -- transform, enrich, or route    |
-| **Sink**      | Yes       | --      | Egress -- persist, display, or forward data  |
+| Primitive   | Subscribe | Publish | Role                                        |
+| ----------- | --------- | ------- | ------------------------------------------- |
+| **Source**  | --        | Yes     | Ingress -- bring data into the system       |
+| **Handler** | Yes       | Yes     | Processing -- transform, enrich, or route   |
+| **Sink**    | Yes       | --      | Egress -- persist, display, or forward data |
 
 ## Quick Start
 
@@ -83,11 +87,11 @@ await source.publish("sensor.reading", { value: 42.5, unit: "celsius" });
 
 ### Handler -- subscribe and publish
 
-A Handler subscribes to incoming messages and publishes new ones. Use
-`causedBy` to link output messages to the input that triggered them:
+A Handler subscribes to incoming messages and publishes new ones. Use `causedBy`
+to link output messages to the input that triggered them:
 
 ```typescript
-import { EmergentHandler, createMessage } from "jsr:@govcraft/emergent";
+import { createMessage, EmergentHandler } from "jsr:@govcraft/emergent";
 
 await using handler = await EmergentHandler.connect("order_processor");
 const stream = await handler.subscribe(["order.created"]);
@@ -96,7 +100,7 @@ for await (const msg of stream) {
   await handler.publish(
     createMessage("order.processed")
       .causedBy(msg.id)
-      .payload({ status: "ok" })
+      .payload({ status: "ok" }),
   );
 }
 ```
@@ -112,7 +116,7 @@ await source.publish("timer.tick", { count: 1 });
 
 // MessageBuilder -- fluent API with auto-build
 await source.publish(
-  createMessage("timer.tick").payload({ count: 1 })
+  createMessage("timer.tick").payload({ count: 1 }),
 );
 
 // Full EmergentMessage object
@@ -122,12 +126,12 @@ await source.publish(message);
 ## Streaming Publish
 
 Publish a collection or async stream of messages. Each message is sent
-individually so subscribers begin consuming immediately. Both methods return
-the count of successfully published messages and stop on the first error.
+individually so subscribers begin consuming immediately. Both methods return the
+count of successfully published messages and stop on the first error.
 
 ```typescript
 // From an array or any Iterable
-const messages = records.map(r =>
+const messages = records.map((r) =>
   createMessage("record.imported").payload(r)
 );
 const count = await source.publishAll(messages);
@@ -220,12 +224,17 @@ signals a graceful shutdown, active message streams close automatically.
 
 ## Helper Functions
 
-`runSource`, `runHandler`, and `runSink` eliminate connection and signal-handling
-boilerplate. Each helper connects, sets up SIGTERM/SIGINT handlers, runs your
-callback, and disconnects on completion:
+`runSource`, `runHandler`, and `runSink` eliminate connection and
+signal-handling boilerplate. Each helper connects, sets up SIGTERM/SIGINT
+handlers, runs your callback, and disconnects on completion:
 
 ```typescript
-import { runSource, runHandler, runSink, createMessage } from "jsr:@govcraft/emergent";
+import {
+  createMessage,
+  runHandler,
+  runSink,
+  runSource,
+} from "jsr:@govcraft/emergent";
 
 // Source -- custom event loop with shutdown signal
 await runSource("my_source", async (source, shutdown) => {
@@ -238,7 +247,7 @@ await runSource("my_source", async (source, shutdown) => {
 // Handler -- called once per message
 await runHandler("my_handler", ["raw.event"], async (msg, handler) => {
   await handler.publish(
-    createMessage("processed").causedBy(msg.id).payload({ done: true })
+    createMessage("processed").causedBy(msg.id).payload({ done: true }),
   );
 });
 
@@ -258,9 +267,9 @@ property. Catch specific error types for precise control:
 
 ```typescript
 import {
+  ConnectionError,
   EmergentSource,
   SocketNotFoundError,
-  ConnectionError,
   TimeoutError,
 } from "jsr:@govcraft/emergent";
 
@@ -279,32 +288,32 @@ try {
 
 ### Error Types
 
-| Error                 | Code                  | Extra Fields     |
-| --------------------- | --------------------- | ---------------- |
-| `ConnectionError`     | `CONNECTION_FAILED`   |                  |
-| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socketPath`     |
-| `TimeoutError`        | `TIMEOUT`             | `timeoutMs`      |
-| `ProtocolError`       | `PROTOCOL_ERROR`      |                  |
-| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `messageTypes`   |
-| `PublishError`        | `PUBLISH_FAILED`      | `messageType`    |
-| `DiscoveryError`      | `DISCOVERY_FAILED`    |                  |
-| `DisposedError`       | `DISPOSED`            |                  |
-| `ValidationError`     | `VALIDATION_ERROR`    | `field`          |
+| Error                 | Code                  | Extra Fields   |
+| --------------------- | --------------------- | -------------- |
+| `ConnectionError`     | `CONNECTION_FAILED`   |                |
+| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socketPath`   |
+| `TimeoutError`        | `TIMEOUT`             | `timeoutMs`    |
+| `ProtocolError`       | `PROTOCOL_ERROR`      |                |
+| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `messageTypes` |
+| `PublishError`        | `PUBLISH_FAILED`      | `messageType`  |
+| `DiscoveryError`      | `DISCOVERY_FAILED`    |                |
+| `DisposedError`       | `DISPOSED`            |                |
+| `ValidationError`     | `VALIDATION_ERROR`    | `field`        |
 
 ## Message Shape
 
 Every message flowing through Emergent follows the same envelope:
 
-| Field            | Type                          | Description                            |
-| ---------------- | ----------------------------- | -------------------------------------- |
-| `id`             | `string`                      | Unique TypeID (`msg_<uuidv7>`)         |
-| `messageType`    | `string`                      | Routing key (e.g., `"timer.tick"`)     |
-| `source`         | `string`                      | Name of the publishing primitive       |
-| `correlationId`  | `string \| undefined`         | Links related messages                 |
-| `causationId`    | `string \| undefined`         | ID of the triggering message           |
-| `timestampMs`    | `number`                      | Creation time (Unix ms)                |
-| `payload`        | `unknown`                     | User-defined data                      |
-| `metadata`       | `Record<string, unknown> \| undefined` | Optional tracing/debug data   |
+| Field           | Type                                   | Description                        |
+| --------------- | -------------------------------------- | ---------------------------------- |
+| `id`            | `string`                               | Unique TypeID (`msg_<uuidv7>`)     |
+| `messageType`   | `string`                               | Routing key (e.g., `"timer.tick"`) |
+| `source`        | `string`                               | Name of the publishing primitive   |
+| `correlationId` | `string \| undefined`                  | Links related messages             |
+| `causationId`   | `string \| undefined`                  | ID of the triggering message       |
+| `timestampMs`   | `number`                               | Creation time (Unix ms)            |
+| `payload`       | `unknown`                              | User-defined data                  |
+| `metadata`      | `Record<string, unknown> \| undefined` | Optional tracing/debug data        |
 
 Use `msg.payloadAs<T>()` to access the payload with type safety.
 
@@ -313,17 +322,17 @@ Use `msg.payloadAs<T>()` to access the payload with type safety.
 The Emergent engine broadcasts lifecycle events that your primitives can
 subscribe to:
 
-| Event Pattern              | Payload Type           | Fired When                    |
-| -------------------------- | ---------------------- | ----------------------------- |
-| `system.started.<name>`    | `SystemEventPayload`   | Primitive started             |
-| `system.stopped.<name>`    | `SystemEventPayload`   | Primitive stopped             |
-| `system.error.<name>`      | `SystemEventPayload`   | Primitive failed              |
-| `system.shutdown`          | `SystemShutdownPayload`| Engine shutting down          |
+| Event Pattern           | Payload Type            | Fired When           |
+| ----------------------- | ----------------------- | -------------------- |
+| `system.started.<name>` | `SystemEventPayload`    | Primitive started    |
+| `system.stopped.<name>` | `SystemEventPayload`    | Primitive stopped    |
+| `system.error.<name>`   | `SystemEventPayload`    | Primitive failed     |
+| `system.shutdown`       | `SystemShutdownPayload` | Engine shutting down |
 
 Type guards are available for runtime checking:
 
 ```typescript
-import { isSystemEventPayload, isErrorEvent } from "jsr:@govcraft/emergent";
+import { isErrorEvent, isSystemEventPayload } from "jsr:@govcraft/emergent";
 
 if (isSystemEventPayload(msg.payload)) {
   if (isErrorEvent(msg.payload)) {

@@ -3,7 +3,7 @@
  * @module
  */
 
-import { encode, decode } from "@msgpack/msgpack";
+import { decode, encode } from "@msgpack/msgpack";
 import { ProtocolError } from "./errors.ts";
 
 // ============================================================================

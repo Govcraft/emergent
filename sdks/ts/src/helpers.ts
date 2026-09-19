@@ -103,7 +103,7 @@ export class HelperError extends Error {
  */
 export type SourceRunFn = (
   source: EmergentSource,
-  shutdown: AbortSignal
+  shutdown: AbortSignal,
 ) => Promise<void>;
 
 /**
@@ -114,7 +114,7 @@ export type SourceRunFn = (
  */
 export type HandlerProcessFn = (
   msg: EmergentMessage,
-  handler: EmergentHandler
+  handler: EmergentHandler,
 ) => Promise<void>;
 
 /**
@@ -183,7 +183,7 @@ function resolveName(name: string | undefined, defaultName: string): string {
  */
 export async function runSource(
   name: string | undefined,
-  runFn: SourceRunFn
+  runFn: SourceRunFn,
 ): Promise<void> {
   const resolvedName = resolveName(name, "source");
 
@@ -192,7 +192,7 @@ export async function runSource(
     source = await EmergentSource.connect(resolvedName);
   } catch (e) {
     throw new HelperError(
-      `failed to connect to Emergent engine as '${resolvedName}': ${e}`
+      `failed to connect to Emergent engine as '${resolvedName}': ${e}`,
     );
   }
 
@@ -257,7 +257,7 @@ export async function runSource(
 export async function runHandler(
   name: string | undefined,
   subscriptions: string[],
-  processFn: HandlerProcessFn
+  processFn: HandlerProcessFn,
 ): Promise<void> {
   const resolvedName = resolveName(name, "handler");
 
@@ -266,7 +266,7 @@ export async function runHandler(
     handler = await EmergentHandler.connect(resolvedName);
   } catch (e) {
     throw new HelperError(
-      `failed to connect to Emergent engine as '${resolvedName}': ${e}`
+      `failed to connect to Emergent engine as '${resolvedName}': ${e}`,
     );
   }
 
@@ -339,7 +339,7 @@ export async function runHandler(
 export async function runSink(
   name: string | undefined,
   subscriptions: string[],
-  consumeFn: SinkConsumeFn
+  consumeFn: SinkConsumeFn,
 ): Promise<void> {
   const resolvedName = resolveName(name, "sink");
 
@@ -348,7 +348,7 @@ export async function runSink(
     sink = await EmergentSink.connect(resolvedName);
   } catch (e) {
     throw new HelperError(
-      `failed to connect to Emergent engine as '${resolvedName}': ${e}`
+      `failed to connect to Emergent engine as '${resolvedName}': ${e}`,
     );
   }
 
