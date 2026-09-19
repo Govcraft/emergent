@@ -183,7 +183,7 @@ git add -A && git commit -S -m "chore: bump to X.Y.Z"
 git push && git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 ```
 
-Tagging triggers two GitHub Actions:
+Tagging triggers two GitHub Actions. The release workflow first runs `ci.yml` (the Rust, Python, TypeScript and Go gates) as its quality gate, and the builds, the GitHub release and the crates.io publish all wait for it:
 - **Release workflow** — builds engine binaries for Linux/macOS
 - **PyPI workflow** — publishes Python SDK to PyPI
 - TypeScript SDK (JSR) is published manually by the maintainer
@@ -238,6 +238,6 @@ Workspace-level clippy configuration denies `unwrap_used` and `expect_used`. Use
 
 ## Dependencies
 
-- **acton-reactive**: Published crate (version 9.3.0) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
+- **acton-reactive**: Published crate (version 9.4.0) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
 - Uses Rust 2024 edition
 - Release profile optimized for binary size: `opt-level = "z"`, LTO, single codegen unit, panic = abort, stripped

@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags-ignore: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The SDK integration tests start the real engine from target/debug.
+      - run: cargo build -p emergent-engine
+      - run: cargo nextest run --workspace
+      - run: cargo test --doc -p emergent-client
+      - name: Scaffolded Rust primitives compile
+        run: cargo test -p emergent-engine --test rust_scaffold_compiles -- --ignored
+
+  python:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      # Without the engine binary the real-engine tests skip instead of failing.
+      - run: cargo build -p emergent-engine
+      - run: uv run --extra dev pytest -q
+        working-directory: sdks/py
+      - run: uv run --extra dev ruff check .
+        working-directory: sdks/py
+      - run: uv run --extra dev ruff format --check .
+        working-directory: sdks/py
+      - run: uv run --extra dev mypy emergent
+        working-directory: sdks/py
+
+  typescript:
+    name: TypeScript SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno fmt --check
+      - run: deno lint
+      - run: deno check mod.ts
+      - run: deno test --allow-env --allow-read --allow-net
+
+  go:
+    name: Go SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sdks/go/go.mod
+      # Without the engine binary the real-engine tests skip instead of failing.
+      - run: cargo build -p emergent-engine
+      - name: gofmt
+        working-directory: sdks/go
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+        working-directory: sdks/go
+      # Unix socket paths are capped near 108 bytes, so keep the temp dir short.
+      - run: mkdir -p /tmp/egt && TMPDIR=/tmp/egt go test -race -count=1 ./...
+        working-directory: sdks/go
+      - name: Go examples build and vet
+        run: |
+          for dir in examples/sources/timer-go examples/handlers/filter-go examples/sinks/console-go; do
+            (cd "$dir" && go build ./... && go vet ./...)
+          done

@@ -80,7 +80,7 @@ name = "ws"
 path = "~/.local/share/emergent/primitives/bin/websocket-handler"
 args = ["--prefix", "ws"]
 subscribes = ["ws.connect", "ws.send", "ws.disconnect"]
-publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.error"]
+publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.disconnected", "ws.error"]
 
 # =============================================================================
 # Sinks - Data Egress (subscribe only, no publish)
