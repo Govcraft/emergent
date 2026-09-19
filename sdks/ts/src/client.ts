@@ -8,7 +8,7 @@ import {
   type DiscoveryInfo,
   EmergentMessage,
   type EmergentMessageData,
-  type IpcDiscoverResponse,
+  type IpcDiscoverRequest,
   type IpcEnvelope,
   type IpcPatternSubscribeRequest,
   type IpcPushNotification,
@@ -198,6 +198,51 @@ export function settlementFor(
   return {
     kind: "unmatched-response",
     correlationId: response.correlation_id,
+  };
+}
+
+/**
+ * Build `DiscoveryInfo` from a successful discovery response.
+ *
+ * The engine writes `actors` and `message_types` at the top level of the
+ * response, and leaves out whichever list was not asked for. Each actor
+ * becomes a `PrimitiveInfo` with no kind, because the response does not carry
+ * one. Entries of the wrong shape are dropped.
+ *
+ * @throws {ProtocolError} If the response is not an object, or either list is
+ *   present and not an array
+ */
+export function discoveryInfoFromResponse(response: unknown): DiscoveryInfo {
+  if (
+    typeof response !== "object" || response === null ||
+    Array.isArray(response)
+  ) {
+    throw new ProtocolError("Malformed discovery response: not an object");
+  }
+
+  const listOf = (field: string): unknown[] => {
+    const value = (response as Record<string, unknown>)[field];
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) {
+      throw new ProtocolError(
+        `Malformed discovery response: ${field} is not a list`,
+      );
+    }
+    return value;
+  };
+
+  const messageTypes = listOf("message_types").filter(
+    (entry): entry is string => typeof entry === "string",
+  );
+  const primitives = listOf("actors").flatMap((actor) => {
+    if (typeof actor !== "object" || actor === null) return [];
+    const name = (actor as { name?: unknown }).name;
+    return typeof name === "string" ? [Object.freeze({ name })] : [];
+  });
+
+  return {
+    messageTypes: Object.freeze(messageTypes),
+    primitives: Object.freeze(primitives),
   };
 }
 
@@ -627,7 +672,9 @@ export class BaseClient {
   }
 
   /**
-   * Discover available message types and primitives.
+   * Ask the engine's IPC layer what it exposes: its registered IPC type names
+   * and its IPC-exposed actors. Neither list holds Emergent topics or
+   * primitives, which `getTopologyInternal` reports.
    * @internal
    */
   protected async discoverInternal(): Promise<DiscoveryInfo> {
@@ -637,17 +684,13 @@ export class BaseClient {
 
     const correlationId = generateCorrelationId("disc");
 
-    const envelope: IpcEnvelope = {
-      correlation_id: correlationId,
-      target: "broker",
-      message_type: "Discover",
-      payload: null,
-      expects_reply: true,
-    };
-
-    const response = await this.#sendRequest<IpcEnvelope>(
+    const response = await this.#sendRequest<IpcDiscoverRequest>(
       MSG_TYPE_DISCOVER,
-      envelope,
+      {
+        correlation_id: correlationId,
+        include_actors: true,
+        include_message_types: true,
+      },
       correlationId,
     );
 
@@ -656,22 +699,14 @@ export class BaseClient {
       throw new ConnectionError(response.error ?? "Discovery failed");
     }
 
-    const discoverResponse = response.payload as IpcDiscoverResponse;
+    const info = discoveryInfoFromResponse(response);
 
     this.#logger.debug("discovery complete", {
-      messageTypes: discoverResponse.message_types.length,
-      primitives: discoverResponse.primitives.length,
+      messageTypes: info.messageTypes.length,
+      primitives: info.primitives.length,
     });
 
-    return {
-      messageTypes: Object.freeze([...discoverResponse.message_types]),
-      primitives: Object.freeze(
-        discoverResponse.primitives.map((p) => ({
-          name: p.name,
-          kind: p.kind as "Source" | "Handler" | "Sink",
-        })),
-      ),
-    };
+    return info;
   }
 
   /**

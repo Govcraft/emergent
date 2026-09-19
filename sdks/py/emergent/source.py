@@ -224,15 +224,21 @@ class EmergentSource(BaseClient):
 
     async def discover(self) -> DiscoveryInfo:
         """
-        Discover available message types and primitives.
+        Ask the engine's IPC layer what it exposes.
+
+        The reply lists the IPC type names the engine has registered
+        (``EmergentMessage``, ``SystemEvent``) and the actors it exposes over
+        IPC (``message_broker``). It never lists Emergent topics such as
+        ``timer.tick``, and it never lists sources, handlers or sinks.
+        ``EmergentSink.get_topology()`` answers that question.
 
         Returns:
             Discovery information from the engine
 
         Example:
             >>> info = await source.discover()
-            >>> print("Available types:", info.message_types)
-            >>> print("Connected primitives:", info.primitives)
+            >>> print("IPC type names:", info.message_types)
+            >>> print("IPC-exposed actors:", info.primitives)
         """
         return await self._discover()
 

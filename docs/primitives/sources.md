@@ -229,7 +229,7 @@ for event in rx {
 |--------|-------------|
 | `connect(name)` | Connect to engine |
 | `publish(message)` | Send a message (fire-and-forget) |
-| `discover()` | Query available message types |
+| `discover()` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `disconnect()` | Graceful disconnection |
 | `name()` | Get this source's name |
 

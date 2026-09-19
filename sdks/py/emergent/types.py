@@ -154,11 +154,20 @@ class PrimitiveInfo(BaseModel):
 
 class DiscoveryInfo(BaseModel):
     """
-    Discovery information about the engine.
+    What the engine's IPC layer reports about itself.
+
+    This describes the transport, not the workflow. It never lists Emergent
+    topics such as ``timer.tick``, and it never lists sources, handlers or
+    sinks. Ask ``EmergentSink.get_topology()`` for the primitives and the
+    topics they publish and subscribe to.
 
     Attributes:
-        message_types: Available message types that can be subscribed to
-        primitives: List of connected primitives
+        message_types: IPC type names the engine has registered, such as
+            ``EmergentMessage`` and ``SystemEvent``. These are transport
+            envelope names, not topics.
+        primitives: Actors the engine exposes over IPC, such as
+            ``message_broker``. These are engine internals, not the
+            primitives in the config.
     """
 
     model_config = ConfigDict(frozen=True)
