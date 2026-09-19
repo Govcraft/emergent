@@ -10,7 +10,7 @@
 //! - System event broadcasting (`system.started.*`, `system.stopped.*`)
 //! - Graceful termination in `before_stop`
 
-use crate::config::{EngineConfig, HandlerConfig, SinkConfig, SourceConfig};
+use crate::config::{EngineConfig, HandlerConfig, RestartConfig, SinkConfig, SourceConfig};
 use crate::primitive_actor::{
     ChildPidWatch, EngineShuttingDown, PrimitiveActorConfig, StopPrimitive, build_primitive_actor,
     create_shutdown_event, sigkill_process_group, wait_for_children_exit,
@@ -128,8 +128,15 @@ impl ProcessManager {
         config: &SourceConfig,
     ) -> Result<(), ProcessManagerError> {
         let info = PrimitiveInfo::source(&config.name, config.publishes.clone());
-        self.register_primitive(runtime, info, &config.path, &config.args, &config.env)
-            .await
+        self.register_primitive(
+            runtime,
+            info,
+            &config.path,
+            &config.args,
+            &config.env,
+            &config.restart,
+        )
+        .await
     }
 
     /// Register a handler from configuration.
@@ -147,8 +154,15 @@ impl ProcessManager {
         if config.unwrap_stdout {
             env.insert("EMERGENT_UNWRAP_STDOUT".into(), "true".into());
         }
-        self.register_primitive(runtime, info, &config.path, &config.args, &env)
-            .await
+        self.register_primitive(
+            runtime,
+            info,
+            &config.path,
+            &config.args,
+            &env,
+            &config.restart,
+        )
+        .await
     }
 
     /// Register a sink from configuration.
@@ -162,8 +176,15 @@ impl ProcessManager {
         if config.unwrap_stdout {
             env.insert("EMERGENT_UNWRAP_STDOUT".into(), "true".into());
         }
-        self.register_primitive(runtime, info, &config.path, &config.args, &env)
-            .await
+        self.register_primitive(
+            runtime,
+            info,
+            &config.path,
+            &config.args,
+            &env,
+            &config.restart,
+        )
+        .await
     }
 
     /// Register a primitive and create its actor.
@@ -174,6 +195,7 @@ impl ProcessManager {
         path: &std::path::Path,
         args: &[String],
         env: &HashMap<String, String>,
+        supervision: &RestartConfig,
     ) -> Result<(), ProcessManagerError> {
         let name = info.name.clone();
 
@@ -195,6 +217,10 @@ impl ProcessManager {
             socket_path: self.socket_path.clone(),
             api_port: self.api_port,
             pid_watch,
+            // Configuration validation rejects unknown policies before we get
+            // here, so the fallback is unreachable in practice.
+            restart: supervision.policy().unwrap_or_default(),
+            restart_limits: supervision.limits(),
         };
 
         // Build the actor (does not start it yet)

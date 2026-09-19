@@ -3,6 +3,8 @@
 //! Each primitive (Source, Handler, Sink) is managed by a PrimitiveActor that:
 //! - Spawns the child process in `after_start` (after message loop is active)
 //! - Publishes `system.started.*` events after successful spawn
+//! - Applies the configured restart policy when the child exits, publishing
+//!   `system.restarted.*` on a successful respawn
 //! - Terminates the child process in `before_stop`
 //! - Publishes `system.stopped.*` events after graceful shutdown
 //!
@@ -20,7 +22,12 @@
 
 use crate::messages::EmergentMessage;
 use crate::primitives::{PrimitiveInfo, PrimitiveState};
+use crate::supervision::{
+    RestartDecision, RestartLimits, RestartPolicy, decide_restart, outcome_from_exit_code,
+    prune_attempts,
+};
 use acton_reactive::prelude::*;
+use emergent_client::types::Timestamp;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -50,6 +57,9 @@ pub struct SystemEventPayload {
     /// Optional error message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Restart attempt number, present only on `system.restarted.<name>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart_attempt: Option<u32>,
 }
 
 impl SystemEventPayload {
@@ -63,6 +73,7 @@ impl SystemEventPayload {
             publishes: info.publishes.clone(),
             subscribes: info.subscribes.clone(),
             error: None,
+            restart_attempt: None,
         }
     }
 
@@ -76,6 +87,7 @@ impl SystemEventPayload {
             publishes: info.publishes.clone(),
             subscribes: info.subscribes.clone(),
             error: None,
+            restart_attempt: None,
         }
     }
 
@@ -89,6 +101,21 @@ impl SystemEventPayload {
             publishes: info.publishes.clone(),
             subscribes: info.subscribes.clone(),
             error: Some(error_msg),
+            restart_attempt: None,
+        }
+    }
+
+    /// Create a payload for a restarted event (pure function).
+    #[must_use]
+    pub fn restarted(info: &PrimitiveInfo, pid: u32, attempt: u32) -> Self {
+        Self {
+            name: info.name.clone(),
+            kind: info.kind.as_str().to_string(),
+            pid: Some(pid),
+            publishes: info.publishes.clone(),
+            subscribes: info.subscribes.clone(),
+            error: None,
+            restart_attempt: Some(attempt),
         }
     }
 
@@ -230,6 +257,13 @@ pub struct HealthCheck;
 #[acton_message]
 pub struct StopPrimitive;
 
+/// Message asking the actor to respawn its child after a backoff.
+#[acton_message]
+pub struct RestartChild {
+    /// 1-based restart attempt this respawn represents.
+    pub attempt: u32,
+}
+
 /// Message telling the actor the engine is tearing the topology down.
 ///
 /// Sent to every actor before the first shutdown phase begins, so that a child
@@ -253,6 +287,8 @@ pub struct PrimitiveActorState {
     pub child_pid: Option<u32>,
     /// Whether the engine is shutting down, which suppresses restarts.
     pub shutting_down: bool,
+    /// Unix-millisecond timestamps of restarts inside the current window.
+    pub restart_attempts: Vec<u64>,
 }
 
 /// Configuration for building a primitive actor.
@@ -272,6 +308,138 @@ pub struct PrimitiveActorConfig {
     pub api_port: u16,
     /// Writer for the live child PID, read by the process manager.
     pub pid_watch: ChildPidWatch,
+    /// What to do when the child exits.
+    pub restart: RestartPolicy,
+    /// How restarts are paced and capped.
+    pub restart_limits: RestartLimits,
+}
+
+/// Spawn the child process for a primitive and start monitoring it.
+///
+/// Used both for the initial spawn and for every restart. `attempt` is `None`
+/// for the first spawn and `Some(n)` for restart number `n`, which selects
+/// between the `system.started.<name>` and `system.restarted.<name>` events.
+async fn spawn_primitive_child(
+    config: &PrimitiveActorConfig,
+    self_handle: ActorHandle,
+    broker: ActorHandle,
+    attempt: Option<u32>,
+) {
+    let spawn_info = config.info.clone();
+    let name = spawn_info.name.clone();
+    let pid_watch = config.pid_watch.clone();
+
+    let mut cmd = Command::new(&config.path);
+    cmd.args(&config.args);
+
+    for (key, value) in &config.env {
+        cmd.env(key, value);
+    }
+
+    cmd.env(
+        "EMERGENT_SOCKET",
+        config.socket_path.to_string_lossy().as_ref(),
+    );
+    cmd.env("EMERGENT_NAME", &name);
+    cmd.env("EMERGENT_API_PORT", config.api_port.to_string());
+    cmd.env("EMERGENT_PUBLISHES", spawn_info.publishes.join(","));
+    cmd.env("EMERGENT_SUBSCRIBES", spawn_info.subscribes.join(","));
+
+    // Isolate child from terminal SIGINT - only engine handles Ctrl+C.
+    // Children get their own process group so Ctrl+C only affects the engine,
+    // and so shutdown can escalate to a group-wide SIGKILL.
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            pid_watch.clear();
+            error!("Failed to spawn {}: {}", name, e);
+            let event = create_system_event("system.error", &spawn_info, None, Some(e.to_string()));
+            broker.broadcast(event).await;
+            return;
+        }
+    };
+
+    let Some(pid) = child.id() else {
+        pid_watch.clear();
+        error!("Failed to get PID for {}", name);
+        return;
+    };
+
+    match attempt {
+        None => info!("Started {} (pid: {})", name, pid),
+        Some(n) => info!("Restarted {} (pid: {}, attempt: {})", name, pid, n),
+    }
+
+    // Publish the PID before anything else so the process manager can wait on
+    // (and if need be signal) this child.
+    pid_watch.set(pid);
+
+    let mut info = spawn_info.clone();
+    info.pid = Some(pid);
+    info.state = PrimitiveState::Running;
+    info.error = None;
+    self_handle.send(ChildSpawned { pid, info }).await;
+
+    let event = match attempt {
+        None => create_system_event("system.started", &spawn_info, Some(pid), None),
+        Some(n) => create_restarted_event(&spawn_info, pid, n),
+    };
+    broker.broadcast(event).await;
+
+    // Monitor the child in a BACKGROUND TASK. The Child handle lives HERE,
+    // not in actor state, because it is not Clone.
+    let monitor_handle = self_handle.clone();
+    let monitor_info = spawn_info;
+    let monitor_broker = broker;
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(status) => {
+                // Clear the watch first: the process manager may be waiting on
+                // exactly this signal.
+                pid_watch.clear();
+                let exit_code = exit_code_from_status(&status);
+                let clean = is_clean_exit(&status);
+                if clean {
+                    debug!(
+                        "{} exited with status {} (pid: {})",
+                        monitor_info.name, exit_code, pid
+                    );
+                } else {
+                    warn!(
+                        "{} exited with status {} (pid: {})",
+                        monitor_info.name, exit_code, pid
+                    );
+                }
+
+                monitor_handle
+                    .send(ChildExited {
+                        pid,
+                        status: exit_code,
+                    })
+                    .await;
+
+                let event_type = if clean {
+                    "system.stopped"
+                } else {
+                    "system.error"
+                };
+                let error_msg = if clean {
+                    None
+                } else {
+                    Some(format!("Exited with status: {}", exit_code))
+                };
+                let event = create_system_event(event_type, &monitor_info, Some(pid), error_msg);
+                monitor_broker.broadcast(event).await;
+            }
+            Err(e) => {
+                pid_watch.clear();
+                error!("Error waiting for {}: {}", monitor_info.name, e);
+            }
+        }
+    });
 }
 
 /// Build and configure a primitive actor.
@@ -280,7 +448,9 @@ pub struct PrimitiveActorConfig {
 /// - Spawn the child process in `after_start`
 /// - Broadcast `system.started.<name>` after successful spawn
 /// - Handle `ChildSpawned` messages to track the PID
-/// - Handle `ChildExited` messages when the child terminates
+/// - Handle `ChildExited` messages when the child terminates, applying the
+///   configured restart policy
+/// - Broadcast `system.restarted.<name>` after a successful respawn
 /// - Terminate the child via SIGTERM in `before_stop`
 /// - Broadcast `system.stopped.<name>` after shutdown
 pub fn build_primitive_actor(
@@ -288,162 +458,23 @@ pub fn build_primitive_actor(
     config: PrimitiveActorConfig,
 ) -> ManagedActor<Idle, PrimitiveActorState> {
     let name = config.info.name.clone();
-    let path = config.path.clone();
-    let args = config.args.clone();
-    let env = config.env.clone();
-    let socket_path = config.socket_path.clone();
 
-    // Create actor with default state - info will be initialized via ChildSpawned message
-    let mut actor = runtime.new_actor_with_name::<PrimitiveActorState>(name.clone());
+    // Create actor with default state - info is initialized via ChildSpawned
+    let mut actor = runtime.new_actor_with_name::<PrimitiveActorState>(name);
 
-    // Clone info for the ChildSpawned message
-    let spawn_info = config.info.clone();
-
-    // Clone values for the after_start closure
-    let after_start_name = name.clone();
-    let after_start_path = path;
-    let after_start_args = args;
-    let after_start_env = env;
-    let after_start_socket = socket_path;
-    let after_start_api_port = config.api_port;
-    let after_start_pid_watch = config.pid_watch.clone();
+    let start_config = config.clone();
+    let restart_config = config.clone();
+    let exit_policy = config.restart;
+    let exit_limits = config.restart_limits;
 
     actor
         .after_start(move |actor| {
-            // Clone spawn_info for use in the async block
-            let spawn_info = spawn_info.clone();
+            let config = start_config.clone();
             let self_handle = actor.handle().clone();
             let broker = actor.broker().clone();
-            let name = after_start_name.clone();
-            let path = after_start_path.clone();
-            let args = after_start_args.clone();
-            let env = after_start_env.clone();
-            let socket_path = after_start_socket.clone();
-            let api_port = after_start_api_port;
-            let pid_watch = after_start_pid_watch.clone();
 
             async move {
-                // Build the command
-                let mut cmd = Command::new(&path);
-                cmd.args(&args);
-
-                // Add environment variables
-                for (key, value) in &env {
-                    cmd.env(key, value);
-                }
-
-                // Add standard environment variables
-                cmd.env("EMERGENT_SOCKET", socket_path.to_string_lossy().as_ref());
-                cmd.env("EMERGENT_NAME", &name);
-                cmd.env("EMERGENT_API_PORT", api_port.to_string());
-                cmd.env("EMERGENT_PUBLISHES", spawn_info.publishes.join(","));
-                cmd.env("EMERGENT_SUBSCRIBES", spawn_info.subscribes.join(","));
-
-                // Isolate child from terminal SIGINT - only engine handles Ctrl+C
-                // Children get their own process group so Ctrl+C only affects the engine
-                #[cfg(unix)]
-                cmd.process_group(0);
-
-                // Spawn the child process
-                match cmd.spawn() {
-                    Ok(mut child) => {
-                        let pid = child.id();
-                        info!("Started {} (pid: {:?})", name, pid);
-
-                        if let Some(pid) = pid {
-                            // Publish the PID before anything else so the process
-                            // manager can wait on (and if need be signal) this child.
-                            pid_watch.set(pid);
-
-                            // Store PID and info via self-message
-                            let mut info = spawn_info.clone();
-                            info.pid = Some(pid);
-                            info.state = PrimitiveState::Running;
-                            self_handle.send(ChildSpawned { pid, info }).await;
-
-                            // Broadcast system.started event
-                            let event =
-                                create_system_event("system.started", &spawn_info, Some(pid), None);
-                            broker.broadcast(event).await;
-
-                            // Monitor child in BACKGROUND TASK
-                            // The Child handle lives HERE, not in actor state
-                            let monitor_handle = self_handle.clone();
-                            let monitor_info = spawn_info.clone();
-                            let monitor_broker = broker.clone();
-                            let monitor_pid_watch = pid_watch.clone();
-                            tokio::spawn(async move {
-                                match child.wait().await {
-                                    Ok(status) => {
-                                        // Clear the watch first: the process manager
-                                        // may be waiting on exactly this signal.
-                                        monitor_pid_watch.clear();
-                                        let exit_code = exit_code_from_status(&status);
-                                        let clean = is_clean_exit(&status);
-                                        if clean {
-                                            debug!(
-                                                "{} exited with status {} (pid: {})",
-                                                monitor_info.name, exit_code, pid
-                                            );
-                                        } else {
-                                            warn!(
-                                                "{} exited with status {} (pid: {})",
-                                                monitor_info.name, exit_code, pid
-                                            );
-                                        }
-
-                                        // Notify actor of exit
-                                        monitor_handle
-                                            .send(ChildExited {
-                                                pid,
-                                                status: exit_code,
-                                            })
-                                            .await;
-
-                                        // Broadcast exit event
-                                        let event_type = if clean {
-                                            "system.stopped"
-                                        } else {
-                                            "system.error"
-                                        };
-                                        let error_msg = if clean {
-                                            None
-                                        } else {
-                                            Some(format!("Exited with status: {}", exit_code))
-                                        };
-                                        let event = create_system_event(
-                                            event_type,
-                                            &monitor_info,
-                                            Some(pid),
-                                            error_msg,
-                                        );
-                                        monitor_broker.broadcast(event).await;
-                                    }
-                                    Err(e) => {
-                                        monitor_pid_watch.clear();
-                                        error!("Error waiting for {}: {}", monitor_info.name, e);
-                                    }
-                                }
-                            });
-                        } else {
-                            pid_watch.clear();
-                            error!("Failed to get PID for {}", name);
-                        }
-                    }
-                    Err(e) => {
-                        pid_watch.clear();
-                        error!("Failed to spawn {}: {}", name, e);
-
-                        // Broadcast system.error event
-                        let event = create_system_event(
-                            "system.error",
-                            &spawn_info,
-                            None,
-                            Some(e.to_string()),
-                        );
-                        broker.broadcast(event).await;
-                    }
-                }
+                spawn_primitive_child(&config, self_handle, broker, None).await;
             }
         })
         .before_stop(move |actor| {
@@ -482,19 +513,92 @@ pub fn build_primitive_actor(
             actor.model.info = msg.info.clone();
             Reply::ready()
         })
-        .mutate_on::<ChildExited>(|actor, envelope| {
+        .mutate_on::<ChildExited>(move |actor, envelope| {
             let msg = envelope.message();
-            if actor.model.child_pid == Some(msg.pid) {
-                actor.model.child_pid = None;
-                actor.model.info.pid = None;
-                if is_clean_exit_code(msg.status) {
-                    actor.model.info.state = PrimitiveState::Stopped;
-                } else {
+
+            // A stale notice from a PID we have already replaced: ignore it.
+            if actor.model.child_pid != Some(msg.pid) {
+                return Reply::ready();
+            }
+
+            actor.model.child_pid = None;
+            actor.model.info.pid = None;
+            if is_clean_exit_code(msg.status) {
+                actor.model.info.state = PrimitiveState::Stopped;
+            } else {
+                actor.model.info.state = PrimitiveState::Failed;
+                actor.model.info.error = Some(format!("Exited with status: {}", msg.status));
+            }
+
+            let now_ms = Timestamp::now().as_millis();
+            actor.model.restart_attempts =
+                prune_attempts(&actor.model.restart_attempts, now_ms, exit_limits.window_ms);
+
+            let decision = decide_restart(
+                exit_policy,
+                outcome_from_exit_code(msg.status),
+                &actor.model.restart_attempts,
+                &exit_limits,
+                now_ms,
+                actor.model.shutting_down,
+            );
+
+            let name = actor.model.info.name.clone();
+            match decision {
+                RestartDecision::NoRestart | RestartDecision::SuppressedByShutdown => {
+                    Reply::ready()
+                }
+                RestartDecision::Restart { delay, attempt } => {
+                    actor.model.restart_attempts.push(now_ms);
+                    actor.model.info.state = PrimitiveState::Starting;
+                    let self_handle = actor.handle().clone();
+                    info!(
+                        "Restarting {} in {} ms (attempt {} of {})",
+                        name,
+                        delay.as_millis(),
+                        attempt,
+                        exit_limits.max_retries
+                    );
+                    Reply::pending(async move {
+                        tokio::time::sleep(delay).await;
+                        self_handle.send(RestartChild { attempt }).await;
+                    })
+                }
+                RestartDecision::Exhausted {
+                    attempts,
+                    window_ms,
+                } => {
+                    let reason = format!(
+                        "Restarts exhausted: {} attempts within {} ms",
+                        attempts, window_ms
+                    );
+                    warn!("{} will not be restarted. {}", name, reason);
                     actor.model.info.state = PrimitiveState::Failed;
-                    actor.model.info.error = Some(format!("Exited with status: {}", msg.status));
+                    actor.model.info.error = Some(reason.clone());
+                    let info = actor.model.info.clone();
+                    let broker = actor.broker().clone();
+                    Reply::pending(async move {
+                        let event = create_system_event("system.error", &info, None, Some(reason));
+                        broker.broadcast(event).await;
+                    })
                 }
             }
-            Reply::ready()
+        })
+        .mutate_on::<RestartChild>(move |actor, envelope| {
+            let attempt = envelope.message().attempt;
+
+            // Shutdown may have started while the backoff was running, or the
+            // child may already be back: either way there is nothing to do.
+            if actor.model.shutting_down || actor.model.child_pid.is_some() {
+                return Reply::ready();
+            }
+
+            let config = restart_config.clone();
+            let self_handle = actor.handle().clone();
+            let broker = actor.broker().clone();
+            Reply::pending(async move {
+                spawn_primitive_child(&config, self_handle, broker, Some(attempt)).await;
+            })
         })
         .act_on::<HealthCheck>(|actor, _envelope| {
             // Health check is now passive - we're notified via ChildExited
@@ -630,6 +734,15 @@ fn create_system_event(
     IpcSystemEvent { inner: message }
 }
 
+/// Create a `system.restarted.<name>` event wrapped for IPC.
+fn create_restarted_event(info: &PrimitiveInfo, pid: u32, attempt: u32) -> IpcSystemEvent {
+    let message = EmergentMessage::new(&format!("system.restarted.{}", info.name))
+        .with_source("emergent-engine")
+        .with_payload(json!(SystemEventPayload::restarted(info, pid, attempt)));
+
+    IpcSystemEvent { inner: message }
+}
+
 /// Create a shutdown system event wrapped for IPC.
 pub fn create_shutdown_event(kind: &str) -> IpcSystemEvent {
     let message = EmergentMessage::new("system.shutdown")
@@ -729,6 +842,50 @@ mod tests {
         assert_eq!(payload.pid, Some(9999));
         assert_eq!(payload.publishes, vec!["data.event".to_string()]);
         assert_eq!(payload.error, Some("Connection refused".to_string()));
+    }
+
+    #[test]
+    fn test_system_event_payload_restarted_carries_the_attempt() {
+        let info = make_handler_info(
+            "victim",
+            vec!["in.event".to_string()],
+            vec!["out.event".to_string()],
+        );
+        let payload = SystemEventPayload::restarted(&info, 4321, 3);
+
+        assert_eq!(payload.name, "victim");
+        assert_eq!(payload.kind, "handler");
+        assert_eq!(payload.pid, Some(4321));
+        assert_eq!(payload.restart_attempt, Some(3));
+        assert!(payload.error.is_none());
+    }
+
+    #[test]
+    fn test_restart_attempt_is_absent_from_other_payloads() -> Result<(), serde_json::Error> {
+        let info = make_source_info("s", vec!["e".to_string()]);
+        for payload in [
+            SystemEventPayload::started(&info, 1),
+            SystemEventPayload::stopped(&info, Some(1)),
+            SystemEventPayload::error(&info, Some(1), "boom".to_string()),
+        ] {
+            let json = serde_json::to_string(&payload)?;
+            assert!(
+                !json.contains("restart_attempt"),
+                "restart_attempt leaked into {json}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_restarted_event_type_is_namespaced_by_primitive() {
+        let info = make_sink_info("logger", vec!["a".to_string()]);
+        let event = create_restarted_event(&info, 77, 2);
+
+        assert_eq!(event.inner.message_type.as_str(), "system.restarted.logger");
+        assert_eq!(event.inner.payload["name"], "logger");
+        assert_eq!(event.inner.payload["pid"], 77);
+        assert_eq!(event.inner.payload["restart_attempt"], 2);
     }
 
     #[test]
