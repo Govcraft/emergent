@@ -141,13 +141,15 @@ class PrimitiveInfo(BaseModel):
 
     Attributes:
         name: Name of the primitive
-        kind: Type of primitive (Source, Handler, Sink)
+        kind: Type of primitive (Source, Handler, Sink), or None when the
+            engine does not report one. A discovery response names each entry
+            and says nothing about its kind.
     """
 
     model_config = ConfigDict(frozen=True)
 
     name: str
-    kind: PrimitiveKind
+    kind: PrimitiveKind | None = None
 
 
 class DiscoveryInfo(BaseModel):
@@ -306,7 +308,15 @@ class IpcEnvelope(BaseModel):
 
 
 class IpcResponse(BaseModel):
-    """Response from the server."""
+    """
+    Response from the server.
+
+    The body of a ``RESPONSE`` frame and of an ``ERROR`` frame. The engine's
+    subscription and discovery responses share these fields and add their own
+    beside them, so extra fields are kept for the caller that knows the shape.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     correlation_id: str
     success: bool
@@ -359,11 +369,35 @@ class IpcPushNotification(BaseModel):
     timestamp_ms: int = 0
 
 
-class IpcDiscoverResponse(BaseModel):
-    """Discovery response payload."""
+class IpcDiscoverRequest(BaseModel):
+    """Discovery request payload."""
 
-    message_types: list[str]
-    primitives: list[dict[str, str]]
+    correlation_id: str
+    include_actors: bool = True
+    include_message_types: bool = True
+
+
+class IpcActorInfo(BaseModel):
+    """An actor the engine exposes over IPC."""
+
+    name: str
+    ern: str | None = None
+
+
+class IpcDiscoverResponse(BaseModel):
+    """
+    Discovery response.
+
+    The engine writes these fields at the top level of the frame body, beside
+    ``correlation_id`` and ``success``, and not under ``payload``.
+    """
+
+    correlation_id: str
+    success: bool
+    error: str | None = None
+    protocol_version: dict[str, Any] | None = None
+    actors: list[IpcActorInfo] | None = None
+    message_types: list[str] | None = None
 
 
 # ============================================================================

@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from ._protocol import (
     HEADER_SIZE,
     Format,
@@ -37,6 +39,7 @@ from .topics import is_emergent_message_type, partition_topics
 from .types import (
     DiscoveryInfo,
     EmergentMessage,
+    IpcDiscoverRequest,
     IpcDiscoverResponse,
     IpcEnvelope,
     IpcPatternSubscribeRequest,
@@ -113,6 +116,68 @@ def extract_shutdown_kind(notification_payload: Any) -> str | None:
             if isinstance(kind, str):
                 return kind.lower()
     return None
+
+
+# Error text for an ERROR frame that arrives without any of its own
+DEFAULT_ERROR_TEXT = "Engine returned an error"
+
+
+def response_from_frame(msg_type: MessageType, payload: Any) -> IpcResponse | None:
+    """Read the response a ``RESPONSE`` or ``ERROR`` frame carries.
+
+    The engine answers a failed request with an ``ERROR`` frame whose body is
+    the same response object a ``RESPONSE`` frame carries: ``correlation_id``,
+    ``success``, ``error`` and ``error_code``. An ``ERROR`` frame always reads
+    as a failure here, whatever its ``success`` field says, and always has
+    error text. Returns ``None`` for any other frame type and for a body with
+    no string ``correlation_id``, since nothing can be matched to it.
+    """
+    if msg_type not in (MessageType.RESPONSE, MessageType.ERROR):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("correlation_id"), str):
+        return None
+    try:
+        response = IpcResponse.model_validate(payload)
+    except ValidationError:
+        return None
+    if msg_type == MessageType.ERROR:
+        return response.model_copy(
+            update={"success": False, "error": response.error or DEFAULT_ERROR_TEXT}
+        )
+    return response
+
+
+def error_frame_text(payload: Any) -> str:
+    """Describe an ``ERROR`` frame body for a log line.
+
+    Gives the error text, followed by the error code in parentheses when the
+    engine sent one. Falls back to ``DEFAULT_ERROR_TEXT`` for a body that holds
+    no error text.
+    """
+    if not isinstance(payload, dict):
+        return DEFAULT_ERROR_TEXT
+    error = payload.get("error")
+    text = error if isinstance(error, str) and error else DEFAULT_ERROR_TEXT
+    code = payload.get("error_code")
+    return f"{text} ({code})" if isinstance(code, str) and code else text
+
+
+def discovery_info_from_response(response: IpcResponse) -> DiscoveryInfo:
+    """Build ``DiscoveryInfo`` from a successful discovery response.
+
+    The engine writes ``actors`` and ``message_types`` at the top level of the
+    response, and leaves out whichever list was not asked for. Each actor
+    becomes a ``PrimitiveInfo`` with no kind, as in the Rust SDK, because the
+    response does not carry one.
+
+    Raises:
+        pydantic.ValidationError: If the response is not a discovery response
+    """
+    body = IpcDiscoverResponse.model_validate(response.model_dump())
+    return DiscoveryInfo(
+        message_types=tuple(body.message_types or ()),
+        primitives=tuple(PrimitiveInfo(name=actor.name) for actor in body.actors or ()),
+    )
 
 
 def parse_unwrap_flag(value: str | None) -> bool:
@@ -555,17 +620,9 @@ class BaseClient:
 
         correlation_id = generate_correlation_id("disc")
 
-        envelope = IpcEnvelope(
-            correlation_id=correlation_id,
-            target="broker",
-            message_type="Discover",
-            payload=None,
-            expects_reply=True,
-        )
-
         response = await self._send_request(
             MessageType.DISCOVER,
-            envelope.model_dump(),
+            IpcDiscoverRequest(correlation_id=correlation_id).model_dump(),
             correlation_id,
         )
 
@@ -573,25 +630,20 @@ class BaseClient:
             logger.error("discovery failed primitive=%s error=%s", self.name, response.error)
             raise ConnectionError(response.error or "Discovery failed")
 
-        disc_resp = IpcDiscoverResponse.model_validate(response.payload)
+        try:
+            info = discovery_info_from_response(response)
+        except ValidationError as err:
+            logger.error("discovery response malformed primitive=%s error=%s", self.name, err)
+            raise ConnectionError(f"Malformed discovery response: {err}") from err
 
         logger.debug(
             "discovery complete primitive=%s message_types=%d primitives=%d",
             self.name,
-            len(disc_resp.message_types),
-            len(disc_resp.primitives),
+            len(info.message_types),
+            len(info.primitives),
         )
 
-        return DiscoveryInfo(
-            message_types=tuple(disc_resp.message_types),
-            primitives=tuple(
-                PrimitiveInfo(
-                    name=p["name"],
-                    kind=p["kind"],
-                )
-                for p in disc_resp.primitives
-            ),
-        )
+        return info
 
     async def _get_my_subscriptions(self) -> list[str]:
         """
@@ -881,6 +933,16 @@ class BaseClient:
                 # Consume the bytes
                 del self._read_buffer[: result.bytes_consumed]
 
+                if result.msg_type is None:
+                    # The length prefix already delimited the frame, so
+                    # skipping it keeps the stream in step.
+                    logger.warning(
+                        "skipping frame of unknown type primitive=%s msg_type=%#04x",
+                        self.name,
+                        result.raw_msg_type,
+                    )
+                    continue
+
                 # Handle the frame
                 self._handle_frame(result.msg_type, result.payload)
             except ProtocolError as e:
@@ -893,16 +955,47 @@ class BaseClient:
                 self._read_buffer.clear()
                 break
 
+    def _settle_response(self, msg_type: MessageType, payload: Any) -> None:
+        """
+        Settle the pending request a RESPONSE or ERROR frame answers.
+
+        A failed request comes back as an ERROR frame. It settles the pending
+        request like any response, with ``success`` False, and the caller
+        raises its own error from the engine's error text.
+        """
+        response = response_from_frame(msg_type, payload)
+        pending = (
+            self._pending_requests.pop(response.correlation_id, None)
+            if response is not None
+            else None
+        )
+
+        if pending is not None and response is not None:
+            if pending.timer is not None:
+                pending.timer.cancel()
+            if not pending.future.done():
+                pending.future.set_result(response)
+        elif msg_type == MessageType.ERROR:
+            # No request to fail, for example a connection-level rejection or
+            # a request the engine could not parse.
+            logger.error(
+                "engine error matched no pending request primitive=%s error=%s",
+                self.name,
+                error_frame_text(payload),
+            )
+        elif response is None:
+            logger.warning("dropping malformed response frame primitive=%s", self.name)
+
     def _handle_frame(self, msg_type: MessageType, payload: Any) -> None:
         """Handle a received frame."""
-        if msg_type == MessageType.RESPONSE:
-            response = IpcResponse.model_validate(payload)
-            pending = self._pending_requests.pop(response.correlation_id, None)
-            if pending is not None:
-                if pending.timer is not None:
-                    pending.timer.cancel()
-                if not pending.future.done():
-                    pending.future.set_result(response)
+        if msg_type in (MessageType.RESPONSE, MessageType.ERROR):
+            self._settle_response(msg_type, payload)
+
+        elif msg_type in (MessageType.HEARTBEAT, MessageType.STREAM):
+            # The engine echoes a heartbeat only after receiving one, and
+            # streams only to a request that asked for a stream. This SDK
+            # sends neither, so there is nothing to route.
+            logger.debug("ignoring frame primitive=%s msg_type=%s", self.name, msg_type.name)
 
         elif msg_type == MessageType.PUSH:
             notification = IpcPushNotification.model_validate(payload)

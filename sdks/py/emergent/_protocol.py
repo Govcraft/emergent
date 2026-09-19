@@ -26,14 +26,24 @@ class ProtocolVersion(IntEnum):
 
 
 class MessageType(IntEnum):
-    """IPC message type constants."""
+    """
+    IPC message type constants.
+
+    Mirrors the ``MSG_TYPE_*`` table in acton-reactive's
+    ``common/ipc/protocol.rs`` one for one. The engine answers a failed request
+    with an ``ERROR`` frame in place of a ``RESPONSE`` frame, and the body of
+    both is the same response object.
+    """
 
     REQUEST = 0x01
     RESPONSE = 0x02
-    DISCOVER = 0x03
+    ERROR = 0x03
+    HEARTBEAT = 0x04
     PUSH = 0x05
     SUBSCRIBE = 0x06
     UNSUBSCRIBE = 0x07
+    DISCOVER = 0x08
+    STREAM = 0x09
     SUBSCRIBE_PATTERNS = 0x0A
     UNSUBSCRIBE_PATTERNS = 0x0B
 
@@ -54,12 +64,63 @@ MAX_FRAME_SIZE = 16 * 1024 * 1024
 
 @dataclass(frozen=True)
 class DecodedFrame:
-    """Result of decoding a frame."""
+    """
+    Result of decoding a frame.
 
-    msg_type: MessageType
+    ``msg_type`` is ``None`` when the type byte is not in ``MessageType``. The
+    frame is still delimited by its length prefix, so a reader can skip it and
+    stay in step with the stream. ``raw_msg_type`` always holds the byte read.
+    """
+
+    msg_type: MessageType | None
     format: Format
     payload: Any
     bytes_consumed: int
+    raw_msg_type: int
+
+
+def parse_message_type(raw: int) -> MessageType | None:
+    """
+    Map a wire byte to its ``MessageType``.
+
+    Args:
+        raw: The message type byte from a frame header
+
+    Returns:
+        The matching ``MessageType``, or None for a byte this SDK does not know
+    """
+    try:
+        return MessageType(raw)
+    except ValueError:
+        return None
+
+
+def decode_payload(payload_bytes: bytes | bytearray, format_raw: int) -> Any:
+    """
+    Decode a frame body.
+
+    An empty body decodes to None. A heartbeat frame is a bare header, and
+    neither JSON nor MessagePack can parse zero bytes.
+
+    Args:
+        payload_bytes: The frame body
+        format_raw: The serialization format byte from the frame header
+
+    Returns:
+        The decoded payload, or None for an empty body
+
+    Raises:
+        ProtocolError: If the format byte is unknown
+    """
+    if format_raw not in (Format.JSON, Format.MSGPACK):
+        raise ProtocolError(f"Unknown format: {format_raw}")
+
+    if len(payload_bytes) == 0:
+        return None
+
+    if format_raw == Format.JSON:
+        return json.loads(payload_bytes.decode("utf-8"))
+    return msgpack.unpackb(payload_bytes, raw=False)
 
 
 def encode_frame(
@@ -146,20 +207,14 @@ def try_decode_frame(buffer: bytes | bytearray) -> DecodedFrame | None:
             f"Unsupported protocol version: {version} (expected {ProtocolVersion.V2})"
         )
 
-    payload_bytes = buffer[HEADER_SIZE:total_len]
-
-    if format_raw == Format.JSON:
-        payload = json.loads(payload_bytes.decode("utf-8"))
-    elif format_raw == Format.MSGPACK:
-        payload = msgpack.unpackb(payload_bytes, raw=False)
-    else:
-        raise ProtocolError(f"Unknown format: {format_raw}")
+    payload = decode_payload(buffer[HEADER_SIZE:total_len], format_raw)
 
     return DecodedFrame(
-        msg_type=MessageType(msg_type_raw),
+        msg_type=parse_message_type(msg_type_raw),
         format=Format(format_raw),
         payload=payload,
         bytes_consumed=total_len,
+        raw_msg_type=msg_type_raw,
     )
 
 
