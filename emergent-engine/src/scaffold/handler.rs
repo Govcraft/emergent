@@ -4,12 +4,11 @@
 //! and emits `TemplateRenderedMessage` for each file.
 
 use acton_reactive::prelude::*;
-use minijinja::{Environment, context};
 
 use crate::scaffold::cli::build_template_context;
 use crate::scaffold::messages::{Language, PrimitiveType, TemplateRendered};
 use crate::scaffold::source::ScaffoldRequestMessage;
-use crate::scaffold::templates::TemplateRegistry;
+use crate::scaffold::templates::{TemplateRegistry, render_template};
 
 /// Message containing a rendered template file.
 #[acton_message]
@@ -55,29 +54,6 @@ pub struct AllTemplatesRendered {
 #[derive(Default, Clone, Debug)]
 pub struct TemplateHandlerState;
 
-/// Render a single template file.
-fn render_template(
-    env: &Environment<'_>,
-    template_content: &str,
-    context: &crate::scaffold::messages::TemplateContext,
-) -> Result<String, String> {
-    let template = env
-        .template_from_str(template_content)
-        .map_err(|e| format!("Failed to parse template: {e}"))?;
-
-    template
-        .render(context!(
-            name => context.name,
-            name_snake => context.name_snake,
-            name_pascal => context.name_pascal,
-            primitive_type => context.primitive_type,
-            subscribes => context.subscribes,
-            publishes => context.publishes,
-            description => context.description,
-        ))
-        .map_err(|e| format!("Failed to render template: {e}"))
-}
-
 /// Build and configure the template handler actor.
 ///
 /// This actor:
@@ -118,8 +94,6 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                 return;
             }
 
-            // Create MiniJinja environment
-            let env = Environment::new();
             let mut rendered_files = Vec::new();
 
             // Render each template
@@ -133,7 +107,7 @@ pub fn build_template_handler_actor(runtime: &mut ActorRuntime) -> ActorHandle {
                         }
                     };
 
-                match render_template(&env, template_content, &context) {
+                match render_template(template_content, &context) {
                     Ok(content) => {
                         let rendered = TemplateRendered {
                             file_path: (*filename).to_string(),

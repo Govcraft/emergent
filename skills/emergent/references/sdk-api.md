@@ -38,13 +38,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### A handler that publishes: use the loop, not `run_handler`
+#### run_handler
 
-`run_handler` exists, but its current bound
-(`F: Fn(EmergentMessage, &EmergentHandler) -> Fut`) rejects a closure that
-borrows `handler` across an `.await`, so `handler.publish(..).await` inside it
-fails with "lifetime may not live long enough". A handler that publishes is
-nearly every handler, so write the loop directly. It is the same length.
+```rust
+use emergent_client::helpers::run_handler;
+use emergent_client::EmergentMessage;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run_handler(
+        Some("my_handler"),
+        &["timer.tick"],
+        |msg, handler| async move {
+            let output = EmergentMessage::new("timer.processed")
+                .with_causation_from_message(msg.id())
+                .with_payload(json!({"processed": true}));
+            handler.publish(output).await.map_err(|e| e.to_string())
+        }
+    ).await?;
+    Ok(())
+}
+```
+
+The closure takes the handler by value. It is a clone that shares the one IPC
+connection, so publishing from it is the same connection the helper subscribed
+on.
+
+On emergent-client 0.13.1 and earlier the bound was
+`F: Fn(EmergentMessage, &EmergentHandler) -> Fut`, which rejected any closure
+holding `handler` across an `.await`: the example above failed to compile with
+"lifetime may not live long enough" (Govcraft/emergent#41). A handler that
+publishes is nearly every handler, so on those versions write the loop below
+instead. After 0.13.1 either form works.
+
+#### A handler that publishes: the loop
+
+Prefer the loop when the handler keeps state between messages. It owns the
+state outright, so it needs no `Arc` or `Mutex`.
 
 ```rust
 use emergent_client::{EmergentHandler, EmergentMessage};

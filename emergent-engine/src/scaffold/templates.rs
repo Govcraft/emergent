@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use crate::scaffold::messages::{Language, PrimitiveType};
+use minijinja::{Environment, context};
+
+use crate::scaffold::messages::{Language, PrimitiveType, TemplateContext};
 
 /// Embedded Rust source template.
 const RUST_SOURCE_CARGO_TOML: &str = include_str!("../../templates/rust/source/Cargo.toml.j2");
@@ -262,6 +264,68 @@ impl TemplateRegistry {
         self.files_by_type.keys().any(|(lang, _)| *lang == language)
     }
 }
+/// Renders one template body against a scaffold context.
+///
+/// This is the single rendering step used by the scaffold actor pipeline and
+/// by the template tests, so a template that stops rendering fails both.
+///
+/// # Errors
+///
+/// Returns an error string if the template does not parse or does not render.
+pub fn render_template(template_content: &str, ctx: &TemplateContext) -> Result<String, String> {
+    let env = Environment::new();
+    let template = env
+        .template_from_str(template_content)
+        .map_err(|e| format!("Failed to parse template: {e}"))?;
+
+    template
+        .render(context!(
+            name => ctx.name,
+            name_snake => ctx.name_snake,
+            name_pascal => ctx.name_pascal,
+            primitive_type => ctx.primitive_type,
+            subscribes => ctx.subscribes,
+            publishes => ctx.publishes,
+            description => ctx.description,
+        ))
+        .map_err(|e| format!("Failed to render template: {e}"))
+}
+
+/// Renders every file of one language and primitive type.
+///
+/// Returns the generated files as `(relative path, contents)` pairs in the
+/// order the registry lists them.
+///
+/// # Errors
+///
+/// Returns an error string if a file has no template registered, or if a
+/// template does not parse or render.
+pub fn render_primitive_files(
+    language: Language,
+    primitive_type: PrimitiveType,
+    ctx: &TemplateContext,
+) -> Result<Vec<(&'static str, String)>, String> {
+    let registry = TemplateRegistry::new();
+    let filenames = registry.files_for(language, primitive_type);
+
+    if filenames.is_empty() {
+        return Err(format!(
+            "No templates found for {language} {primitive_type}"
+        ));
+    }
+
+    filenames
+        .into_iter()
+        .map(|filename| {
+            let body = registry
+                .get(language, primitive_type, filename)
+                .ok_or_else(|| format!("Template not found: {filename}"))?;
+            let rendered = render_template(body, ctx)?;
+            Ok((filename, rendered))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

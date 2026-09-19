@@ -332,6 +332,11 @@ run_handler(
 ).await?;
 ```
 
+The closure takes the handler by value: a clone sharing the one IPC
+connection the helper subscribed on. On 0.13.1 and earlier it was a borrow,
+`&EmergentHandler`, and a closure that published through it did not compile
+(Govcraft/emergent#41).
+
 ### Sink -- called once per message
 
 ```rust
