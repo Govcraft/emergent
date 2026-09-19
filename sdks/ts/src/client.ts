@@ -22,9 +22,12 @@ import {
 import { generateMessageId } from "./message.ts";
 import {
   ConnectionError,
+  DiscoveryError,
   DisposedError,
   ProtocolError,
+  PublishError,
   SocketNotFoundError,
+  SubscriptionError,
   TimeoutError,
 } from "./errors.ts";
 import {
@@ -566,7 +569,10 @@ export class BaseClient {
         error: response.error,
       });
       stream.close();
-      throw new ConnectionError(response.error ?? "Subscription failed");
+      throw new SubscriptionError(
+        response.error ?? "Subscription failed",
+        exact,
+      );
     }
 
     if (patterns.length > 0) {
@@ -591,8 +597,9 @@ export class BaseClient {
           error: patternResponse.error,
         });
         stream.close();
-        throw new ConnectionError(
+        throw new SubscriptionError(
           patternResponse.error ?? "Pattern subscription failed",
+          patterns,
         );
       }
     }
@@ -771,7 +778,10 @@ export class BaseClient {
         messageType: message.messageType,
         error: response.error,
       });
-      throw new ConnectionError(response.error ?? "Broker returned error");
+      throw new PublishError(
+        response.error ?? "Broker returned error",
+        message.messageType,
+      );
     }
 
     this.#logger.debug("publish_ack succeeded", {
@@ -805,7 +815,7 @@ export class BaseClient {
 
     if (!response.success) {
       this.#logger.error("discovery failed", { error: response.error });
-      throw new ConnectionError(response.error ?? "Discovery failed");
+      throw new DiscoveryError(response.error ?? "Discovery failed");
     }
 
     const info = discoveryInfoFromResponse(response);
@@ -845,8 +855,9 @@ export class BaseClient {
     );
 
     if (!subResponse.success) {
-      throw new ConnectionError(
+      throw new SubscriptionError(
         subResponse.error ?? "Failed to subscribe to response type",
+        ["system.response.subscriptions"],
       );
     }
 
@@ -914,8 +925,9 @@ export class BaseClient {
     );
 
     if (!subResponse.success) {
-      throw new ConnectionError(
+      throw new SubscriptionError(
         subResponse.error ?? "Failed to subscribe to response type",
+        ["system.response.topology"],
       );
     }
 
