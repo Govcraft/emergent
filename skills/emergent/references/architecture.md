@@ -206,6 +206,19 @@ Design for both:
 - In-flight work has the drain window after `system.shutdown` before SIGTERM arrives, then the grace window before the engine moves on or kills it. Anything longer is cut off, which is one more reason a primitive does one short act.
 - A clean stop is exit code 0, exit code 143, or death by SIGTERM. Anything else is recorded as `system.error.<name>` even during shutdown, and that includes a SIGKILL at the grace deadline.
 
+### When the Engine Dies Without Shutting Down
+
+Nothing above runs if the engine is SIGKILLed or aborts, and a release build aborts on panic. What happens to the primitives then depends on the version.
+
+**On 0.10.10 and earlier** they keep running. Each child leads its own process group and nothing ties its lifetime to the engine's, so a source goes on publishing into a socket with no reader until somebody kills it by hand (Govcraft/emergent#56).
+
+**After 0.10.10** two things stop them, and the second one is what covers platforms the first does not.
+
+1. On Linux the engine arms `PR_SET_PDEATHSIG` with SIGTERM in each child between fork and exec, so the kernel signals the primitive the moment the engine goes away, whatever killed it. The signal reaches the primitive only, not its process group, so a primitive that spawns its own children is still responsible for them. The child also re-reads its parent right after arming: if the engine died in that window the signal is never coming, so the child exits instead of being reparented into an orphan.
+2. Everywhere, the primitive sees its IPC connection reach EOF. Handlers and Sinks already ended their subscription stream on that, and Sources now do too: the Rust SDK's `run_source` watches the connection alongside SIGTERM and fires the same shutdown signal the user function already selects on. A Source that drives its own loop instead of using `run_source` gets nothing from this and must exit on a failed publish.
+
+Either way the primitive stops of its own accord, so nothing needs cleaning up before the engine is restarted.
+
 ## Message Flow
 
 ```

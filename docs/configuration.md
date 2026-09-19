@@ -100,6 +100,15 @@ is SIGKILLed at the grace deadline, together with anything it spawned, and the
 engine logs a warning naming it. Raise `shutdown_grace_ms` for primitives that
 legitimately need longer to flush.
 
+**If the engine dies instead of shutting down** (SIGKILL, or the abort a release
+build takes on panic), none of that timing applies. After engine 0.10.10 the
+primitives stop anyway: on Linux the engine arms a parent-death SIGTERM in each
+child before exec, and on every platform a primitive sees its IPC connection
+reach EOF, which ends a Handler's or Sink's subscription stream and, in the Rust
+SDK, trips the same shutdown signal `run_source` already gives a Source. On
+0.10.10 and earlier the primitives were orphaned and kept running until killed by
+hand (Govcraft/emergent#56).
+
 `wire_format` is accepted but selects nothing: IPC is always MessagePack. On engine 0.10.10 and earlier the key was silently inert and the startup line reported the value you set. After 0.10.10 the engine warns at startup that the key has no effect and the ready line no longer names a wire format. Leave it out. To read events in a human-readable form, read the JSON event log.
 
 **Socket path resolution:**
