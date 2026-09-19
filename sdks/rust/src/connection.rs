@@ -148,6 +148,17 @@ async fn connect_to_engine(
         })
 }
 
+/// Decide whether `EMERGENT_UNWRAP_STDOUT` switches stdout unwrapping on.
+///
+/// Surrounding whitespace and letter case are ignored, and only `true` and `1`
+/// enable it, the same rule as the Go, Python and TypeScript SDKs. Anything
+/// else, an unset variable included, leaves it off.
+fn parse_unwrap_flag(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+}
+
 /// Extract the primitive kind a `system.shutdown` broadcast targets.
 ///
 /// The engine forwards system events with the whole serialized
@@ -218,8 +229,7 @@ async fn push_to_message_stream(
 ) {
     debug!(primitive.name = %name, "push bridge started");
 
-    let auto_unwrap =
-        std::env::var("EMERGENT_UNWRAP_STDOUT").is_ok_and(|v| v == "true" || v == "1");
+    let auto_unwrap = parse_unwrap_flag(std::env::var("EMERGENT_UNWRAP_STDOUT").ok().as_deref());
 
     while let Some(notification) = push_rx.recv().await {
         // Check for shutdown signal
@@ -1590,6 +1600,35 @@ impl EmergentSink {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The same table runs in the Go, Python and TypeScript SDKs.
+    #[test]
+    fn unwrap_flag_is_trimmed_and_case_insensitive() {
+        let cases: [(Option<&str>, bool); 19] = [
+            (Some("true"), true),
+            (Some("1"), true),
+            (Some("TRUE"), true),
+            (Some("True"), true),
+            (Some(" true "), true),
+            (Some(" 1 "), true),
+            (Some("\ttrue\n"), true),
+            (None, false),
+            (Some(""), false),
+            (Some(" "), false),
+            (Some("false"), false),
+            (Some("0"), false),
+            (Some("no"), false),
+            (Some("off"), false),
+            (Some("yes"), false),
+            (Some("on"), false),
+            (Some("2"), false),
+            (Some("11"), false),
+            (Some("truee"), false),
+        ];
+        for (value, want) in cases {
+            assert_eq!(parse_unwrap_flag(value), want, "value: {value:?}");
+        }
+    }
 
     /// A `system.shutdown` notification payload exactly as the engine sends it:
     /// the whole serialized `EmergentMessage`, with the kind one level in.
