@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::primitives::PrimitiveInfo;
+use crate::primitives::{PrimitiveInfo, PrimitiveKind};
 
 /// The name the engine reports itself under in topology responses.
 pub const ENGINE_PRIMITIVE_NAME: &str = "emergent-engine";
@@ -66,19 +66,45 @@ pub fn engine_primitive(engine_pid: u32) -> TopologyPrimitive {
     }
 }
 
+/// Sort rank of a primitive kind within a topology response.
+///
+/// Data-flow order: ingress, then transformation, then egress. The engine row
+/// is emitted before all of them and does not go through this.
+const fn kind_rank(kind: PrimitiveKind) -> u8 {
+    match kind {
+        PrimitiveKind::Source => 0,
+        PrimitiveKind::Handler => 1,
+        PrimitiveKind::Sink => 2,
+    }
+}
+
 /// Map process-manager state into a topology response payload.
 ///
 /// This is a pure function: given the engine PID and the primitives the process
-/// manager knows about, it returns the payload both transports serialize. The
-/// engine itself is always the first entry.
+/// manager knows about, it returns the payload both transports serialize.
+///
+/// The order is stable and does not depend on how the caller collected the
+/// primitives. The process manager keeps its actors in a `HashMap`, whose
+/// iteration order changes between reads, so the sort lives here rather than at
+/// the call site: engine first, then primitives by kind in data-flow order
+/// (source, handler, sink) and by name within a kind. Names are unique, so the
+/// result is a total order and two reads of an unchanged topology compare
+/// equal.
 #[must_use]
 pub fn build_topology_payload(
     engine_pid: u32,
     primitives: Vec<PrimitiveInfo>,
 ) -> TopologyResponsePayload {
-    let mut out = Vec::with_capacity(primitives.len() + 1);
+    let mut sorted = primitives;
+    sorted.sort_by(|a, b| {
+        kind_rank(a.kind)
+            .cmp(&kind_rank(b.kind))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let mut out = Vec::with_capacity(sorted.len() + 1);
     out.push(engine_primitive(engine_pid));
-    out.extend(primitives.into_iter().map(|p| TopologyPrimitive {
+    out.extend(sorted.into_iter().map(|p| TopologyPrimitive {
         name: p.name,
         kind: p.kind.to_string().to_lowercase(),
         state: p.state.to_string().to_lowercase(),
@@ -93,7 +119,7 @@ pub fn build_topology_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::{PrimitiveKind, PrimitiveState};
+    use crate::primitives::PrimitiveState;
 
     fn info(
         name: &str,
@@ -176,17 +202,18 @@ mod tests {
             ],
         );
 
+        // Sorted into data-flow order, so the source lands before the handler.
         let kinds: Vec<&str> = payload.primitives[1..]
             .iter()
             .map(|p| p.kind.as_str())
             .collect();
-        assert_eq!(kinds, vec!["handler", "sink", "source"]);
+        assert_eq!(kinds, vec!["source", "handler", "sink"]);
 
         let states: Vec<&str> = payload.primitives[1..]
             .iter()
             .map(|p| p.state.as_str())
             .collect();
-        assert_eq!(states, vec!["running", "stopped", "external"]);
+        assert_eq!(states, vec!["external", "running", "stopped"]);
     }
 
     #[test]
@@ -210,13 +237,16 @@ mod tests {
 
         let payload = build_topology_payload(1, vec![failed, running]);
 
+        // "alive" is a source, "boom" a sink, so the sort puts alive first.
+        assert_eq!(payload.primitives[1].name, "alive");
+        assert_eq!(payload.primitives[1].pid, Some(9001));
+        assert!(payload.primitives[1].error.is_none());
+        assert_eq!(payload.primitives[2].name, "boom");
         assert_eq!(
-            payload.primitives[1].error.as_deref(),
+            payload.primitives[2].error.as_deref(),
             Some("exited with code 1")
         );
-        assert_eq!(payload.primitives[1].pid, None);
-        assert_eq!(payload.primitives[2].pid, Some(9001));
-        assert!(payload.primitives[2].error.is_none());
+        assert_eq!(payload.primitives[2].pid, None);
     }
 
     #[test]
@@ -236,6 +266,120 @@ mod tests {
         assert_eq!(
             payload.primitives[1].subscribes,
             vec!["timer.tick", "timer.other"]
+        );
+    }
+
+    /// Govcraft/emergent#67: the process manager hands these over from a
+    /// `HashMap`, so the payload must not depend on the order it iterated in.
+    #[test]
+    fn primitives_are_ordered_by_kind_then_name() {
+        struct Case {
+            name: &'static str,
+            input: Vec<(&'static str, PrimitiveKind)>,
+            expect: Vec<&'static str>,
+        }
+
+        let cases = vec![
+            Case {
+                name: "empty topology is just the engine",
+                input: vec![],
+                expect: vec![ENGINE_PRIMITIVE_NAME],
+            },
+            Case {
+                name: "kinds sort into data-flow order regardless of input order",
+                input: vec![
+                    ("console", PrimitiveKind::Sink),
+                    ("timer", PrimitiveKind::Source),
+                    ("filter", PrimitiveKind::Handler),
+                ],
+                expect: vec![ENGINE_PRIMITIVE_NAME, "timer", "filter", "console"],
+            },
+            Case {
+                name: "names sort within a kind",
+                input: vec![
+                    ("zulu", PrimitiveKind::Sink),
+                    ("alpha", PrimitiveKind::Sink),
+                    ("mike", PrimitiveKind::Sink),
+                ],
+                expect: vec![ENGINE_PRIMITIVE_NAME, "alpha", "mike", "zulu"],
+            },
+            Case {
+                name: "name order is byte order, so digits precede letters",
+                input: vec![
+                    ("sink-b", PrimitiveKind::Sink),
+                    ("sink-10", PrimitiveKind::Sink),
+                    ("sink-2", PrimitiveKind::Sink),
+                    ("Sink-A", PrimitiveKind::Sink),
+                ],
+                expect: vec![
+                    ENGINE_PRIMITIVE_NAME,
+                    "Sink-A",
+                    "sink-10",
+                    "sink-2",
+                    "sink-b",
+                ],
+            },
+            Case {
+                name: "kind wins over name",
+                input: vec![
+                    ("aaa-sink", PrimitiveKind::Sink),
+                    ("zzz-source", PrimitiveKind::Source),
+                    ("mmm-handler", PrimitiveKind::Handler),
+                ],
+                expect: vec![
+                    ENGINE_PRIMITIVE_NAME,
+                    "zzz-source",
+                    "mmm-handler",
+                    "aaa-sink",
+                ],
+            },
+        ];
+
+        for case in cases {
+            let primitives: Vec<PrimitiveInfo> = case
+                .input
+                .iter()
+                .map(|(n, k)| info(n, *k, PrimitiveState::Running, &[], &[]))
+                .collect();
+            let payload = build_topology_payload(1, primitives);
+            let names: Vec<&str> = payload.primitives.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, case.expect, "case: {}", case.name);
+        }
+    }
+
+    /// Two reads of the same topology, collected in different orders, must
+    /// serialize identically. This is what a diffing consumer relies on.
+    #[test]
+    fn the_same_topology_collected_in_any_order_yields_one_payload() {
+        let forward = vec![
+            info(
+                "a-sink",
+                PrimitiveKind::Sink,
+                PrimitiveState::Running,
+                &[],
+                &["x"],
+            ),
+            info(
+                "b-source",
+                PrimitiveKind::Source,
+                PrimitiveState::Running,
+                &["x"],
+                &[],
+            ),
+            info(
+                "c-handler",
+                PrimitiveKind::Handler,
+                PrimitiveState::Running,
+                &["y"],
+                &["x"],
+            ),
+        ];
+        let mut reversed = forward.clone();
+        reversed.reverse();
+
+        assert_eq!(
+            build_topology_payload(1, forward),
+            build_topology_payload(1, reversed)
         );
     }
 
