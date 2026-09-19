@@ -30,6 +30,10 @@ pub enum ClientError {
     #[error("Subscription failed: {0}")]
     SubscriptionFailed(String),
 
+    /// A requested subscription topic could never deliver a message.
+    #[error("Invalid subscription topic: {0}")]
+    InvalidSubscriptionTopic(#[from] crate::subscribe::InvalidTopic),
+
     /// Publish failed.
     #[error("Publish failed: {0}")]
     PublishFailed(String),

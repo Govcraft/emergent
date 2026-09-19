@@ -10,6 +10,7 @@ import {
   type EmergentMessageData,
   type IpcDiscoverResponse,
   type IpcEnvelope,
+  type IpcPatternSubscribeRequest,
   type IpcPushNotification,
   type IpcResponse,
   type IpcSubscribeRequest,
@@ -35,10 +36,13 @@ import {
   MSG_TYPE_REQUEST,
   MSG_TYPE_RESPONSE,
   MSG_TYPE_SUBSCRIBE,
+  MSG_TYPE_SUBSCRIBE_PATTERNS,
   MSG_TYPE_UNSUBSCRIBE,
+  MSG_TYPE_UNSUBSCRIBE_PATTERNS,
   tryDecodeFrame,
 } from "./protocol.ts";
 import { MessageStream } from "./stream.ts";
+import { isEmergentMessageType, partitionTopics } from "./topics.ts";
 import { createLogger, type Logger } from "./logger.ts";
 
 // ============================================================================
@@ -254,7 +258,14 @@ export class BaseClient {
   ): Promise<MessageStream> {
     this.#ensureConnected();
 
-    this.#logger.info("subscribing to message types", { types: messageTypes });
+    // Split before anything is sent, so a topic that could never match, such
+    // as "system.*.error", throws here instead of subscribing to silence.
+    const { exact, patterns } = partitionTopics(messageTypes);
+
+    this.#logger.info("subscribing to message types", {
+      types: exact,
+      patterns,
+    });
 
     const correlationId = generateCorrelationId("sub");
 
@@ -269,9 +280,9 @@ export class BaseClient {
     this.#messageStream = stream;
 
     // Add system.shutdown to subscriptions (SDK handles it internally)
-    const allTypes = messageTypes.includes("system.shutdown")
-      ? messageTypes
-      : [...messageTypes, "system.shutdown"];
+    const allTypes = exact.includes("system.shutdown")
+      ? exact
+      : [...exact, "system.shutdown"];
 
     const response = await this.#sendRequest<IpcSubscribeRequest>(
       MSG_TYPE_SUBSCRIBE,
@@ -289,6 +300,34 @@ export class BaseClient {
       });
       stream.close();
       throw new ConnectionError(response.error ?? "Subscription failed");
+    }
+
+    if (patterns.length > 0) {
+      // Patterns travel on their own request because the engine keeps a
+      // separate index for them. A connection matching a message through both
+      // indexes still receives one copy.
+      const patternCorrelationId = generateCorrelationId("psub");
+      const patternResponse = await this.#sendRequest<
+        IpcPatternSubscribeRequest
+      >(
+        MSG_TYPE_SUBSCRIBE_PATTERNS,
+        {
+          correlation_id: patternCorrelationId,
+          patterns,
+        },
+        patternCorrelationId,
+      );
+
+      if (!patternResponse.success) {
+        this.#logger.error("pattern subscription failed", {
+          patterns,
+          error: patternResponse.error,
+        });
+        stream.close();
+        throw new ConnectionError(
+          patternResponse.error ?? "Pattern subscription failed",
+        );
+      }
     }
 
     // Track subscribed types (exclude internal system.shutdown)
@@ -316,13 +355,15 @@ export class BaseClient {
       types: messageTypes,
     });
 
+    const { exact, patterns } = partitionTopics(messageTypes);
+
     const correlationId = generateCorrelationId("unsub");
 
     const response = await this.#sendRequest<IpcSubscribeRequest>(
       MSG_TYPE_UNSUBSCRIBE,
       {
         correlation_id: correlationId,
-        message_types: messageTypes,
+        message_types: exact,
       },
       correlationId,
     );
@@ -330,9 +371,30 @@ export class BaseClient {
     if (!response.success) {
       // Log but don't fail - unsubscribe is best-effort
       this.#logger.warn("unsubscribe failed", {
-        types: messageTypes,
+        types: exact,
         error: response.error,
       });
+    }
+
+    if (patterns.length > 0) {
+      const patternCorrelationId = generateCorrelationId("punsub");
+      const patternResponse = await this.#sendRequest<
+        IpcPatternSubscribeRequest
+      >(
+        MSG_TYPE_UNSUBSCRIBE_PATTERNS,
+        {
+          correlation_id: patternCorrelationId,
+          patterns,
+        },
+        patternCorrelationId,
+      );
+
+      if (!patternResponse.success) {
+        this.#logger.warn("pattern unsubscribe failed", {
+          patterns,
+          error: patternResponse.error,
+        });
+      }
     }
 
     // Remove from tracked types
@@ -910,6 +972,16 @@ export class BaseClient {
             }
           }
           break; // Don't forward to message stream
+        }
+
+        // Skip the transport's own envelope broadcasts, which only a "*"
+        // subscription ever sees. The message inside each one arrives
+        // separately under its own Emergent message type.
+        if (!isEmergentMessageType(notification.message_type)) {
+          this.#logger.debug("skipping non-Emergent IPC broadcast", {
+            messageType: notification.message_type,
+          });
+          break;
         }
 
         if (this.#messageStream) {

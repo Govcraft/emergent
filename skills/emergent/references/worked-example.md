@@ -451,7 +451,7 @@ args = ["-s", "issue.escalated", "--", "bash", "-c",
      | curl -sf -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK" ''']
 subscribes = ["issue.escalated"]
 
-# Subscriptions are exact-match, so name each type. There is no `exec.*`.
+# Named types, not `exec.*`: this config predates wildcard routing (0.10.10).
 [[sinks]]
 name = "errors"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"

@@ -8,8 +8,10 @@
 use crate::error::ClientError;
 use crate::message::EmergentMessage;
 use crate::stream::MessageStream;
-use crate::subscribe::{IntoSubscription, needs_configured_topics, resolve_topics};
-use crate::types::{CorrelationId, PrimitiveName};
+use crate::subscribe::{
+    IntoSubscription, needs_configured_topics, partition_topics, resolve_topics,
+};
+use crate::types::{CorrelationId, MessageType, PrimitiveName};
 use crate::{DiscoveryInfo, PrimitiveInfo, Result};
 
 use tracing::{debug, error, info, warn};
@@ -186,6 +188,17 @@ fn build_publish_request_envelope(message: EmergentMessage) -> Result<IpcEnvelop
     ))
 }
 
+/// Whether a push notification names an Emergent message type.
+///
+/// A `*` subscription matches every IPC broadcast the engine makes, which
+/// includes acton's own envelope names such as `SystemEvent`. Those are the
+/// containers Emergent messages travel in, not messages in their own right,
+/// and the engine forwards what they carry separately under its own type. They
+/// are not valid Emergent message types, which is how they are told apart.
+fn carries_emergent_message(message_type: &str) -> bool {
+    MessageType::new(message_type).is_ok()
+}
+
 /// Bridge push notifications from an `IpcClient` to a `MessageStream`.
 ///
 /// Handles `system.shutdown` detection and `EmergentMessage` extraction.
@@ -226,6 +239,18 @@ async fn push_to_message_stream(
                 "ignoring shutdown for different primitive kind"
             );
             continue; // Don't forward system.shutdown to user
+        }
+
+        // Skip acton's own envelope broadcasts, which only a "*" subscription
+        // ever sees. The message inside each one arrives separately under its
+        // own Emergent message type.
+        if !carries_emergent_message(&notification.message_type) {
+            debug!(
+                primitive.name = %name,
+                message_type = %notification.message_type,
+                "skipping non-Emergent IPC broadcast"
+            );
+            continue;
         }
 
         // Try to extract EmergentMessage from payload
@@ -269,14 +294,22 @@ async fn push_to_message_stream(
 /// Subscribe on an `IpcClient` and return a `MessageStream`.
 ///
 /// Shared implementation used by both Handler and Sink.
+///
+/// Topics are split into literal message types and terminal-wildcard selectors
+/// such as `tick.*` or `*`. The two travel as separate IPC requests because the
+/// engine keeps two indexes, and a connection matching through both still
+/// receives one copy of each message. A topic that could never match, such as
+/// `system.*.error`, fails here before either request is sent.
 async fn subscribe_and_stream(
     client: &IpcClient,
     topics: Vec<String>,
     name: &str,
     shutdown_kind: &str,
 ) -> Result<(MessageStream, Vec<String>)> {
+    let partition = partition_topics(topics)?;
+
     // Add system.shutdown to subscriptions (SDK handles it internally)
-    let mut all_types = topics;
+    let mut all_types = partition.exact;
     if !all_types.iter().any(|t| t == "system.shutdown") {
         all_types.push("system.shutdown".to_string());
     }
@@ -293,6 +326,25 @@ async fn subscribe_and_stream(
                 .error
                 .unwrap_or_else(|| "unknown error".to_string()),
         ));
+    }
+
+    let mut pattern_subs = Vec::new();
+    if !partition.patterns.is_empty() {
+        let pattern_response = client
+            .subscribe_patterns(partition.patterns)
+            .await
+            .map_err(|e| {
+                ClientError::SubscriptionFailed(format!("pattern subscribe failed: {e}"))
+            })?;
+
+        if !pattern_response.success {
+            return Err(ClientError::SubscriptionFailed(
+                pattern_response
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string()),
+            ));
+        }
+        pattern_subs = pattern_response.subscribed_patterns;
     }
 
     // Take the push receiver and bridge to MessageStream
@@ -315,6 +367,7 @@ async fn subscribe_and_stream(
         .subscribed_types
         .into_iter()
         .filter(|s| s != "system.shutdown")
+        .chain(pattern_subs)
         .collect();
 
     Ok((MessageStream::new(rx), user_subs))
@@ -1579,5 +1632,19 @@ mod tests {
 
         drop(push_tx);
         assert!(bridge.await.is_ok());
+    }
+
+    #[test]
+    fn emergent_message_types_are_carried_through() {
+        assert!(carries_emergent_message("tick.out"));
+        assert!(carries_emergent_message("system.started.ticker"));
+        assert!(carries_emergent_message("system.shutdown.requested"));
+    }
+
+    #[test]
+    fn acton_envelope_names_are_not_emergent_messages() {
+        assert!(!carries_emergent_message("SystemEvent"));
+        assert!(!carries_emergent_message("EmergentMessage"));
+        assert!(!carries_emergent_message(""));
     }
 }

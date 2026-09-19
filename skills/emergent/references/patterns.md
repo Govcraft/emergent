@@ -955,8 +955,10 @@ they are subscribable like any other type.
 | `system.shutdown` | Engine shutting down (SDKs handle internally) |
 | `system.shutdown.requested` | Shutdown signal received, before drain |
 
-**Subscriptions are exact-match. There is no wildcard routing.**
-`system.error.*` is accepted and never delivers, so name each type:
+**After engine 0.10.10 a terminal wildcard routes.** `system.error.*` reaches
+every primitive's failure event, including primitives added later. On 0.10.10
+and earlier it was accepted and delivered nothing, so name each type when the
+topology has to run on an older engine:
 
 ```toml
 [[handlers]]

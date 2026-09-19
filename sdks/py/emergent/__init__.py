@@ -68,6 +68,14 @@ from emergent.source import EmergentSource
 
 # Stream
 from emergent.stream import MessageStream
+
+# Subscription topic rules
+from emergent.topics import (
+    MAX_PATTERN_LEN,
+    classify_topic,
+    pattern_prefix,
+    topic_matches,
+)
 from emergent.types import (
     DiscoveryInfo,
     EmergentMessage,
@@ -79,6 +87,7 @@ from emergent.types import (
 )
 
 __all__ = [
+    "MAX_PATTERN_LEN",
     "ConnectionError",
     "DiscoveryError",
     "DiscoveryInfo",
@@ -112,14 +121,18 @@ __all__ = [
     "ValidationError",
     # Version
     "__version__",
+    # Subscription topics
+    "classify_topic",
     # Message building
     "create_message",
     "generate_message_id",
     # Utilities
     "get_socket_path",
+    "pattern_prefix",
     # Helpers
     "run_handler",
     "run_sink",
     "run_source",
     "socket_exists",
+    "topic_matches",
 ]

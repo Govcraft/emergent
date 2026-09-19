@@ -286,12 +286,34 @@ export interface IpcSubscribeRequest {
 }
 
 /**
+ * IPC pattern subscribe request.
+ *
+ * Patterns are a prefix followed by one `*`, or `*` alone.
+ * @internal
+ */
+export interface IpcPatternSubscribeRequest {
+  correlation_id: string;
+  patterns: string[];
+}
+
+/**
  * IPC subscription response.
  * @internal
  */
 export interface IpcSubscriptionResponse {
   success: boolean;
   subscribed_types: string[];
+  error?: string;
+}
+
+/**
+ * IPC pattern subscription response.
+ * @internal
+ */
+export interface IpcPatternSubscriptionResponse {
+  correlation_id: string;
+  success: boolean;
+  subscribed_patterns: string[];
   error?: string;
 }
 

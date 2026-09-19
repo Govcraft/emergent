@@ -221,20 +221,20 @@ export class TopologyGraph {
   }
 
   /**
-   * Check if a message type matches a subscription pattern.
-   * Supports wildcards:
+   * Check if a message type matches a subscription pattern, using the same
+   * rule the engine routes by: an exact name, or a prefix ending in a single
+   * trailing "*".
    *   - "*" matches everything
    *   - "system.started.*" matches "system.started.timer"
+   *   - "system.*.error" is not a pattern and matches nothing
    */
   private matchesPattern(messageType: string, pattern: string): boolean {
-    if (pattern === "*") return true; // Catch-all wildcard
-    if (pattern === messageType) return true;
-    if (!pattern.includes("*")) return false;
-
-    const regex = new RegExp(
-      "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, "[^.]+") + "$"
-    );
-    return regex.test(messageType);
+    if (!pattern.endsWith("*")) {
+      return !pattern.includes("*") && pattern === messageType;
+    }
+    const prefix = pattern.slice(0, -1);
+    if (prefix.includes("*")) return false;
+    return messageType.startsWith(prefix);
   }
 
   /**

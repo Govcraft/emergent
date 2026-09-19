@@ -84,16 +84,28 @@ variables above are applied last, so they win over a same-named `env` key.
 4. Sources: Publish messages. Sources have no subscribe API.
 5. Handlers/Sinks: Subscribe to message types, receive push notifications
 
-**Subscriptions are exact-match.** The broker looks a message type up by its
-literal string. There is no wildcard routing: `system.started.*` or `tick.*`
-is accepted without error and then never receives anything. List every type
-explicitly.
+**A subscription is a literal message type or a terminal-wildcard prefix.**
+The broker keeps two indexes. A literal topic is looked up character for
+character. A topic ending in a single `*` matches every message type that
+starts with the text before the star, so `system.started.*` reaches
+`system.started.ticker` and `tick.*` reaches `tick.out` and `tick.exit`. `*`
+alone reaches every message the engine publishes. A connection subscribed to
+both `tick.out` and `tick.*` receives one copy of `tick.out`, not two.
+
+The star is terminal. `system.*.error` matches nothing and the engine refuses
+to load a topology that configures one, rather than starting a primitive that
+would sit idle.
+
+On engine 0.10.10 and earlier there was no wildcard routing at all: a topic
+holding a `*` was accepted without error and then never received anything.
+Topologies written for those releases listed every type explicitly, which is
+still correct.
 
 ## System Events
 
 The engine broadcasts lifecycle events into the same pub-sub fabric as application messages. Handlers and Sinks can subscribe to them like any other event; Sources cannot subscribe to anything. Every system event has `source` set to `emergent-engine`.
 
-The type is concrete, one per primitive, and subscriptions are exact-match, so name each one: `subscribes = ["system.error.fetch-issues", "system.error.score-severity"]`. A sink that wants every lifecycle event lists every primitive.
+The type is concrete, one per primitive, so naming each one is always correct: `subscribes = ["system.error.fetch-issues", "system.error.score-severity"]`. After 0.10.10 a sink that wants every lifecycle event can subscribe to `system.error.*` instead of listing every primitive. On 0.10.10 and earlier that subscription received nothing, so those topologies list each primitive.
 
 ### Primitive Lifecycle Events
 
@@ -142,7 +154,7 @@ Axum-based server on configurable port (default: 8891, `api_port = 0` to disable
 
 - `GET /api/topology` returns `{"primitives": [{name, kind, state, publishes, subscribes, pid, error}]}`
 
-The first entry is a synthetic `emergent-engine` of kind `"source"` whose `publishes` shows `system.started.*` style strings. Those are display labels, not subscribable types. Disabled primitives are absent.
+The first entry is a synthetic `emergent-engine` of kind `"source"` whose `publishes` shows `system.started.*` style strings. Those are display labels for a family of concrete types rather than types the engine ever publishes under that name, though after 0.10.10 the same string does work as a subscription selector. Disabled primitives are absent.
 
 Use it for the graph (`name`, `kind`, `publishes`, `subscribes`) on any engine. Whether it is also good for health depends on the version. On engine 0.10.10 and earlier it is not: every managed primitive reports `state: "configured"` and `pid: null` even while it is running, because the engine serves its registration-time copy (Govcraft/emergent#40). There, read liveness from `system.started.<name>`, `system.stopped.<name>` and `system.error.<name>` in the event store. After 0.10.10 `state`, `pid` and `error` are live: a running primitive reports `running` with its pid, one that exited cleanly reports `stopped` with `pid: null`, and one that crashed reports `failed` with the exit status in `error`. `starting` and `stopping` show up around those transitions.
 

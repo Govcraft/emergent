@@ -29,6 +29,10 @@ export const MSG_TYPE_SUBSCRIBE = 0x06;
 export const MSG_TYPE_UNSUBSCRIBE = 0x07;
 export const MSG_TYPE_DISCOVER = 0x08;
 export const MSG_TYPE_STREAM = 0x09;
+/** Subscribe to IPC prefix patterns (requires an engine newer than 0.10.10). */
+export const MSG_TYPE_SUBSCRIBE_PATTERNS = 0x0a;
+/** Unsubscribe from IPC prefix patterns (requires an engine newer than 0.10.10). */
+export const MSG_TYPE_UNSUBSCRIBE_PATTERNS = 0x0b;
 
 // Serialization formats
 export const FORMAT_JSON = 0x01;

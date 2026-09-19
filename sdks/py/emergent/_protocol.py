@@ -34,6 +34,8 @@ class MessageType(IntEnum):
     PUSH = 0x05
     SUBSCRIBE = 0x06
     UNSUBSCRIBE = 0x07
+    SUBSCRIBE_PATTERNS = 0x0A
+    UNSUBSCRIBE_PATTERNS = 0x0B
 
 
 class Format(IntEnum):

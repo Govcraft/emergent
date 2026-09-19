@@ -544,10 +544,11 @@ subscribes = ["system.response.topology"]
 returns the graph as JSON.
 
 **Known limitation, verified against 0.12.0 (Govcraft/emergent-primitives#5).** The viewer ignores the config's
-`subscribes` and asks for three `system.*.*` wildcards itself. Subscriptions are
-exact-match (see `configuration.md`), so those never deliver, and the graph
-shows the engine node and nothing else. Until that is fixed, read the graph from
-the engine instead:
+`subscribes` and asks for three `system.*.*` wildcards itself. A wildcard has to
+be terminal (see `configuration.md`), so `system.*.*` never matches on any
+engine release: before 0.10.10 no wildcard delivered at all, and after it a
+mid-string star is refused. Either way the graph shows the engine node and
+nothing else. Until that is fixed, read the graph from the engine instead:
 
 ```bash
 curl -s 127.0.0.1:<api_port>/api/topology | jq '.primitives[] | {name, kind, publishes, subscribes}'

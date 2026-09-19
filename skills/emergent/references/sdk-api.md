@@ -260,16 +260,23 @@ let msg = msg.unwrap_stdout();
 
 ### IntoSubscription Trait
 
-Every form names exact message types. There is no wildcard matching: a
-subscription to `"timer.*"` is accepted and never delivers anything.
+Every form takes either an exact message type or a terminal-wildcard prefix.
+After engine 0.10.10, `"timer.*"` delivers every `timer.` type and `"*"`
+delivers everything; on 0.10.10 and earlier both were accepted and delivered
+nothing. The star has to be last: `"tim*.tick"` is rejected with
+`Error::InvalidSubscriptionTopic` rather than accepted and starved.
 
 ```rust
 // `handler` must be a `let mut` binding for all of these
 handler.subscribe("timer.tick").await?;                        // Single string
+handler.subscribe("timer.*").await?;                           // Terminal wildcard
 handler.subscribe(["timer.tick", "timer.filtered"]).await?;    // Array
 handler.subscribe(&["timer.tick"]).await?;                     // Slice
 handler.subscribe(vec!["timer.tick".to_string()]).await?;      // Vec<String>
 ```
+
+Overlapping topics deliver one copy: subscribing to both `"timer.tick"` and
+`"timer.*"` yields a single `timer.tick` message, not two.
 
 ### MessageStream
 

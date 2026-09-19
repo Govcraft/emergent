@@ -322,11 +322,30 @@ class IpcSubscribeRequest(BaseModel):
     message_types: list[str]
 
 
+class IpcPatternSubscribeRequest(BaseModel):
+    """Pattern subscribe request payload.
+
+    Patterns are a prefix followed by one ``*``, or ``*`` alone.
+    """
+
+    correlation_id: str
+    patterns: list[str]
+
+
 class IpcSubscriptionResponse(BaseModel):
     """Subscription response."""
 
     success: bool
     subscribed_types: list[str]
+    error: str | None = None
+
+
+class IpcPatternSubscriptionResponse(BaseModel):
+    """Pattern subscription response."""
+
+    correlation_id: str
+    success: bool
+    subscribed_patterns: list[str] = []
     error: str | None = None
 
 

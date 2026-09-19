@@ -681,7 +681,9 @@ async fn main() -> Result<()> {
     broker_actor.handle().subscribe::<IpcSystemEvent>().await;
 
     let broker_handle = broker_actor.start().await;
-    runtime.ipc_expose("message_broker", broker_handle.clone());
+    runtime
+        .ipc_expose("message_broker", broker_handle.clone())
+        .map_err(|e| anyhow::anyhow!("Failed to expose the message broker over IPC: {e}"))?;
 
     // Wait a moment for the listener to be ready
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

@@ -202,19 +202,32 @@ Engine 0.10.10 and earlier never restart a primitive and do not know these keys.
 
 Each respawn emits `system.restarted.<name>`. Do not put `restart = "always"` on a one-shot source: exiting is how it finishes, and the policy would turn it into a loop. Reach for `on-failure` on long-running primitives that hold no state worth keeping, and leave the default everywhere else.
 
-## Subscriptions are exact-match
+## Subscriptions are literal names or terminal-wildcard prefixes
 
-A subscription matches one message type, character for character. **There is no
-wildcard routing.** `system.error.*` and `timer.*` load without complaint and
-then receive nothing, which makes this the quietest way to build a sink that
-never fires.
-
-List every type explicitly. System events are typed per primitive, so watching
-two primitives for failure is two entries:
+A subscription either matches one message type character for character, or ends
+in a single `*` and matches every type that starts with the text before it.
+`system.error.*` reaches `system.error.poll-issues`, `timer.*` reaches
+`timer.tick`, and `*` reaches everything the engine publishes, including types
+that first appear later in the run.
 
 ```toml
+# Both of these watch the same two failures.
 subscribes = ["system.error.poll-issues", "system.error.score-severity"]
+subscribes = ["system.error.*"]
 ```
+
+Overlapping entries are free: a sink listing both `timer.tick` and `timer.*`
+receives one copy of each `timer.tick`.
+
+The star is terminal. `system.*.error` and `*.tick` could never match, so the
+engine refuses to load the config and names the primitive and the topic. Write
+the prefix the star follows instead.
+
+**On engine 0.10.10 and earlier there was no wildcard routing.**
+`system.error.*` and `timer.*` loaded without complaint and then received
+nothing, which made it the quietest way to build a sink that never fires. A
+topology that lists every type explicitly is still correct on every release,
+and is the portable choice if the same file has to run against an older engine.
 
 ## Path Resolution
 

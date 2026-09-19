@@ -133,11 +133,14 @@ let stream = sink.subscribe(&topics).await?;
 let stream = sink.subscribe(["event.type", "other.event"]).await?;
 ```
 
-Wildcards work in configuration:
+Wildcards work in configuration and in a `subscribe()` call:
 
 ```toml
 subscribes = ["system.started.*"]  # matches system.started.timer, etc.
 ```
+
+The `*` has to be the last character, and it routes on engines after 0.10.10.
+On 0.10.10 and earlier a wildcard subscription was accepted and never delivered.
 
 ## Patterns
 
