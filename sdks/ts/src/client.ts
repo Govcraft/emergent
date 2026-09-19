@@ -29,12 +29,16 @@ import {
 } from "./errors.ts";
 import {
   encodeFrame,
+  frameTypeName,
   generateCorrelationId,
   HEADER_SIZE,
   MSG_TYPE_DISCOVER,
+  MSG_TYPE_ERROR,
+  MSG_TYPE_HEARTBEAT,
   MSG_TYPE_PUSH,
   MSG_TYPE_REQUEST,
   MSG_TYPE_RESPONSE,
+  MSG_TYPE_STREAM,
   MSG_TYPE_SUBSCRIBE,
   MSG_TYPE_SUBSCRIBE_PATTERNS,
   MSG_TYPE_UNSUBSCRIBE,
@@ -86,6 +90,115 @@ export function extractShutdownKind(
 
   const inner = (notificationPayload as { payload?: unknown }).payload;
   return kindOf(inner) ?? kindOf(notificationPayload);
+}
+
+/** Error text for an ERROR frame that arrives without any of its own. */
+export const DEFAULT_ERROR_TEXT = "Engine returned an error";
+
+/**
+ * Read the response a `RESPONSE` or `ERROR` frame carries.
+ *
+ * The engine answers a failed request with an `ERROR` frame whose body is the
+ * same response object a `RESPONSE` frame carries: `correlation_id`,
+ * `success`, `error` and `error_code`. An `ERROR` frame always reads as a
+ * failure here, whatever its `success` field says, and always has error text.
+ * Fields beside the shared ones are kept, because a discovery reply carries
+ * its lists at the top level. Returns `undefined` for any other frame type,
+ * for a body with no string `correlation_id`, since nothing can be matched to
+ * it, and for a `RESPONSE` body with no boolean `success`.
+ */
+export function responseFromFrame(
+  msgType: number,
+  payload: unknown,
+): IpcResponse | undefined {
+  if (msgType !== MSG_TYPE_RESPONSE && msgType !== MSG_TYPE_ERROR) {
+    return undefined;
+  }
+  if (
+    typeof payload !== "object" || payload === null || Array.isArray(payload)
+  ) {
+    return undefined;
+  }
+
+  const body = payload as Record<string, unknown>;
+  if (typeof body.correlation_id !== "string") return undefined;
+
+  if (msgType === MSG_TYPE_ERROR) {
+    const error = typeof body.error === "string" && body.error !== ""
+      ? body.error
+      : DEFAULT_ERROR_TEXT;
+    return { ...body, success: false, error } as IpcResponse;
+  }
+
+  if (typeof body.success !== "boolean") return undefined;
+  return body as unknown as IpcResponse;
+}
+
+/**
+ * Describe an `ERROR` frame body for a log line.
+ *
+ * Gives the error text, followed by the error code in parentheses when the
+ * engine sent one. Falls back to `DEFAULT_ERROR_TEXT` for a body that holds no
+ * error text.
+ */
+export function errorFrameText(payload: unknown): string {
+  if (
+    typeof payload !== "object" || payload === null || Array.isArray(payload)
+  ) {
+    return DEFAULT_ERROR_TEXT;
+  }
+  const { error, error_code: code } = payload as Record<string, unknown>;
+  const text = typeof error === "string" && error !== ""
+    ? error
+    : DEFAULT_ERROR_TEXT;
+  return typeof code === "string" && code !== "" ? `${text} (${code})` : text;
+}
+
+/**
+ * What the client does with a `RESPONSE` or `ERROR` frame.
+ *
+ * - `settle`: hand `response` to the request waiting on its correlation id
+ * - `unmatched-error`: an `ERROR` nothing is waiting on, logged at error level
+ * - `unmatched-response`: a `RESPONSE` nothing is waiting on, such as one that
+ *   arrives after its request timed out
+ * - `malformed`: a `RESPONSE` body that cannot be matched to anything
+ */
+export type ResponseSettlement =
+  | { readonly kind: "settle"; readonly response: IpcResponse }
+  | { readonly kind: "unmatched-error"; readonly text: string }
+  | { readonly kind: "unmatched-response"; readonly correlationId: string }
+  | { readonly kind: "malformed" };
+
+/**
+ * Decide what a `RESPONSE` or `ERROR` frame settles.
+ *
+ * An `ERROR` that matches no pending request is never dropped silently. The
+ * engine sends one with the correlation id `unknown` for a request it could
+ * not parse, and one with `__acton_connection_rejected__` when it refuses the
+ * connection, and neither id belongs to a request.
+ *
+ * @param isPending - Whether a request is waiting on the given correlation id
+ */
+export function settlementFor(
+  msgType: number,
+  payload: unknown,
+  isPending: (correlationId: string) => boolean,
+): ResponseSettlement {
+  const response = responseFromFrame(msgType, payload);
+
+  if (response !== undefined && isPending(response.correlation_id)) {
+    return { kind: "settle", response };
+  }
+  if (msgType === MSG_TYPE_ERROR) {
+    return { kind: "unmatched-error", text: errorFrameText(payload) };
+  }
+  if (response === undefined) {
+    return { kind: "malformed" };
+  }
+  return {
+    kind: "unmatched-response",
+    correlationId: response.correlation_id,
+  };
 }
 
 /**
@@ -835,18 +948,27 @@ export class BaseClient {
           break;
         }
 
-        // Append to read buffer
-        const newBuffer = new Uint8Array(this.#readBuffer.length + n);
-        newBuffer.set(this.#readBuffer);
-        newBuffer.set(buffer.subarray(0, n), this.#readBuffer.length);
-        this.#readBuffer = newBuffer;
-
-        // Process complete frames
-        this.#processFrames();
+        this.receiveBytes(buffer.subarray(0, n));
       }
     } finally {
       this.#readLoopRunning = false;
     }
+  }
+
+  /**
+   * Take bytes read from the socket and handle every complete frame in them.
+   *
+   * @internal
+   */
+  protected receiveBytes(chunk: Uint8Array): void {
+    // Append to read buffer
+    const newBuffer = new Uint8Array(this.#readBuffer.length + chunk.length);
+    newBuffer.set(this.#readBuffer);
+    newBuffer.set(chunk, this.#readBuffer.length);
+    this.#readBuffer = newBuffer;
+
+    // Process complete frames
+    this.#processFrames();
   }
 
   #processFrames(): void {
@@ -905,18 +1027,63 @@ export class BaseClient {
     return null;
   }
 
-  #handleFrame(msgType: number, payload: unknown): void {
-    switch (msgType) {
-      case MSG_TYPE_RESPONSE: {
-        const response = payload as IpcResponse;
+  /**
+   * Settle the pending request a RESPONSE or ERROR frame answers.
+   *
+   * A failed request comes back as an ERROR frame. It settles the pending
+   * request like any response, with `success` false, and the caller throws its
+   * own error from the engine's error text.
+   */
+  #settleResponse(msgType: number, payload: unknown): void {
+    const settlement = settlementFor(
+      msgType,
+      payload,
+      (correlationId) => this.#pendingRequests.has(correlationId),
+    );
+
+    switch (settlement.kind) {
+      case "settle": {
+        const { response } = settlement;
         const pending = this.#pendingRequests.get(response.correlation_id);
-        if (pending) {
-          this.#pendingRequests.delete(response.correlation_id);
-          if (pending.timer) clearTimeout(pending.timer);
-          pending.resolve(response);
-        }
+        this.#pendingRequests.delete(response.correlation_id);
+        if (pending?.timer) clearTimeout(pending.timer);
+        pending?.resolve(response);
         break;
       }
+      case "unmatched-error":
+        // No request to fail, for example a connection-level rejection or a
+        // request the engine could not parse.
+        this.#logger.error("engine error matched no pending request", {
+          error: settlement.text,
+        });
+        break;
+      case "unmatched-response":
+        this.#logger.debug("response matched no pending request", {
+          correlationId: settlement.correlationId,
+        });
+        break;
+      case "malformed":
+        this.#logger.warn("dropping malformed response frame");
+        break;
+    }
+  }
+
+  #handleFrame(msgType: number, payload: unknown): void {
+    switch (msgType) {
+      case MSG_TYPE_RESPONSE:
+      case MSG_TYPE_ERROR:
+        this.#settleResponse(msgType, payload);
+        break;
+
+      case MSG_TYPE_HEARTBEAT:
+      case MSG_TYPE_STREAM:
+        // The engine echoes a heartbeat only after receiving one, and streams
+        // only to a request that asked for a stream. This SDK sends neither,
+        // so there is nothing to route.
+        this.#logger.debug("ignoring frame", {
+          msgType: frameTypeName(msgType),
+        });
+        break;
 
       case MSG_TYPE_PUSH: {
         // The payload field contains the complete EmergentMessage
@@ -1009,7 +1176,10 @@ export class BaseClient {
       }
 
       default:
-        // Ignore unhandled message types
+        this.#logger.warn("ignoring frame of unexpected type", {
+          msgType: frameTypeName(msgType) ??
+            `0x${msgType.toString(16).padStart(2, "0")}`,
+        });
         break;
     }
   }
