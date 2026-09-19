@@ -21,6 +21,7 @@
 //! ```
 
 pub mod config;
+pub mod declarations;
 pub mod event_store;
 pub mod init;
 pub mod lifecycle;
@@ -36,6 +37,9 @@ pub mod topology;
 pub mod update;
 
 pub use config::EmergentConfig;
+pub use declarations::{
+    DeclarationTable, Declarations, Enforcement, EnforcementMode, Operation, Verdict,
+};
 pub use lifecycle::{LifecycleEvent, PrimitiveStatus, next_status};
 pub use messages::EmergentMessage;
 pub use primitive_actor::{

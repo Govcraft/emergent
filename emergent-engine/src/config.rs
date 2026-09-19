@@ -5,6 +5,8 @@
 //! - Event store settings (log directory, SQLite path, retention)
 //! - Sources, Handlers, and Sinks to manage
 
+use crate::declarations::{DeclarationTable, Declarations, EnforcementMode};
+use crate::primitives::PrimitiveKind;
 use crate::supervision::{
     RestartLimits, RestartPolicy, default_restart_backoff_ms, default_restart_max_backoff_ms,
     default_restart_max_retries, default_restart_window_ms, parse_restart_policy,
@@ -113,6 +115,16 @@ pub struct EngineConfig {
     /// SIGKILL, in milliseconds.
     #[serde(default = "default_shutdown_grace_ms")]
     pub shutdown_grace_ms: u64,
+
+    /// Whether `publishes` declarations bind the primitives that made them.
+    ///
+    /// `"off"` (the default) keeps them advisory, which is how every engine up
+    /// to 0.10.10 behaved. `"warn"` logs a primitive publishing a type it did
+    /// not declare. `"strict"` also refuses the message. Turning this on can
+    /// stop messages an existing topology depends on, so it stays opt-in; see
+    /// `docs/configuration.md` for what it does and does not protect against.
+    #[serde(default)]
+    pub enforce_declarations: EnforcementMode,
 }
 
 fn default_engine_name() -> String {
@@ -169,6 +181,7 @@ impl Default for EngineConfig {
             max_connections: None,
             shutdown_drain_ms: default_shutdown_drain_ms(),
             shutdown_grace_ms: default_shutdown_grace_ms(),
+            enforce_declarations: EnforcementMode::default(),
         }
     }
 }
@@ -989,11 +1002,45 @@ impl EmergentConfig {
     pub fn check_connection_capacity(&self, max_connections: usize) -> Result<(), ConfigError> {
         check_connection_capacity(self.enabled_primitive_count(), max_connections)
     }
+
+    /// Build the declaration lookup the broker consults on every publish.
+    ///
+    /// Every configured primitive is included, enabled or not, because what is
+    /// enforced is the declaration rather than whether the engine started the
+    /// process. A duplicate name is impossible here: [`Self::validate`] rejects
+    /// one before this is ever called.
+    #[must_use]
+    pub fn declaration_table(&self) -> DeclarationTable {
+        let sources = self.sources.iter().map(|s| {
+            (
+                s.name.clone(),
+                Declarations::new(PrimitiveKind::Source, &s.publishes, &[]),
+            )
+        });
+        let handlers = self.handlers.iter().map(|h| {
+            (
+                h.name.clone(),
+                Declarations::new(PrimitiveKind::Handler, &h.publishes, &h.subscribes),
+            )
+        });
+        let sinks = self.sinks.iter().map(|s| {
+            (
+                s.name.clone(),
+                Declarations::new(PrimitiveKind::Sink, &[], &s.subscribes),
+            )
+        });
+
+        DeclarationTable::new(
+            self.engine.enforce_declarations,
+            sources.chain(handlers).chain(sinks),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::declarations::{Operation, Verdict};
 
     #[test]
     fn connection_capacity_covers_every_primitive_plus_the_reserve() {
@@ -1042,6 +1089,107 @@ mod tests {
         assert!(message.contains('6'), "{message}");
         assert!(message.contains("10"), "{message}");
         assert!(message.contains("[engine].max_connections"), "{message}");
+    }
+
+    #[test]
+    fn enforce_declarations_defaults_to_off_and_parses_every_mode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = EmergentConfig::parse(
+            r#"
+[engine]
+name = "test"
+"#,
+        )?;
+        assert_eq!(config.engine.enforce_declarations, EnforcementMode::Off);
+
+        for (spelling, expected) in [
+            ("off", EnforcementMode::Off),
+            ("warn", EnforcementMode::Warn),
+            ("strict", EnforcementMode::Strict),
+        ] {
+            let config = EmergentConfig::parse(&format!(
+                r#"
+[engine]
+name = "test"
+enforce_declarations = "{spelling}"
+"#
+            ))?;
+            assert_eq!(config.engine.enforce_declarations, expected, "{spelling}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_enforcement_mode_is_a_load_error() {
+        let Err(err) = EmergentConfig::parse(
+            r#"
+[engine]
+enforce_declarations = "paranoid"
+"#,
+        ) else {
+            panic!("'paranoid' is not a mode");
+        };
+        let message = err.to_string();
+        assert!(message.contains("enforce_declarations"), "{message}");
+    }
+
+    #[test]
+    fn the_declaration_table_carries_every_configured_primitive()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = EmergentConfig::parse(
+            r#"
+[engine]
+enforce_declarations = "strict"
+
+[[sources]]
+name = "timer"
+path = "/bin/sh"
+publishes = ["timer.tick"]
+
+[[handlers]]
+name = "filter"
+path = "/bin/sh"
+subscribes = ["timer.tick"]
+publishes = ["timer.filtered"]
+
+[[sinks]]
+name = "console"
+path = "/bin/sh"
+enabled = false
+subscribes = ["timer.filtered"]
+"#,
+        )?;
+
+        let table = config.declaration_table();
+        assert_eq!(table.mode(), EnforcementMode::Strict);
+        // The disabled sink is present too: the declaration is what binds.
+        assert_eq!(table.len(), 3);
+
+        assert_eq!(
+            table
+                .check("timer", Operation::Publish, "timer.tick")
+                .verdict,
+            Verdict::Declared
+        );
+        assert_eq!(
+            table
+                .check("timer", Operation::Publish, "timer.tock")
+                .verdict,
+            Verdict::Undeclared
+        );
+        assert_eq!(
+            table
+                .check("console", Operation::Publish, "timer.filtered")
+                .verdict,
+            Verdict::KindCannot
+        );
+        assert_eq!(
+            table
+                .check("filter", Operation::Subscribe, "timer.tick")
+                .verdict,
+            Verdict::Declared
+        );
+        Ok(())
     }
 
     #[test]
