@@ -61,7 +61,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from emergent.handler import EmergentHandler
@@ -81,10 +81,12 @@ class HelperError(Exception):
     pass
 
 
-# Type aliases for callbacks
-SourceRunFn = Callable[[EmergentSource, asyncio.Event], "asyncio.Future[None]"]
-HandlerProcessFn = Callable[["EmergentMessage", EmergentHandler], "asyncio.Future[None]"]
-SinkConsumeFn = Callable[["EmergentMessage"], "asyncio.Future[None]"]
+# Type aliases for callbacks. Each result is only ever awaited, so any
+# awaitable fits. An ``async def`` function returns a coroutine, which is an
+# awaitable and is not an ``asyncio.Future``.
+SourceRunFn = Callable[[EmergentSource, asyncio.Event], Awaitable[None]]
+HandlerProcessFn = Callable[["EmergentMessage", EmergentHandler], Awaitable[None]]
+SinkConsumeFn = Callable[["EmergentMessage"], Awaitable[None]]
 
 
 def _resolve_name(name: str | None, default: str) -> str:
@@ -97,7 +99,7 @@ def _resolve_name(name: str | None, default: str) -> str:
 
 async def run_source(
     name: str | None,
-    run_fn: Callable[[EmergentSource, asyncio.Event], asyncio.Future[None]],
+    run_fn: SourceRunFn,
 ) -> None:
     """
     Run a Source with custom logic.
@@ -175,7 +177,7 @@ async def run_source(
 async def run_handler(
     name: str | None,
     subscriptions: list[str],
-    process_fn: Callable[[EmergentMessage, EmergentHandler], asyncio.Future[None]],
+    process_fn: HandlerProcessFn,
 ) -> None:
     """
     Run a Handler with message processing.
@@ -257,7 +259,7 @@ async def run_handler(
 async def run_sink(
     name: str | None,
     subscriptions: list[str],
-    consume_fn: Callable[[EmergentMessage], asyncio.Future[None]],
+    consume_fn: SinkConsumeFn,
 ) -> None:
     """
     Run a Sink with message consumption.
