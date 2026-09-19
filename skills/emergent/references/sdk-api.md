@@ -146,8 +146,9 @@ source.disconnect().await?;
 |--------|-----------|-------------|
 | `connect` | `async fn connect(name: &str) -> Result<Self>` | Connect to engine as a source |
 | `connect_to` | `async fn connect_to(name: &str, socket_path: &Path) -> Result<Self>` | Connect to an explicit socket instead of `EMERGENT_SOCKET` |
-| `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish, fire-and-forget |
+| `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish, fire-and-forget. `Ok` means queued, not delivered: see Publish guarantees below |
 | `publish_ack` | `async fn publish_ack(&self, message: EmergentMessage) -> Result<()>` | Publish and wait for the engine's acknowledgment |
+| `publish_stats` | `fn publish_stats(&self) -> PublishStats` | Counts of accepted, rejected and unanswered `publish` calls. After engine 0.13.1 |
 | `publish_all` | `async fn publish_all(&self, messages: impl IntoIterator<Item = EmergentMessage>) -> Result<usize>` | Publish each message with `publish_ack`; returns the count |
 | `publish_stream` | `async fn publish_stream<S>(&self, stream: S) -> Result<usize>` | Same, from an async `Stream` |
 | `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
@@ -174,8 +175,9 @@ handler.disconnect().await?;
 | `connect_to` | `async fn connect_to(name: &str, socket_path: &Path) -> Result<Self>` | Connect to an explicit socket |
 | `messages` | `async fn messages(name, types) -> Result<(Self, MessageStream)>` | Connect and subscribe to `types`. Pass an empty list to use the **config's** `subscribes` instead. Clients up to 0.13.1 ignored `types` and always used the config |
 | `subscribe` | `async fn subscribe(&mut self, types: impl IntoSubscription) -> Result<MessageStream>` | Subscribe and get stream |
-| `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish, fire-and-forget |
+| `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish, fire-and-forget. `Ok` means queued, not delivered: see Publish guarantees below |
 | `publish_ack` | `async fn publish_ack(&self, message: EmergentMessage) -> Result<()>` | Publish and wait for the engine's acknowledgment |
+| `publish_stats` | `fn publish_stats(&self) -> PublishStats` | Counts of accepted, rejected and unanswered `publish` calls. After engine 0.13.1 |
 | `publish_all` / `publish_stream` | as on `EmergentSource` | Acked batch publish; returns the count |
 | `stream_offer` / `stream_consume` | see Pull-Based Streaming below | Consumer-driven streaming |
 | `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
@@ -312,6 +314,36 @@ let count = source.publish_stream(ReceiverStream::new(rx)).await?;
 ```
 
 Naming per SDK: Rust/Python `publish_all` / `publish_stream`, TypeScript `publishAll` / `publishStream`, Go `PublishAll` / `PublishStream(ctx, ch)`.
+
+### Publish guarantees
+
+`publish` and `publish_ack` promise different things, and the difference
+matters as soon as a primitive emits more than a trickle.
+
+| Call | Success means | A rejection shows up as |
+|------|---------------|-------------------------|
+| `publish` | The message was queued for the engine, in publish order | A `WARN` log line and a `publish_stats().rejected` increment |
+| `publish_ack` | The broker stored the event and handed it to every subscriber's queue | An error to the caller, carrying the engine's error text |
+
+Every IPC connection is rate limited to **100 messages per second with a burst
+of 50** (acton-reactive 9.3.0 defaults). Each enabled primitive holds exactly
+one connection, so those are per-primitive budgets. Over the budget the engine
+refuses the message and it is never delivered. A full broker mailbox
+(`TARGET_BUSY`) and a shutting-down engine (`SHUTTING_DOWN`) refuse it the same
+way.
+
+After engine 0.13.1 the Rust SDK claims the engine's answer to every `publish`,
+logs a refusal at `WARN` with the engine's error text and the message type, and
+counts it in `publish_stats()`. On 0.13.1 and earlier it dropped that answer at
+`trace` level and `publish` returned success over lost messages. The Go, Python
+and TypeScript SDKs own their read loops and, also after engine 0.13.1, log an
+unmatched ERROR frame at error level instead of discarding it.
+
+A primitive that has to sustain more than 100 messages per second should use
+`publish_ack` (which cannot outpace the broker), batch several records into one
+message, or raise acton's own limit in
+`$XDG_CONFIG_HOME/acton/ipc.toml` under `[rate_limit]`. That limit is not an
+`emergent.toml` key.
 
 ### Pull-Based Streaming (Consumer-Driven Backpressure)
 
