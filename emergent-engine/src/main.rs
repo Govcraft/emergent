@@ -7,7 +7,7 @@
 //! - Manages Source, Handler, and Sink processes via actors
 //! - Handles graceful shutdown
 
-use acton_reactive::ipc::{IpcConfig, IpcPushNotification};
+use acton_reactive::ipc::{IpcConfig, IpcPushNotification, SubscriptionManager};
 use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get};
@@ -98,6 +98,9 @@ enum Command {
 }
 
 use emergent_engine::config::EmergentConfig;
+use emergent_engine::declarations::{
+    Enforcement, Operation, RejectionReport, rejection_event_type,
+};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
@@ -195,6 +198,45 @@ impl EventStoreWrapper {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Store and forward the `system.error.<name>` event a strict rejection owes.
+///
+/// Dispatched straight to the subscription manager rather than broadcast
+/// through the broker, because the broker is what just refused a message:
+/// sending the report back through it would put the report on the path being
+/// reported on. The event is the engine's own, with the engine as its source,
+/// so the publish check never sees it and a rejection cannot cascade.
+fn report_rejection(
+    event_store: &EventStoreWrapper,
+    sub_mgr: &SubscriptionManager,
+    report: &RejectionReport,
+) {
+    let event_type = rejection_event_type(&report.primitive);
+    let message = match EmergentMessage::try_new(&event_type) {
+        Ok(message) => message
+            .with_source("emergent-engine")
+            .with_payload(serde_json::to_value(report).unwrap_or_default()),
+        Err(e) => {
+            warn!(
+                primitive = %report.primitive,
+                error = %e,
+                "Rejection could not be reported: the primitive name does not form a message type"
+            );
+            return;
+        }
+    };
+
+    if let Err(e) = event_store.store(&message) {
+        error!("Failed to store rejection event: {}", e);
+    }
+
+    let notification = IpcPushNotification::new(
+        message.message_type.to_string(),
+        Some(message.source.to_string()),
+        serde_json::to_value(&message).unwrap_or_default(),
+    );
+    sub_mgr.forward_to_subscribers(&notification);
+}
 
 /// Initialize the event stores based on configuration.
 fn init_event_stores(config: &EmergentConfig) -> Result<EventStoreWrapper> {
@@ -566,9 +608,49 @@ async fn main() -> Result<()> {
     let sub_mgr_for_emergent = sub_mgr_clone.clone();
     let pm_for_subscriptions = process_manager.clone();
     let pm_for_topology = process_manager.clone();
+    let declarations = Arc::new(config.declaration_table());
+    if declarations.mode().is_enforcing() {
+        info!(
+            "Declaration enforcement: {} ({} primitive(s) declared)",
+            declarations.mode(),
+            declarations.len()
+        );
+    }
     broker_actor.mutate_on::<IpcEmergentMessage>(move |actor, envelope| {
         let msg = envelope.message();
         actor.model.message_count += 1;
+
+        // Check the publish against the sender's declarations before the
+        // message is stored or forwarded, so a strict rejection leaves no
+        // trace of the message anywhere.
+        let name = msg.inner.source.as_str();
+        let message_type = msg.inner.message_type.as_str();
+        let checked = declarations.check(name, Operation::Publish, message_type);
+        if checked.enforcement != Enforcement::Accept {
+            let report = RejectionReport::new(
+                checked.verdict,
+                name,
+                Operation::Publish,
+                message_type,
+                declarations.mode(),
+            );
+            warn!(
+                primitive = %name,
+                operation = "publish",
+                message.type = %message_type,
+                mode = %declarations.mode(),
+                "Declaration violation: {}",
+                report.reason
+            );
+            if checked.enforcement == Enforcement::Reject {
+                report_rejection(&event_store_for_emergent, &sub_mgr_for_emergent, &report);
+                // Returning without replying is what the publisher sees: acton
+                // 9.3.0 gives an actor no way to put its own text in the IPC
+                // error frame, so `publish_ack` fails with acton's no-reply
+                // message and the reason is in the log and the event.
+                return Reply::ready();
+            }
+        }
 
         // Log to event store
         if let Err(e) = event_store_for_emergent.store(&msg.inner) {

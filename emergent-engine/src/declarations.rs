@@ -236,11 +236,11 @@ impl Declarations {
     /// Whether this kind may perform an operation at all.
     #[must_use]
     pub const fn kind_permits(&self, operation: Operation) -> bool {
-        match (self.kind, operation) {
+        !matches!(
+            (self.kind, operation),
             (PrimitiveKind::Sink, Operation::Publish)
-            | (PrimitiveKind::Source, Operation::Subscribe) => false,
-            _ => true,
-        }
+                | (PrimitiveKind::Source, Operation::Subscribe)
+        )
     }
 
     /// The set governing one operation.
@@ -304,6 +304,51 @@ pub fn violation_reason(
             "'{name}' tried to {op} '{message_type}', which is not in its declared {field} list"
         ),
         Verdict::Declared | Verdict::Protocol => format!("'{name}' may {op} '{message_type}'"),
+    }
+}
+
+/// The message type of the event reporting a rejected operation.
+///
+/// `system.error.<name>` is the type the engine already reports a primitive's
+/// failures under, so a sink subscribed to `system.error.*` sees a rejection
+/// without subscribing to anything new.
+#[must_use]
+pub fn rejection_event_type(name: &str) -> String {
+    format!("system.error.{name}")
+}
+
+/// The payload of the `system.error.<name>` event a strict rejection reports.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RejectionReport {
+    /// The name the rejected message claimed as its source.
+    pub primitive: String,
+    /// `publish` or `subscribe`.
+    pub operation: String,
+    /// The message type that was refused.
+    pub message_type: String,
+    /// The sentence explaining the refusal, as logged and as replied.
+    pub reason: String,
+    /// The mode in force, always `strict` for a rejection.
+    pub mode: String,
+}
+
+impl RejectionReport {
+    /// Describe one rejected operation.
+    #[must_use]
+    pub fn new(
+        verdict: Verdict,
+        name: &str,
+        operation: Operation,
+        message_type: &str,
+        mode: EnforcementMode,
+    ) -> Self {
+        Self {
+            primitive: name.to_owned(),
+            operation: operation.as_str().to_owned(),
+            message_type: message_type.to_owned(),
+            reason: violation_reason(verdict, name, operation, message_type),
+            mode: mode.as_str().to_owned(),
+        }
     }
 }
 
@@ -682,6 +727,32 @@ mod tests {
         assert!(!EnforcementMode::Off.is_enforcing());
         assert!(EnforcementMode::Warn.is_enforcing());
         assert!(EnforcementMode::Strict.is_enforcing());
+    }
+
+    #[test]
+    fn a_rejection_reports_under_the_primitives_own_error_topic() {
+        assert_eq!(rejection_event_type("filter"), "system.error.filter");
+
+        let report = RejectionReport::new(
+            Verdict::Undeclared,
+            "filter",
+            Operation::Publish,
+            "timer.tock",
+            EnforcementMode::Strict,
+        );
+        assert_eq!(report.primitive, "filter");
+        assert_eq!(report.operation, "publish");
+        assert_eq!(report.message_type, "timer.tock");
+        assert_eq!(report.mode, "strict");
+        assert_eq!(
+            report.reason,
+            violation_reason(
+                Verdict::Undeclared,
+                "filter",
+                Operation::Publish,
+                "timer.tock"
+            )
+        );
     }
 
     #[test]
