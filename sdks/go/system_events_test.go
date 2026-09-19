@@ -91,3 +91,53 @@ func TestSystemShutdownPayload_JSON(t *testing.T) {
 		t.Errorf("expected handler, got: %s", p.Kind)
 	}
 }
+
+// engineShutdownEnvelope is the notification payload the engine sends for a
+// system.shutdown broadcast: an EmergentMessage envelope with the kind nested
+// in its own payload.
+func engineShutdownEnvelope(kind any) map[string]any {
+	return map[string]any{
+		"id":           "msg_01m2xskqtyffgve4n1yw9vr8kz",
+		"message_type": "system.shutdown",
+		"source":       "emergent",
+		"timestamp_ms": uint64(1758318000000),
+		"payload":      map[string]any{"kind": kind},
+	}
+}
+
+func TestExtractShutdownKind(t *testing.T) {
+	tests := []struct {
+		name      string
+		payload   any
+		wantKind  string
+		wantFound bool
+	}{
+		{"engine envelope", engineShutdownEnvelope("sink"), "sink", true},
+		{"bare kind object", map[string]any{"kind": "handler"}, "handler", true},
+		{"kind is lowercased", engineShutdownEnvelope("Sink"), "sink", true},
+		{
+			"nested kind wins over an envelope-level kind",
+			map[string]any{"kind": "source", "payload": map[string]any{"kind": "sink"}},
+			"sink", true,
+		},
+		{
+			"falls back to the envelope when the nested payload has no kind",
+			map[string]any{"kind": "source", "payload": map[string]any{"other": 1}},
+			"source", true,
+		},
+		{"non-string kind", engineShutdownEnvelope(42), "", false},
+		{"envelope without a kind", map[string]any{"payload": map[string]any{}}, "", false},
+		{"nil payload inside the envelope", map[string]any{"payload": nil}, "", false},
+		{"nil", nil, "", false},
+		{"not a map", "sink", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind, found := ExtractShutdownKind(tt.payload)
+			if kind != tt.wantKind || found != tt.wantFound {
+				t.Errorf("ExtractShutdownKind() = (%q, %v), want (%q, %v)", kind, found, tt.wantKind, tt.wantFound)
+			}
+		})
+	}
+}

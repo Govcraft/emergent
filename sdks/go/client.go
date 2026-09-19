@@ -889,12 +889,13 @@ func (c *baseClient) handlePush(payload any) {
 }
 
 func (c *baseClient) handleShutdown(payloadMap map[string]any) {
-	shutdownPayload, ok := payloadMap["payload"].(map[string]any)
-	if !ok {
+	// payloadMap is the push notification. Its payload is the EmergentMessage
+	// envelope, and the kind sits in that envelope's own payload.
+	shutdownKind, found := ExtractShutdownKind(payloadMap["payload"])
+	if !found {
+		c.logger.Info("received shutdown signal", "kind", "unknown")
 		return
 	}
-
-	shutdownKind, _ := shutdownPayload["kind"].(string)
 	c.logger.Info("received shutdown signal", "kind", shutdownKind)
 
 	if strings.EqualFold(shutdownKind, string(c.primitiveKind)) {
