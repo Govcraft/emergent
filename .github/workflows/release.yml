@@ -9,8 +9,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  quality:
+    name: Quality Gate
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build emergent for ${{ matrix.target }}
+    needs: [quality]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
