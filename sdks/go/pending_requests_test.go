@@ -149,8 +149,25 @@ type fakeEngine struct {
 	pushDelay time.Duration
 
 	mu    sync.Mutex
-	conns []net.Conn
+	conns []*fakeConn
 	wg    sync.WaitGroup
+}
+
+// fakeConn is one accepted client connection. Its mutex keeps frames whole
+// when a reply and a broadcast are written at the same time.
+type fakeConn struct {
+	net.Conn
+	writeMu sync.Mutex
+}
+
+func (fc *fakeConn) send(reply fakeReply) {
+	frame, err := EncodeFrame(reply.msgType, reply.payload, FormatMsgPack)
+	if err != nil {
+		return
+	}
+	fc.writeMu.Lock()
+	_, _ = fc.Write(frame)
+	fc.writeMu.Unlock()
 }
 
 func startFakeEngine(t *testing.T, pushDelay time.Duration) *fakeEngine {
@@ -191,13 +208,37 @@ func (e *fakeEngine) stop() {
 	e.wg.Wait()
 }
 
+// connections returns the client connections accepted so far.
+func (e *fakeEngine) connections() []*fakeConn {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]*fakeConn(nil), e.conns...)
+}
+
+// broadcast pushes one frame to every connected client, the way the engine
+// fans a system event out to its subscribers.
+func (e *fakeEngine) broadcast(reply fakeReply) {
+	for _, conn := range e.connections() {
+		conn.send(reply)
+	}
+}
+
+// dropConnections closes every client connection from the engine side, which
+// is what a client sees when the engine dies.
+func (e *fakeEngine) dropConnections() {
+	for _, conn := range e.connections() {
+		_ = conn.Close()
+	}
+}
+
 func (e *fakeEngine) acceptLoop() {
 	defer e.wg.Done()
 	for {
-		conn, err := e.listener.Accept()
+		accepted, err := e.listener.Accept()
 		if err != nil {
 			return
 		}
+		conn := &fakeConn{Conn: accepted}
 		e.mu.Lock()
 		e.conns = append(e.conns, conn)
 		e.mu.Unlock()
@@ -207,19 +248,8 @@ func (e *fakeEngine) acceptLoop() {
 	}
 }
 
-func (e *fakeEngine) serve(conn net.Conn) {
+func (e *fakeEngine) serve(conn *fakeConn) {
 	defer e.wg.Done()
-
-	var writeMu sync.Mutex
-	send := func(reply fakeReply) {
-		frame, err := EncodeFrame(reply.msgType, reply.payload, FormatMsgPack)
-		if err != nil {
-			return
-		}
-		writeMu.Lock()
-		_, _ = conn.Write(frame)
-		writeMu.Unlock()
-	}
 
 	var buffer []byte
 	chunk := make([]byte, 64*1024)
@@ -249,11 +279,11 @@ func (e *fakeEngine) serve(conn net.Conn) {
 				go func() {
 					defer e.wg.Done()
 					time.Sleep(e.pushDelay)
-					send(reply)
+					conn.send(reply)
 				}()
 				continue
 			}
-			send(reply)
+			conn.send(reply)
 		}
 	}
 }

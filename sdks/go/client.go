@@ -176,9 +176,13 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 
 	correlationID := generateCorrelationID("sub")
 
-	stream := newMessageStream(channelBufferSize, func() {
+	// The callback forgets the stream only while it is still the registered
+	// one. A stream detached by the read loop is closed after c.mu is released,
+	// and by then a new subscription may have taken its place.
+	var stream *MessageStream
+	stream = newMessageStream(channelBufferSize, func() {
 		c.mu.Lock()
-		if c.messageStream != nil {
+		if c.messageStream == stream {
 			c.messageStream = nil
 		}
 		c.mu.Unlock()
@@ -632,10 +636,9 @@ func (c *baseClient) close() error {
 		c.readCancel()
 	}
 
-	// Capture stream reference under lock, then close outside lock
-	// to avoid deadlock with the stream's onClose callback.
-	stream := c.messageStream
-	c.messageStream = nil
+	// Detach the stream under the lock and close it after unlocking, to
+	// avoid deadlock with the stream's onClose callback.
+	stream := c.detachStream()
 
 	// Close connection
 	if c.conn != nil {
@@ -684,9 +687,7 @@ func (c *baseClient) close() error {
 	c.mu.Unlock()
 
 	// Close message stream outside lock to avoid deadlock with onClose callback
-	if stream != nil {
-		stream.Close()
-	}
+	closeStream(stream)
 
 	// Wait for read loop to finish
 	select {
@@ -740,13 +741,12 @@ func (c *baseClient) readLoop(ctx context.Context) {
 				return // Context cancelled
 			}
 			c.logger.Info("connection closed (EOF)")
-			// Close the message stream on EOF
+			// Close the message stream on EOF. Detach it under c.mu and close
+			// it unlocked: Close runs the onClose callback, which takes c.mu.
 			c.mu.Lock()
-			if c.messageStream != nil {
-				c.messageStream.Close()
-				c.messageStream = nil
-			}
+			stream := c.detachStream()
 			c.mu.Unlock()
+			closeStream(stream)
 			return
 		}
 
@@ -758,42 +758,78 @@ func (c *baseClient) readLoop(ctx context.Context) {
 	}
 }
 
-// processFrames decodes every complete frame in the read buffer and dispatches
+// detachStream unregisters the message stream and returns it, or nil when
+// there is none. Must be called with c.mu held. The caller closes the returned
+// stream with closeStream after releasing c.mu.
+func (c *baseClient) detachStream() *MessageStream {
+	stream := c.messageStream
+	c.messageStream = nil
+	return stream
+}
+
+// closeStream closes a detached stream. Must be called without c.mu held:
+// MessageStream.Close runs the onClose callback, which takes c.mu, and
+// sync.Mutex is not reentrant.
+func closeStream(stream *MessageStream) {
+	if stream != nil {
+		stream.Close()
+	}
+}
+
+// processFrames dispatches every complete frame in the read buffer, then
+// closes the stream a system.shutdown detached, now that c.mu is released.
+func (c *baseClient) processFrames() {
+	closeStream(c.dispatchFrames())
+}
+
+// dispatchFrames decodes every complete frame in the read buffer and dispatches
 // it. It holds c.mu for the whole pass, so handleFrame and every handler below
 // it run with c.mu held. That lock is what serializes the read loop's access
 // to the pending-request maps against callers and request timers.
-func (c *baseClient) processFrames() {
+//
+// It returns the stream a handler detached, if any, for the caller to close
+// once c.mu is released. At most one stream can be detached in a pass, because
+// nothing can register a new one while c.mu is held.
+func (c *baseClient) dispatchFrames() *MessageStream {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	var detached *MessageStream
 	for len(c.readBuffer) >= HeaderSize {
 		frame, err := TryDecodeFrame(c.readBuffer)
 		if err != nil {
 			c.logger.Error("protocol error while processing frame", "error", err)
 			c.readBuffer = c.readBuffer[:0] // Reset buffer
-			return
+			return detached
 		}
 		if frame == nil {
-			return // Not enough data
+			return detached // Not enough data
 		}
 
 		c.readBuffer = c.readBuffer[frame.BytesConsumed:]
-		c.handleFrame(frame.MsgType, frame.Payload)
+		if stream := c.handleFrame(frame.MsgType, frame.Payload); stream != nil {
+			detached = stream
+		}
 	}
+	return detached
 }
 
-func (c *baseClient) handleFrame(msgType byte, payload any) {
+// handleFrame dispatches one frame. It returns the stream the frame detached,
+// if any, which must be closed only after c.mu is released.
+func (c *baseClient) handleFrame(msgType byte, payload any) *MessageStream {
 	// Must be called with c.mu held. The handlers it dispatches to inherit the
 	// lock and must not take c.mu themselves: sync.Mutex is not reentrant, so
-	// locking again would deadlock the read loop.
+	// locking again would deadlock the read loop. For the same reason they must
+	// not close a MessageStream, whose onClose callback takes c.mu.
 	switch msgType {
 	case MsgTypeResponse:
 		c.handleResponse(payload)
 	case MsgTypePush:
-		c.handlePush(payload)
+		return c.handlePush(payload)
 	default:
 		// Ignore unhandled message types (drain)
 	}
+	return nil
 }
 
 // handleResponse completes a pending request. Must be called with c.mu held.
@@ -838,31 +874,32 @@ func (c *baseClient) handleResponse(payload any) {
 	}
 }
 
-// handlePush routes a push notification. Must be called with c.mu held.
-func (c *baseClient) handlePush(payload any) {
+// handlePush routes a push notification. Must be called with c.mu held. It
+// returns the stream a system.shutdown detached, if any, which the caller
+// closes after releasing c.mu.
+func (c *baseClient) handlePush(payload any) *MessageStream {
 	payloadMap, ok := payload.(map[string]any)
 	if !ok {
-		return
+		return nil
 	}
 
 	messageType, _ := payloadMap["message_type"].(string)
 
 	// Handle system.shutdown internally
 	if messageType == "system.shutdown" {
-		c.handleShutdown(payloadMap)
-		return
+		return c.handleShutdown(payloadMap)
 	}
 
 	// Handle system.response.topology
 	if messageType == "system.response.topology" {
 		c.handleTopologyResponse(payloadMap)
-		return
+		return nil
 	}
 
 	// Handle system.response.subscriptions
 	if messageType == "system.response.subscriptions" {
 		c.handleSubscriptionsResponse(payloadMap)
-		return
+		return nil
 	}
 
 	// Skip the transport's own envelope broadcasts, which only a "*"
@@ -870,7 +907,7 @@ func (c *baseClient) handlePush(payload any) {
 	// under its own Emergent message type.
 	if !IsEmergentMessageType(messageType) {
 		c.logger.Debug("skipping non-Emergent IPC broadcast", "message_type", messageType)
-		return
+		return nil
 	}
 
 	// Forward to message stream
@@ -886,25 +923,28 @@ func (c *baseClient) handlePush(payload any) {
 			c.messageStream.push(msg)
 		}
 	}
+	return nil
 }
 
-func (c *baseClient) handleShutdown(payloadMap map[string]any) {
+// handleShutdown acts on a system.shutdown broadcast. Must be called with c.mu
+// held. When the broadcast targets this primitive's kind it detaches the
+// message stream and returns it. It must not close the stream itself: see
+// closeStream.
+func (c *baseClient) handleShutdown(payloadMap map[string]any) *MessageStream {
 	// payloadMap is the push notification. Its payload is the EmergentMessage
 	// envelope, and the kind sits in that envelope's own payload.
 	shutdownKind, found := ExtractShutdownKind(payloadMap["payload"])
 	if !found {
 		c.logger.Info("received shutdown signal", "kind", "unknown")
-		return
+		return nil
 	}
 	c.logger.Info("received shutdown signal", "kind", shutdownKind)
 
-	if strings.EqualFold(shutdownKind, string(c.primitiveKind)) {
-		c.logger.Info("shutting down (engine requested)")
-		if c.messageStream != nil {
-			c.messageStream.Close()
-			c.messageStream = nil
-		}
+	if !strings.EqualFold(shutdownKind, string(c.primitiveKind)) {
+		return nil
 	}
+	c.logger.Info("shutting down (engine requested)")
+	return c.detachStream()
 }
 
 // handleTopologyResponse completes a pending GetTopology call.
