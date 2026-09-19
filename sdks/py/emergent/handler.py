@@ -348,7 +348,7 @@ class EmergentHandler(BaseClient):
                 # Wait for pull request
                 try:
                     msg = await asyncio.wait_for(pull_stream.next(), timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     raise StreamError(
                         f"Timed out waiting for stream.pull after {timeout}s",
                         stream_id=stream_id,
@@ -375,8 +375,8 @@ class EmergentHandler(BaseClient):
                     if has_item:
                         await self.publish(
                             create_message(message_type)
-                                .payload(item)
-                                .metadata({"stream_id": stream_id})
+                            .payload(item)
+                            .metadata({"stream_id": stream_id})
                         )
                         published += 1
                     else:
@@ -427,7 +427,7 @@ class EmergentHandler(BaseClient):
             while stream_id is None:
                 try:
                     msg = await asyncio.wait_for(source_stream.next(), timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     raise StreamError(
                         f"Timed out waiting for stream.ready after {timeout}s",
                     ) from None
@@ -445,15 +445,13 @@ class EmergentHandler(BaseClient):
                     buffered.append(msg)
 
             # Send initial pull
-            await self.publish(
-                create_message(_STREAM_PULL).payload({"stream_id": stream_id})
-            )
+            await self.publish(create_message(_STREAM_PULL).payload({"stream_id": stream_id}))
 
             # Yield items until stream.end
             while True:
                 try:
                     msg = await asyncio.wait_for(source_stream.next(), timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     raise StreamError(
                         f"Timed out waiting for stream item after {timeout}s",
                         stream_id=stream_id,

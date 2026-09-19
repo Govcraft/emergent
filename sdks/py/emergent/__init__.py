@@ -50,6 +50,14 @@ from emergent.errors import (
 # Client Primitives
 from emergent.handler import EmergentHandler
 
+# Helpers
+from emergent.helpers import (
+    HelperError,
+    run_handler,
+    run_sink,
+    run_source,
+)
+
 # Message Building
 from emergent.message import (
     MessageBuilder,
@@ -68,14 +76,6 @@ from emergent.types import (
     SystemShutdownPayload,
     TopologyPrimitive,
     TopologyState,
-)
-
-# Helpers
-from emergent.helpers import (
-    HelperError,
-    run_handler,
-    run_sink,
-    run_source,
 )
 
 __all__ = [

@@ -30,9 +30,7 @@ class TestMessageBuilder:
     def test_create_message_with_metadata(self) -> None:
         """Test creating a message with metadata."""
         msg = (
-            create_message("timer.tick")
-            .metadata({"trace_id": "abc", "location": "room-a"})
-            .build()
+            create_message("timer.tick").metadata({"trace_id": "abc", "location": "room-a"}).build()
         )
 
         assert msg.metadata == {"trace_id": "abc", "location": "room-a"}

@@ -60,9 +60,7 @@ class TimeoutError(EmergentError):
 
     code = "TIMEOUT"
 
-    def __init__(
-        self, message: str = "Operation timed out", timeout: float = 0.0
-    ) -> None:
+    def __init__(self, message: str = "Operation timed out", timeout: float = 0.0) -> None:
         super().__init__(message, self.code)
         self.timeout = timeout
 
@@ -81,9 +79,7 @@ class SubscriptionError(EmergentError):
 
     code = "SUBSCRIPTION_FAILED"
 
-    def __init__(
-        self, message: str, message_types: list[str] | None = None
-    ) -> None:
+    def __init__(self, message: str, message_types: list[str] | None = None) -> None:
         super().__init__(message, self.code)
         self.message_types = message_types or []
 

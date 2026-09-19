@@ -96,9 +96,7 @@ def encode_frame(
     payload_len = len(payload_bytes)
 
     if payload_len > MAX_FRAME_SIZE:
-        raise ProtocolError(
-            f"Payload too large: {payload_len} bytes (max: {MAX_FRAME_SIZE})"
-        )
+        raise ProtocolError(f"Payload too large: {payload_len} bytes (max: {MAX_FRAME_SIZE})")
 
     # Pack header: big-endian u32 length + 3 bytes (version, type, format)
     header = struct.pack(
@@ -131,9 +129,7 @@ def try_decode_frame(buffer: bytes | bytearray) -> DecodedFrame | None:
         return None  # Not enough data for header
 
     # Unpack header
-    payload_len, version, msg_type_raw, format_raw = struct.unpack(
-        ">IBBB", buffer[:HEADER_SIZE]
-    )
+    payload_len, version, msg_type_raw, format_raw = struct.unpack(">IBBB", buffer[:HEADER_SIZE])
 
     if payload_len > MAX_FRAME_SIZE:
         raise ProtocolError(f"Frame too large: {payload_len} bytes")

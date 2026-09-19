@@ -61,7 +61,8 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from emergent.handler import EmergentHandler
 from emergent.sink import EmergentSink
@@ -96,7 +97,7 @@ def _resolve_name(name: str | None, default: str) -> str:
 
 async def run_source(
     name: str | None,
-    run_fn: Callable[[EmergentSource, asyncio.Event], "asyncio.Future[None]"],
+    run_fn: Callable[[EmergentSource, asyncio.Event], asyncio.Future[None]],
 ) -> None:
     """
     Run a Source with custom logic.
@@ -144,9 +145,7 @@ async def run_source(
     try:
         source = await EmergentSource.connect(resolved_name)
     except Exception as e:
-        raise HelperError(
-            f"failed to connect to Emergent engine as '{resolved_name}': {e}"
-        ) from e
+        raise HelperError(f"failed to connect to Emergent engine as '{resolved_name}': {e}") from e
 
     # Set up signal handlers for graceful shutdown
     loop = asyncio.get_running_loop()
@@ -176,7 +175,7 @@ async def run_source(
 async def run_handler(
     name: str | None,
     subscriptions: list[str],
-    process_fn: Callable[["EmergentMessage", EmergentHandler], "asyncio.Future[None]"],
+    process_fn: Callable[[EmergentMessage, EmergentHandler], asyncio.Future[None]],
 ) -> None:
     """
     Run a Handler with message processing.
@@ -216,9 +215,7 @@ async def run_handler(
     try:
         handler = await EmergentHandler.connect(resolved_name)
     except Exception as e:
-        raise HelperError(
-            f"failed to connect to Emergent engine as '{resolved_name}': {e}"
-        ) from e
+        raise HelperError(f"failed to connect to Emergent engine as '{resolved_name}': {e}") from e
 
     try:
         stream = await handler.subscribe(subscriptions)
@@ -260,7 +257,7 @@ async def run_handler(
 async def run_sink(
     name: str | None,
     subscriptions: list[str],
-    consume_fn: Callable[["EmergentMessage"], "asyncio.Future[None]"],
+    consume_fn: Callable[[EmergentMessage], asyncio.Future[None]],
 ) -> None:
     """
     Run a Sink with message consumption.
@@ -295,9 +292,7 @@ async def run_sink(
     try:
         sink = await EmergentSink.connect(resolved_name)
     except Exception as e:
-        raise HelperError(
-            f"failed to connect to Emergent engine as '{resolved_name}': {e}"
-        ) from e
+        raise HelperError(f"failed to connect to Emergent engine as '{resolved_name}': {e}") from e
 
     try:
         stream = await sink.subscribe(subscriptions)

@@ -12,10 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from emergent.handler import EmergentHandler
+from emergent.message import create_message
 from emergent.sink import EmergentSink
 from emergent.source import EmergentSource
-from emergent.message import create_message
 
 
 def _engine_binary() -> Path:
@@ -51,8 +50,8 @@ socket_path = "{self.socket_path}"
 api_port = 0
 
 [event_store]
-json_log_dir = "{Path(self._tmpdir.name) / 'logs'}"
-sqlite_path = "{Path(self._tmpdir.name) / 'events.db'}"
+json_log_dir = "{Path(self._tmpdir.name) / "logs"}"
+sqlite_path = "{Path(self._tmpdir.name) / "events.db"}"
 retention_days = 1
 """
         config_path = Path(self._tmpdir.name) / "test.toml"
@@ -101,10 +100,7 @@ async def test_publish_all_received_by_subscriber(engine: _TestEngine) -> None:
 
         # Connect source and publish batch
         async with await EmergentSource.connect("test_source", socket_path=socket) as source:
-            messages = [
-                create_message("test.batch").payload({"index": i})
-                for i in range(5)
-            ]
+            messages = [create_message("test.batch").payload({"index": i}) for i in range(5)]
             count = await source.publish_all(messages)
 
         assert count == 5

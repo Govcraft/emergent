@@ -1,6 +1,5 @@
 """Pytest configuration and fixtures."""
 
-import pytest
 
 
 # Configure pytest-asyncio

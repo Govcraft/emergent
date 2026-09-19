@@ -4,7 +4,6 @@ import pytest
 
 from emergent._protocol import (
     HEADER_SIZE,
-    MAX_FRAME_SIZE,
     Format,
     MessageType,
     ProtocolVersion,

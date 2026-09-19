@@ -86,6 +86,7 @@ def _init_logging(name: str = "emergent") -> None:
     logger.addHandler(handler)
     logger.setLevel(level)
 
+
 # Default timeout for requests in seconds
 DEFAULT_TIMEOUT = 30.0
 
@@ -258,9 +259,7 @@ class BaseClient:
                 self.primitive_kind,
             )
         except OSError as err:
-            logger.error(
-                "failed to connect to engine primitive=%s error=%s", self.name, err
-            )
+            logger.error("failed to connect to engine primitive=%s error=%s", self.name, err)
             raise ConnectionError(f"Failed to connect to {path}: {err}") from err
 
     async def _subscribe(self, message_types: list[str]) -> MessageStream:
@@ -364,9 +363,7 @@ class BaseClient:
         for t in message_types:
             self._subscribed_types.discard(t)
 
-        logger.debug(
-            "unsubscribed from message types primitive=%s", self.name
-        )
+        logger.debug("unsubscribed from message types primitive=%s", self.name)
 
     async def _publish(self, message: EmergentMessage) -> None:
         """
@@ -407,9 +404,7 @@ class BaseClient:
             self._writer.write(frame)  # type: ignore[union-attr]
             await self._writer.drain()  # type: ignore[union-attr]
         except Exception as e:
-            logger.error(
-                "failed to publish message primitive=%s error=%s", self.name, e
-            )
+            logger.error("failed to publish message primitive=%s error=%s", self.name, e)
             raise
 
         logger.debug(
@@ -502,9 +497,7 @@ class BaseClient:
         )
 
         if not response.success:
-            logger.error(
-                "discovery failed primitive=%s error=%s", self.name, response.error
-            )
+            logger.error("discovery failed primitive=%s error=%s", self.name, response.error)
             raise ConnectionError(response.error or "Discovery failed")
 
         disc_resp = IpcDiscoverResponse.model_validate(response.payload)
@@ -543,9 +536,7 @@ class BaseClient:
         """
         self._ensure_connected()
 
-        logger.debug(
-            "querying configured subscriptions primitive=%s", self.name
-        )
+        logger.debug("querying configured subscriptions primitive=%s", self.name)
 
         correlation_id = generate_correlation_id("cor")
 
@@ -561,9 +552,7 @@ class BaseClient:
         )
 
         if not sub_response.success:
-            raise ConnectionError(
-                sub_response.error or "Failed to subscribe to response type"
-            )
+            raise ConnectionError(sub_response.error or "Failed to subscribe to response type")
 
         # Create promise to wait for response
         loop = asyncio.get_event_loop()
@@ -577,8 +566,8 @@ class BaseClient:
                 )
 
         timer = loop.call_later(self.timeout, timeout_callback)
-        self._pending_subscriptions_requests[correlation_id] = (
-            PendingSubscriptionsRequest(future=future, timer=timer)
+        self._pending_subscriptions_requests[correlation_id] = PendingSubscriptionsRequest(
+            future=future, timer=timer
         )
 
         # Create and publish request message
@@ -633,9 +622,7 @@ class BaseClient:
         )
 
         if not sub_response.success:
-            raise ConnectionError(
-                sub_response.error or "Failed to subscribe to response type"
-            )
+            raise ConnectionError(sub_response.error or "Failed to subscribe to response type")
 
         # Create promise to wait for response
         loop = asyncio.get_event_loop()
@@ -644,9 +631,7 @@ class BaseClient:
         def timeout_callback() -> None:
             self._pending_topology_requests.pop(correlation_id, None)
             if not future.done():
-                future.set_exception(
-                    TimeoutError("GetTopology request timed out", self.timeout)
-                )
+                future.set_exception(TimeoutError("GetTopology request timed out", self.timeout))
 
         timer = loop.call_later(self.timeout, timeout_callback)
         self._pending_topology_requests[correlation_id] = PendingTopologyRequest(
@@ -781,9 +766,7 @@ class BaseClient:
                 future.set_exception(TimeoutError("Request timed out", self.timeout))
 
         timer = loop.call_later(self.timeout, timeout_callback)
-        self._pending_requests[correlation_id] = PendingRequest(
-            future=future, timer=timer
-        )
+        self._pending_requests[correlation_id] = PendingRequest(future=future, timer=timer)
 
         try:
             frame = encode_frame(msg_type, payload, self.format)
@@ -802,9 +785,7 @@ class BaseClient:
             while self._reader is not None and not self._disposed:
                 data = await self._reader.read(65536)
                 if not data:
-                    logger.info(
-                        "connection closed (EOF) primitive=%s", self.name
-                    )
+                    logger.info("connection closed (EOF) primitive=%s", self.name)
                     break  # EOF
 
                 self._read_buffer.extend(data)
@@ -812,9 +793,7 @@ class BaseClient:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(
-                "read loop error primitive=%s error=%s", self.name, e
-            )
+            logger.error("read loop error primitive=%s error=%s", self.name, e)
             if self._message_stream is not None:
                 self._message_stream.close_with_error()
 
@@ -910,9 +889,7 @@ class BaseClient:
                                 )
                                 for p in primitives_data
                             )
-                            pending.future.set_result(
-                                TopologyState(primitives=primitives)
-                            )
+                            pending.future.set_result(TopologyState(primitives=primitives))
                 return  # Don't forward to message stream
 
             # Handle system.response.subscriptions messages
@@ -920,9 +897,7 @@ class BaseClient:
                 wire_message = WireMessage.model_validate(notification.payload)
                 correlation_id = wire_message.correlation_id
                 if correlation_id:
-                    pending = self._pending_subscriptions_requests.pop(
-                        correlation_id, None
-                    )
+                    pending = self._pending_subscriptions_requests.pop(correlation_id, None)
                     if pending is not None:
                         if pending.timer is not None:
                             pending.timer.cancel()
@@ -948,10 +923,7 @@ class BaseClient:
                 message = EmergentMessage.from_wire(wire_message)
 
                 # Auto-unwrap exec-source stdout payloads when enabled
-                if (
-                    self._unwrap_stdout
-                    and not message.message_type.startswith("system.")
-                ):
+                if self._unwrap_stdout and not message.message_type.startswith("system."):
                     message = message.unwrap_stdout()
 
                 self._message_stream.push(message)

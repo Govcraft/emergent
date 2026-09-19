@@ -114,9 +114,7 @@ class EmergentMessage(BaseModel):
 
     def has_stdout_payload(self) -> bool:
         """Check whether this message has an exec-source payload shape."""
-        return isinstance(self.payload, dict) and isinstance(
-            self.payload.get("stdout"), str
-        )
+        return isinstance(self.payload, dict) and isinstance(self.payload.get("stdout"), str)
 
     def unwrap_stdout(self) -> EmergentMessage:
         """Unwrap an exec-source payload by extracting and parsing the stdout field.
