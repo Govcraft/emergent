@@ -81,7 +81,7 @@ Emergent is an **event-driven workflow engine** built on **acton-reactive** (a R
 - **sdks/py**: Python SDK (uses `uv` for package management)
 - **sdks/go**: Go SDK
 - **examples/sources/**: timer (Rust), timer-go (Go), webhook (Python), topology-api (TypeScript)
-- **examples/handlers/**: filter (Rust), filter-go (Go), exec (Rust), topology-api (TypeScript)
+- **examples/handlers/**: filter (Rust), filter-go (Go), exec (Rust)
 - **examples/sinks/**: console (Rust), console-go (Go), log (Rust), console_color (TypeScript), webhook_console (Python), topology-viewer (TypeScript)
 
 ### Engine Modules

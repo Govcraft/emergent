@@ -86,11 +86,30 @@ The engine itself appears as the first entry with name `"emergent-engine"`.
 
 The HTTP API is the direct query path. For event-driven topology updates, use the pub/sub message pattern instead:
 
-1. A Source publishes `system.request.topology`
-2. A Handler receives the request, queries the HTTP API, and publishes `system.response.topology`
+1. Any primitive publishes `system.request.topology`
+2. The engine answers with `system.response.topology`
 3. Sinks subscribed to `system.response.topology` receive the full topology
 
-This pattern keeps the engine simple (it only serves HTTP) while letting primitives build on top of it.
+The engine answers the request itself, the same way it answers
+`system.request.subscriptions`. No topology-query handler is needed, and the
+answer is built from the same data the HTTP API serves, so the two paths always
+agree.
+
+The response copies the request's `correlation_id` onto the message envelope.
+That is where the SDKs match it, which is how `get_topology()` knows which
+response is its own.
+
+### Using the SDK
+
+Sinks have a `get_topology()` method that does the request and the matching for
+you:
+
+```rust
+let topology = sink.get_topology().await?;
+for p in &topology.primitives {
+    println!("{} ({}) {}", p.name, p.kind, p.state);
+}
+```
 
 ### Example Configuration
 
@@ -102,15 +121,6 @@ path = "/usr/bin/deno"
 args = ["run", "--allow-env", "--allow-read", "--allow-net", "./examples/sources/topology-api/main.ts"]
 enabled = true
 publishes = ["system.request.topology"]
-
-# Handler that queries the engine and publishes the response
-[[handlers]]
-name = "topology-query"
-path = "/usr/bin/deno"
-args = ["run", "--allow-env", "--allow-read", "--allow-net", "./examples/handlers/topology-api/main.ts"]
-enabled = true
-subscribes = ["system.request.topology"]
-publishes = ["system.response.topology"]
 
 # Sink that displays topology (e.g., a web UI)
 [[sinks]]
@@ -125,8 +135,8 @@ subscribes = ["system.started.*", "system.stopped.*", "system.error.*", "system.
 
 | Message | Direction | Payload |
 |---------|-----------|---------|
-| `system.request.topology` | Source/Handler publishes | `{"correlationId": "...", "requestedBy": "..."}` |
-| `system.response.topology` | Handler publishes | `{"primitives": [...]}` (same format as HTTP API) |
+| `system.request.topology` | Any primitive publishes | `{}`; the engine matches on the envelope's `correlation_id` |
+| `system.response.topology` | Engine publishes | `{"primitives": [...]}` (same format as HTTP API) |
 
 ## Use Cases
 
