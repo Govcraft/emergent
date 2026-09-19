@@ -315,17 +315,50 @@ func (c *baseClient) unsubscribeInternal(ctx context.Context, messageTypes []str
 	return nil
 }
 
+// connState is the snapshot of baseClient that decides whether a write may go
+// ahead.
+type connState struct {
+	disposed bool
+	conn     net.Conn
+	kind     PrimitiveKind
+}
+
+// usableConn returns the connection to write through, or the error a caller
+// gets when the client is closed or was never connected. It is pure, so the
+// decision is tested without a socket.
+func usableConn(state connState) (net.Conn, error) {
+	if state.disposed {
+		return nil, &DisposedError{ClientType: string(state.kind)}
+	}
+	if state.conn == nil {
+		return nil, &ConnectionError{Msg: "not connected"}
+	}
+	return state.conn, nil
+}
+
+// activeConn must be called with c.mu held. Writers keep the returned
+// connection in a local: close() sets c.conn to nil under c.mu, so reading
+// c.conn again without the lock is a data race and can yield nil.
+func (c *baseClient) activeConn() (net.Conn, error) {
+	return usableConn(connState{disposed: c.disposed, conn: c.conn, kind: c.primitiveKind})
+}
+
+// writeFrame writes one whole frame. writeMu keeps concurrent frames from
+// interleaving on the socket.
+func (c *baseClient) writeFrame(conn net.Conn, frame []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_, err := conn.Write(frame)
+	return err
+}
+
 func (c *baseClient) publishInternal(message *EmergentMessage) error {
 	c.mu.Lock()
-	if c.disposed {
-		c.mu.Unlock()
-		return &DisposedError{ClientType: string(c.primitiveKind)}
-	}
-	if c.conn == nil {
-		c.mu.Unlock()
-		return &ConnectionError{Msg: "not connected"}
-	}
+	conn, err := c.activeConn()
 	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
 
 	// Set source to this client's name
 	wireMsg := message.ToWire()
@@ -345,11 +378,7 @@ func (c *baseClient) publishInternal(message *EmergentMessage) error {
 		return &PublishError{Msg: fmt.Sprintf("encode error: %v", err), MessageType: string(message.MessageType)}
 	}
 
-	c.writeMu.Lock()
-	_, err = c.conn.Write(frame)
-	c.writeMu.Unlock()
-
-	if err != nil {
+	if err = c.writeFrame(conn, frame); err != nil {
 		c.logger.Error("failed to publish message", "message_type", message.MessageType, "error", err)
 		return &PublishError{Msg: err.Error(), MessageType: string(message.MessageType)}
 	}
@@ -1068,7 +1097,15 @@ func (c *baseClient) sendRequest(ctx context.Context, msgType byte, payload any,
 		}
 	})
 
+	// Take the connection and register the request under one lock, so close()
+	// either sees the request and cancels it or has already refused it here.
 	c.mu.Lock()
+	conn, err := c.activeConn()
+	if err != nil {
+		c.mu.Unlock()
+		timer.Stop()
+		return nil, err
+	}
 	c.pendingRequests[correlationID] = &pendingRequest{ch: resultCh, timer: timer}
 	c.mu.Unlock()
 
@@ -1081,11 +1118,7 @@ func (c *baseClient) sendRequest(ctx context.Context, msgType byte, payload any,
 		return nil, fmt.Errorf("encode error: %w", err)
 	}
 
-	c.writeMu.Lock()
-	_, err = c.conn.Write(frame)
-	c.writeMu.Unlock()
-
-	if err != nil {
+	if err = c.writeFrame(conn, frame); err != nil {
 		timer.Stop()
 		c.mu.Lock()
 		delete(c.pendingRequests, correlationID)
