@@ -169,4 +169,7 @@ pub struct TemplateContext {
     pub publishes: Vec<String>,
     /// Description for doc comments.
     pub description: String,
+    /// Dependency requirement for the Emergent SDK, in the syntax of the
+    /// target language's package manager.
+    pub sdk_requirement: String,
 }

@@ -88,6 +88,22 @@ pub use subscribe::{
     topic_matches,
 };
 
+/// The version of this SDK, taken from its own manifest at compile time.
+///
+/// `emergent scaffold` renders the dependency requirement of a generated
+/// primitive from this constant, so a scaffolded crate always asks for the SDK
+/// that the engine generating it was built against. The engine crate carries
+/// its own version, which is why it cannot be the source of this string.
+///
+/// ```
+/// let (major, rest) = emergent_client::VERSION
+///     .split_once('.')
+///     .unwrap_or_default();
+/// assert!(major.parse::<u64>().is_ok());
+/// assert!(rest.contains('.'));
+/// ```
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Result type for client operations.
 pub type Result<T> = std::result::Result<T, ClientError>;
 

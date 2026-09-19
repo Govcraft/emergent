@@ -53,6 +53,7 @@ axum = "0.8.8"
 which = "8.0.2"
 
 [dev-dependencies]
+semver = "1.0.28"
 tempfile = "3.23.0"
 
 [lints]

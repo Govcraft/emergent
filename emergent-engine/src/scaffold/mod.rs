@@ -34,6 +34,7 @@
 pub mod cli;
 pub mod handler;
 pub mod messages;
+pub mod sdk;
 pub mod sink;
 pub mod source;
 pub mod templates;

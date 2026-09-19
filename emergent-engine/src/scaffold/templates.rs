@@ -287,6 +287,7 @@ pub fn render_template(template_content: &str, ctx: &TemplateContext) -> Result<
             subscribes => ctx.subscribes,
             publishes => ctx.publishes,
             description => ctx.description,
+            sdk_requirement => ctx.sdk_requirement,
         ))
         .map_err(|e| format!("Failed to render template: {e}"))
 }

@@ -11,6 +11,7 @@ use emergent_client::types::PrimitiveName;
 use heck::{ToSnakeCase, ToUpperCamelCase};
 
 use crate::scaffold::messages::{Language, PrimitiveType, ScaffoldRequest, TemplateContext};
+use crate::scaffold::sdk::{SDK_VERSION, sdk_requirement};
 
 /// Scaffold subcommand arguments.
 ///
@@ -389,6 +390,7 @@ pub fn build_template_context(request: &ScaffoldRequest) -> TemplateContext {
         subscribes: request.subscribes.clone(),
         publishes: request.publishes.clone(),
         description: request.description.clone(),
+        sdk_requirement: sdk_requirement(request.language, SDK_VERSION),
     }
 }
 
