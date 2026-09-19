@@ -181,8 +181,21 @@ Install pre-built primitives and compose pipelines without writing code:
 ```bash
 emergent marketplace list
 emergent marketplace install exec-handler
+emergent marketplace install exec-handler --version 0.11.0
 emergent marketplace info exec-handler
 ```
+
+The catalog is `index.toml` and `manifests.toml`, published as assets of the
+[emergent-primitives](https://github.com/Govcraft/emergent-primitives/releases)
+release and fetched over HTTPS. Installing a pinned version reads that release's
+manifest and verifies the archive against that release's `checksums.txt`. Both
+files are cached, so `list` and `info` still answer when you are offline, saying
+how old the cached copy is. git is not required.
+
+To host your own catalog, serve those two files and set `registry_url` in
+`~/.config/emergent/marketplace.toml`. A URL ending in `/releases` is read as a
+GitHub release page; anything else is read as a static host, where a pinned
+version lives under `v<version>/`.
 
 | Primitive | Kind | Description |
 |-----------|------|-------------|

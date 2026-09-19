@@ -157,11 +157,26 @@ Unknown keys: after engine 0.10.10 every config table denies unknown fields, so 
 
 Connection limit: every enabled primitive holds one IPC connection for the life of its process. The ceiling comes from acton-reactive, resolved from `$XDG_CONFIG_HOME/acton/ipc.toml` (`[limits] max_connections`) or its own default; `[engine].max_connections` overrides both, and leaving the key out keeps whatever acton resolved. After engine 0.10.10 the engine refuses to start when that limit cannot cover every enabled primitive plus `RESERVED_IPC_CONNECTIONS` (4: one for a restart overlap, three for CLI and topology-viewer queries), with an error naming both numbers. On 0.10.10 and earlier there was no check, so an oversized topology started with some primitives silently dropped at the accept semaphore while `/api/topology` still reported them running. The decision lives in `emergent-engine/src/config.rs` as `check_connection_capacity`, a pure function.
 
+Marketplace: after engine 0.10.10 the registry is two files fetched over HTTPS,
+`index.toml` and `manifests.toml`, published as assets of the emergent-primitives
+release. `[marketplace].registry_url` (in `$XDG_CONFIG_HOME/emergent/marketplace.toml`)
+is a base URL: one ending in `/releases` resolves to `latest/download/<file>` and
+`download/v<version>/<file>`, which are redirects rather than API calls, so there
+is no token and no rate limit; any other base is treated as a static host serving
+`<file>` and `v<version>/<file>`. Both assets are cached under
+`$XDG_CACHE_HOME/emergent/registry/<release>/`, a pinned release is read straight
+from that cache, and an unreachable network falls back to it with a note. A `404`
+is an answer, not an outage, and reports the URL it fetched. git is no longer
+required. Engine 0.10.10 and earlier cloned `emergent-registry` instead and
+installed a pinned version using the current manifest's filenames. URL
+construction, checksum parsing and cache freshness live in
+`emergent-engine/src/marketplace/registry.rs` as pure functions.
+
 Retention: after engine 0.10.10 `retention_days` is enforced by a prune at startup and once a day, over both the SQLite store and the rotated `events-YYYY-MM-DD.jsonl` logs. `0` disables pruning. The decisions live in `emergent-engine/src/retention.rs` as pure functions.
 
 ## Release Process
 
-Three repos must be released in order. The Rust SDK must be published to crates.io before primitives can build against it.
+Two repos must be released in order. The Rust SDK must be published to crates.io before primitives can build against it.
 
 ### Step 1: Release emergent (engine + SDKs)
 
@@ -206,21 +221,17 @@ git push && git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 
 Tagging triggers the release workflow which builds Rust + Deno binaries for all platforms.
 
-### Step 3: Update emergent-registry
+There is no third step. After primitives 0.11.0 each primitive's
+`manifest.toml` lives next to its code, the release workflow generates
+`index.toml` and `manifests.toml` from the manifests and the tag, and attaches
+both to the release. After engine 0.10.10 the engine fetches those two assets
+over HTTPS from `https://github.com/Govcraft/emergent-primitives/releases`, so
+nothing has to be retyped in a third repository.
 
-```bash
-# 1. Update version in index.toml and all primitives/*/manifest.toml
-cd /path/to/emergent-registry
-sed -i 's/OLD_VERSION/NEW_VERSION/g' index.toml primitives/*/manifest.toml
-
-# 2. If a new primitive was added, create its manifest directory and manifest.toml
-
-# 3. Commit and push
-git add -A && git commit -S -m "chore: bump to X.Y.Z"
-git push
-```
-
-No tagging needed — the registry is a plain git repo that the engine clones/pulls.
+**The emergent-registry repo is archived, not deleted.** Engine 0.10.10 and
+earlier have its git URL compiled in and clone it on every marketplace command,
+so deleting it would break the marketplace for every engine already installed.
+Its README points at the new location.
 
 ### Verification
 
