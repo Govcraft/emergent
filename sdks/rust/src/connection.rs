@@ -54,9 +54,14 @@ fn resolve_socket_path(_name: &str) -> Result<PathBuf> {
 ///
 /// Logs to `~/.local/share/emergent/<name>/primitive.log` by default.
 /// Set `EMERGENT_LOG=stderr` to log to stderr instead (for debugging).
-/// No-op if the primitive already installed a subscriber.
+/// No-op if the primitive already installed a subscriber: it keeps its own,
+/// and no log directory or empty log file is created on its behalf.
 fn init_tracing(name: &str) {
     use tracing_subscriber::EnvFilter;
+
+    if tracing::dispatcher::has_been_set() {
+        return;
+    }
 
     let filter = EnvFilter::try_from_env("EMERGENT_LOG")
         .or_else(|_| EnvFilter::try_from_default_env())

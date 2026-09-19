@@ -46,6 +46,11 @@ struct TestEngine {
 impl TestEngine {
     /// Start an engine with a minimal config and a unique socket.
     async fn start() -> TestResult<Self> {
+        // The SDK installs its file subscriber only when the process has
+        // none, so installing a test subscriber first keeps primitive logs
+        // out of the user's data directory.
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+
         let config_dir = tempfile::tempdir()?;
         let socket_path = config_dir.path().join("test.sock");
         let log_dir = config_dir.path().join("logs");
@@ -77,6 +82,8 @@ retention_days = 1
 
         let child = Command::new(engine_binary()?)
             .args(["--config", config_str])
+            // The engine writes its own log under the XDG data directory.
+            .env("XDG_DATA_HOME", config_dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
