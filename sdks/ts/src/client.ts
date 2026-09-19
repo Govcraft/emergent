@@ -58,6 +58,33 @@ export function parseUnwrapFlag(value: string | undefined): boolean {
 }
 
 /**
+ * Read the primitive kind a `system.shutdown` broadcast targets.
+ *
+ * The engine forwards system events with the whole serialized message as the
+ * notification payload, so the kind sits at `payload.kind` inside that
+ * envelope. A bare `{"kind": ...}` object is accepted too, which keeps a
+ * hand-written broadcast working. Returns `undefined` when no string kind is
+ * present. The result is lowercased so callers can compare it against a
+ * primitive kind directly.
+ */
+export function extractShutdownKind(
+  notificationPayload: unknown,
+): string | undefined {
+  const kindOf = (value: unknown): string | undefined => {
+    if (typeof value !== "object" || value === null) return undefined;
+    const kind = (value as { kind?: unknown }).kind;
+    return typeof kind === "string" ? kind.toLowerCase() : undefined;
+  };
+
+  if (typeof notificationPayload !== "object" || notificationPayload === null) {
+    return undefined;
+  }
+
+  const inner = (notificationPayload as { payload?: unknown }).payload;
+  return kindOf(inner) ?? kindOf(notificationPayload);
+}
+
+/**
  * Get the socket path from environment variable.
  *
  * The Emergent engine sets `EMERGENT_SOCKET` for managed processes.
@@ -788,6 +815,34 @@ export class BaseClient {
     }
   }
 
+  /**
+   * Apply a `system.shutdown` push notification to the subscriber stream.
+   *
+   * Returns the stream to keep: the same one when the broadcast targets
+   * another primitive kind, or `null` after closing it when the broadcast
+   * targets this one.
+   *
+   * @internal
+   */
+  protected applyShutdownNotification(
+    notificationPayload: unknown,
+    stream: MessageStream | null,
+  ): MessageStream | null {
+    const shutdownKind = extractShutdownKind(notificationPayload);
+
+    this.#logger.info("received shutdown signal", {
+      kind: shutdownKind ?? "unknown",
+    });
+
+    if (shutdownKind !== this.primitiveKind.toLowerCase()) {
+      return stream;
+    }
+
+    this.#logger.info("shutting down (engine requested)");
+    stream?.close();
+    return null;
+  }
+
   #handleFrame(msgType: number, payload: unknown): void {
     switch (msgType) {
       case MSG_TYPE_RESPONSE: {
@@ -807,20 +862,10 @@ export class BaseClient {
 
         // Check for shutdown signal - SDK handles this internally
         if (notification.message_type === "system.shutdown") {
-          const shutdownPayload = notification.payload as { kind?: string };
-          const shutdownKind = shutdownPayload?.kind?.toLowerCase();
-
-          this.#logger.info("received shutdown signal", { kind: shutdownKind });
-
-          // Close stream if shutdown is for this primitive's kind
-          if (shutdownKind === this.primitiveKind.toLowerCase()) {
-            this.#logger.info("shutting down (engine requested)");
-            // Graceful shutdown - close the stream
-            if (this.#messageStream) {
-              this.#messageStream.close();
-              this.#messageStream = null;
-            }
-          }
+          this.#messageStream = this.applyShutdownNotification(
+            notification.payload,
+            this.#messageStream,
+          );
           // Don't forward system.shutdown to user - it's internal
           break;
         }
