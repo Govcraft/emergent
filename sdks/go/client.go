@@ -686,41 +686,7 @@ func (c *baseClient) close() error {
 		c.conn = nil
 	}
 
-	// Cancel pending requests
-	for id, pending := range c.pendingRequests {
-		if pending.timer != nil {
-			pending.timer.Stop()
-		}
-		select {
-		case pending.ch <- ipcResponseResult{err: &ConnectionError{Msg: "connection closed"}}:
-		default:
-		}
-		delete(c.pendingRequests, id)
-	}
-
-	// Cancel pending topology requests
-	for id, pending := range c.pendingTopologyRequests {
-		if pending.timer != nil {
-			pending.timer.Stop()
-		}
-		select {
-		case pending.ch <- &ConnectionError{Msg: "connection closed"}:
-		default:
-		}
-		delete(c.pendingTopologyRequests, id)
-	}
-
-	// Cancel pending subscription requests
-	for id, pending := range c.pendingSubscriptionRequests {
-		if pending.timer != nil {
-			pending.timer.Stop()
-		}
-		select {
-		case pending.ch <- &ConnectionError{Msg: "connection closed"}:
-		default:
-		}
-		delete(c.pendingSubscriptionRequests, id)
-	}
+	c.failPending(&ConnectionError{Msg: "connection closed"})
 
 	c.subscribedTypes = make(map[string]struct{})
 	c.disposed = true
@@ -783,8 +749,12 @@ func (c *baseClient) readLoop(ctx context.Context) {
 			c.logger.Info("connection closed (EOF)")
 			// Close the message stream on EOF. Detach it under c.mu and close
 			// it unlocked: Close runs the onClose callback, which takes c.mu.
+			//
+			// Requests still in flight can never be answered now, so fail
+			// them here instead of leaving each one to wait out its timer.
 			c.mu.Lock()
 			stream := c.detachStream()
+			c.failPending(&ConnectionError{Msg: "connection closed"})
 			c.mu.Unlock()
 			closeStream(stream)
 			return
@@ -795,6 +765,38 @@ func (c *baseClient) readLoop(ctx context.Context) {
 		c.mu.Unlock()
 
 		c.processFrames()
+	}
+}
+
+// failPending settles every in-flight request with err and forgets it. Must
+// be called with c.mu held. Each result channel is buffered for one value and
+// the send never blocks, so a request that was already answered is left alone.
+func (c *baseClient) failPending(err error) {
+	for id, pending := range c.pendingRequests {
+		if pending.timer != nil {
+			pending.timer.Stop()
+		}
+		select {
+		case pending.ch <- ipcResponseResult{err: err}:
+		default:
+		}
+		delete(c.pendingRequests, id)
+	}
+
+	for _, lookups := range []map[string]*pendingPubSubRequest{
+		c.pendingTopologyRequests,
+		c.pendingSubscriptionRequests,
+	} {
+		for id, pending := range lookups {
+			if pending.timer != nil {
+				pending.timer.Stop()
+			}
+			select {
+			case pending.ch <- err:
+			default:
+			}
+			delete(lookups, id)
+		}
 	}
 }
 
