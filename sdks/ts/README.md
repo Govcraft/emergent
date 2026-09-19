@@ -301,12 +301,17 @@ try {
 | `ValidationError`     | `VALIDATION_ERROR`    | `field`        | A message or a subscription topic is not valid                                           |
 
 `SubscriptionError`, `PublishError` and `DiscoveryError` extend
-`ConnectionError`. Through SDK 0.13.1 they were exported and never thrown: each
-of those rejections threw a plain `ConnectionError` with the code
-`CONNECTION_FAILED`. A handler that catches `ConnectionError` still catches
+`ConnectionError`. On SDK release 0.13.1 and earlier they were exported and
+never thrown: each of those rejections threw a plain `ConnectionError` with the
+code `CONNECTION_FAILED`. A handler that catches `ConnectionError` still catches
 them, so test for the specific class first. A handler that compares `code`
 against `CONNECTION_FAILED` for one of these rejections now sees the code in the
 table.
+
+A frame the engine sends with a malformed body is never thrown to the caller.
+After SDK release 0.13.1 it is logged and skipped, and the subscription stays
+open. On 0.13.1 and earlier one such frame ended the read loop and closed the
+stream.
 
 ## Message Shape
 

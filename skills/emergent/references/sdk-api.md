@@ -377,6 +377,43 @@ Ctrl-C on a hand-run Rust primitive kills it without the graceful disconnect.
 Python, TypeScript, and Go trap both SIGTERM and SIGINT. Under the engine this
 does not matter: shutdown arrives as `system.shutdown` and then SIGTERM.
 
+### Errors an engine rejection raises
+
+When the engine rejects a request, each SDK reports it under a name that says
+which request failed.
+
+| Rejected request | Rust `ClientError` | Python | TypeScript | Go |
+|---|---|---|---|---|
+| subscribe, pattern subscribe | `SubscriptionFailed` | `SubscriptionError` | `SubscriptionError` | `*SubscriptionError` |
+| acknowledged publish | `PublishFailed` | `PublishError` | `PublishError` | `*PublishError` |
+| `discover` | `DiscoveryFailed` | `DiscoveryError` | `DiscoveryError` | `*DiscoveryError` |
+
+On SDK release 0.13.1 and earlier TypeScript exported all three classes and
+threw none of them, and Python raised only `PublishError`: every other
+rejection was a plain `ConnectionError` with the code `CONNECTION_FAILED`
+(Govcraft/emergent#68). After 0.13.1 the TypeScript three and Python's
+`SubscriptionError` and `DiscoveryError` are raised, and each is a subclass of
+`ConnectionError`, so code that catches `ConnectionError` keeps working. Test
+for the specific class first. Python's `PublishError` is not a
+`ConnectionError`.
+
+Rust's `ClientError` also has `IoError`, `IpcError`, `ProtocolError` and
+`EngineError`. The SDK returns none of them. The first two have `From`
+conversions for your own `?`.
+
+### A malformed frame from the engine
+
+After SDK release 0.13.1 the Python, TypeScript and Go read loops log and skip
+a frame whose body does not decode or has the wrong shape, and deliver the
+frames behind it. On 0.13.1 and earlier one such frame (a PUSH with a null
+body, a wrong-typed field, a truncated MessagePack or JSON body) ended the
+TypeScript and Python read loops and closed the subscriber stream
+(Govcraft/emergent#64). Go kept running but dropped every frame buffered
+behind the bad one, and passed a message with wrong-typed fields to the
+subscriber with an empty `ID`. A header that cannot be trusted (an oversized
+length, a wrong protocol version) still drops the buffer, because nothing says
+where the next frame starts.
+
 ### Cargo.toml
 
 ```toml

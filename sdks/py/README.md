@@ -316,13 +316,18 @@ except ConnectionError as e:
 | `StreamError`         | `STREAM_ERROR`        |                  | `stream_offer` or `stream_consume` times out or loses its stream             |
 | `ValidationError`     | `VALIDATION_ERROR`    | `field`          | A message or a subscription topic is not valid                               |
 
-`SubscriptionError` and `DiscoveryError` extend `ConnectionError`. Through SDK
-0.13.1 they were exported and never raised: each of those failures raised a
+`SubscriptionError` and `DiscoveryError` extend `ConnectionError`. On SDK
+release 0.13.1 and earlier they were exported and never raised: each of those failures raised a
 plain `ConnectionError` with the code `CONNECTION_FAILED`. An
 `except ConnectionError` still catches them, so put the specific class first.
 Code that compares `code` against `CONNECTION_FAILED` for one of these
 failures now sees the code in the table. `PublishError` extends
 `EmergentError` directly, as it always has.
+
+A frame the engine sends with a malformed body is never raised to the caller.
+After SDK release 0.13.1 it is logged and skipped, and the subscription stays
+open. On 0.13.1 and earlier one such frame ended the read loop and closed the
+stream.
 
 ## Message Shape
 
