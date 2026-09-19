@@ -101,6 +101,7 @@ use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, Sq
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::ProcessManager;
+use emergent_engine::retention;
 use emergent_engine::topology::build_topology_payload;
 
 // ============================================================================
@@ -164,6 +165,11 @@ impl EventStoreWrapper {
         Self { json_log, sqlite }
     }
 
+    /// Returns the SQLite store, when one is configured, for retention pruning.
+    fn sqlite(&self) -> Option<&SqliteEventStore> {
+        self.sqlite.as_ref()
+    }
+
     fn store(&self, message: &EmergentMessage) -> Result<(), EventStoreError> {
         if let Some(ref json_log) = self.json_log {
             json_log.store(message)?;
@@ -210,6 +216,70 @@ fn init_event_stores(config: &EmergentConfig) -> Result<EventStoreWrapper> {
     );
 
     Ok(EventStoreWrapper::new(json_log, sqlite))
+}
+
+/// Interval between retention passes after the one at startup.
+const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Run one retention pass and log what it removed.
+fn run_retention_pass(event_store: &EventStoreWrapper, log_dir: &Path, retention_days: u32) {
+    let report = retention::prune(
+        event_store.sqlite(),
+        log_dir,
+        retention_days,
+        chrono::Utc::now(),
+    );
+
+    for failure in &report.errors {
+        warn!("Retention prune problem: {}", failure);
+    }
+
+    if report.is_empty() {
+        debug!("Retention prune found nothing older than {retention_days} day(s)");
+        return;
+    }
+
+    let files: Vec<String> = report
+        .files_deleted
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    info!(
+        "Retention prune removed {} event(s) from SQLite and {} JSON log file(s) older than {} day(s){}",
+        report.events_deleted,
+        files.len(),
+        retention_days,
+        if files.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", files.join(", "))
+        }
+    );
+}
+
+/// Prune at startup, then once a day, unless retention is disabled.
+fn start_retention(event_store: &Arc<EventStoreWrapper>, config: &EmergentConfig) {
+    let retention_days = config.event_store.retention_days;
+    let log_dir = config.event_store.json_log_dir.clone();
+
+    if !retention::is_pruning_enabled(retention_days) {
+        info!("Event retention disabled (retention_days = 0): nothing is pruned");
+        return;
+    }
+
+    info!("Event retention: keeping {retention_days} day(s), pruning now and once a day");
+    run_retention_pass(event_store, &log_dir, retention_days);
+
+    let store = event_store.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(RETENTION_INTERVAL);
+        // The first tick completes immediately and is the startup pass already run.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            run_retention_pass(&store, &log_dir, retention_days);
+        }
+    });
 }
 
 /// Load configuration from the given path or default locations.
@@ -259,7 +329,8 @@ fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
     };
 
     info!("Loading configuration from {}", config_path.display());
-    Ok(EmergentConfig::load(&config_path)?)
+    EmergentConfig::load(&config_path)
+        .with_context(|| format!("Failed to load {}", config_path.display()))
 }
 
 /// Create IPC configuration with the socket path from engine config.
@@ -393,6 +464,11 @@ async fn main() -> Result<()> {
     }
     info!("Engine name: {}", config.engine.name);
 
+    // wire_format is accepted for compatibility and selects nothing
+    if let Some(warning) = emergent_engine::config::wire_format_warning(config.engine.wire_format) {
+        warn!("{}", warning);
+    }
+
     // Resolve socket path
     let socket_path = config.socket_path();
     info!("Socket path: {}", socket_path.display());
@@ -404,6 +480,9 @@ async fn main() -> Result<()> {
 
     // Initialize event stores
     let event_store = Arc::new(init_event_stores(&config)?);
+
+    // Enforce [event_store].retention_days: prune now, then once a day
+    start_retention(&event_store, &config);
 
     // Initialize process manager
     let process_manager = ProcessManager::new(socket_path.clone(), config.engine.api_port);
@@ -674,11 +753,7 @@ async fn main() -> Result<()> {
         error!("Failed to start some processes: {}", e);
     }
 
-    info!(
-        "Engine ready - socket: {} wire_format: {:?}",
-        socket_path.display(),
-        config.engine.wire_format
-    );
+    info!("Engine ready - socket: {}", socket_path.display());
 
     // Wait for Ctrl+C or SIGTERM
     #[cfg(unix)]

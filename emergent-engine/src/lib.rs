@@ -28,6 +28,7 @@ pub mod messages;
 pub mod primitive_actor;
 pub mod primitives;
 pub mod process_manager;
+pub mod retention;
 pub mod scaffold;
 pub mod topology;
 pub mod update;
