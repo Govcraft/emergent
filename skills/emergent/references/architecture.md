@@ -95,6 +95,22 @@ stream is dropped. After engine 0.10.10 the engine will not start a topology
 whose enabled primitives, plus 4 reserved connections, exceed the effective
 limit.
 
+**Declarations bind only when told to, and only on publish.** After engine
+0.10.10, `[engine].enforce_declarations` makes a primitive's `publishes` list
+authoritative: `"warn"` logs a publish outside it, `"strict"` also refuses the
+message, keeps it out of the event store and both indexes, fails the publisher's
+`publish_ack`, and emits `system.error.<name>` describing the rejection. The
+default is `"off"`, which is the 0.10.10 behavior of forwarding whatever a
+client sends. The check is one hash lookup for the primitive and one set lookup
+plus a short prefix scan for the topic, off a table built once from config.
+
+Two limits are worth stating plainly. The sender is identified by the message's
+own `source` field, which the client fills in, so enforcement catches mistakes
+rather than lies; connection identity is Govcraft/emergent#24. And the subscribe
+half of the pair is not implemented, because acton-reactive 9.3.0 applies and
+acknowledges a SUBSCRIBE frame inside its listener and offers the embedding
+engine no hook, filter or notification on that path.
+
 **A subscription is a literal message type or a terminal-wildcard prefix.**
 The broker keeps two indexes. A literal topic is looked up character for
 character. A topic ending in a single `*` matches every message type that

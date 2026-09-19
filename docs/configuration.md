@@ -84,6 +84,7 @@ api_port = 8891                # HTTP API port (0 to disable)
 max_connections = 1024         # Concurrent IPC connections the engine accepts
 shutdown_drain_ms = 500        # Voluntary-exit window per shutdown phase
 shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
+enforce_declarations = "off"   # Whether publishes declarations bind: off, warn, strict
 ```
 
 | Option | Default | Description |
@@ -94,6 +95,7 @@ shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
 | `max_connections` | unset | Maximum concurrent IPC connections. Leave it out to keep what acton-reactive resolves. |
 | `shutdown_drain_ms` | `500` | How long a shutdown phase waits for its primitives to exit on the `system.shutdown` broadcast alone, before SIGTERM. Sources skip this window because they cannot subscribe. |
 | `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
+| `enforce_declarations` | `"off"` | After 0.10.10. Whether a primitive's `publishes` list binds it. `"off"`, `"warn"` or `"strict"`. |
 
 **Shutdown timing:** both windows are deadlines, not sleeps. A phase moves on the
 moment every one of its primitives has exited, so a topology of well-behaved
@@ -130,6 +132,75 @@ and its new connection, and transient clients such as a CLI query or the
 topology viewer, which reach `system.request.topology` over the same socket. The
 check runs against the limit that actually took effect, so it catches a ceiling
 set in `ipc.toml` as readily as one set in `emergent.toml`.
+
+**Declaration enforcement:** a primitive's `publishes` list describes the
+topology, and up to engine 0.10.10 it was advisory. The broker stored and
+forwarded whatever a client sent, so a topic the code emitted but the TOML never
+declared flowed anyway, and the declaration quietly stopped describing the
+system. After 0.10.10, `[engine].enforce_declarations` decides whether the list
+binds:
+
+| Value | Effect |
+|-------|--------|
+| `"off"` (default) | Nothing is checked. Exactly the 0.10.10 behavior. |
+| `"warn"` | A publish outside the declarations logs at WARN, naming the primitive, the operation and the message type. The message still flows. |
+| `"strict"` | The same log line, and the message is refused: it is neither stored nor forwarded, the publisher's `publish_ack` fails, and the engine emits `system.error.<name>` describing the rejection. |
+
+The default is `"off"` because turning enforcement on can stop messages a
+working topology depends on. The shipped example configurations are clean under
+`"strict"`, but a topology whose declarations were written before enforcement
+existed usually is not. The `exec` handler is the common case: configured the
+way its documented example is written, declaring only its `--publish-as` topic,
+it violates on every failure because its `--error-as` topic (default
+`exec.error`) is undeclared. Run `"warn"` first, read the log, add the topics it
+names to `publishes`, then move to `"strict"`.
+
+Matching follows the same rule as subscriptions: a declared entry is either an
+exact message type or a prefix ending in a single trailing `*`, so
+`publishes = ["metrics.*"]` permits `metrics.cpu`. `system.request.subscriptions`
+and `system.request.topology` are engine protocol rather than topology, and are
+always allowed: every SDK sends the first before it can subscribe to anything.
+The engine's own `system.*` lifecycle events are produced by the engine, not by
+a primitive, and are never checked.
+
+**What enforcement protects against, and what it does not.** The check is keyed
+on the message's `source` field, which the publishing client fills in itself. So
+enforcement catches a primitive that names itself honestly and publishes
+something it did not declare, which is what every typo, every drifted
+declaration and every undeclared topic looks like. It does **not** stop a client
+that lies: anything that can open the engine's socket can claim to be `timer`
+and publish whatever `timer` declared. The engine has no connection identity to
+check the claimed name against, so this is a correctness and hygiene control,
+not a security boundary. Authenticating connections by spawned PID is tracked
+separately (Govcraft/emergent#24). Treat access to the Unix socket as the actual
+trust boundary.
+
+**Subscriptions are not enforced.** The issue asked for both halves, and only
+the publish half is implementable today. A SUBSCRIBE request is handled inside
+acton-reactive's IPC listener and acknowledged there; acton 9.3.0 exposes no
+hook, callback or validation point on that path, and no way to enumerate
+connections after the fact, so the engine never sees the request and cannot
+refuse it. A primitive using the SDKs still subscribes only to what the engine
+told it it declared, which is where subscription filtering has always lived, but
+a client speaking the protocol directly can subscribe to anything. In `"strict"`
+mode the `subscribes` list therefore remains advisory while the `publishes` list
+binds.
+
+**The rejection a publisher sees.** In `"strict"` mode `publish_ack` fails, but
+with acton's generic text, `Publish failed: I/O error: Response channel closed
+without receiving a response`, rather than the engine's explanation. acton 9.3.0
+turns any actor reply into a success frame and gives an actor no way to reply
+with an error of its own, so the engine refuses by not replying. The reason is
+in the engine log and in the `system.error.<name>` payload:
+
+```json
+{"primitive":"proof","operation":"publish","message_type":"proof.undeclared",
+ "reason":"'proof' tried to publish 'proof.undeclared', which is not in its declared publishes list",
+ "mode":"strict"}
+```
+
+A sink already subscribed to `system.error.*` sees rejections without
+subscribing to anything new.
 
 `wire_format` is accepted but selects nothing: IPC is always MessagePack. On engine 0.10.10 and earlier the key was silently inert and the startup line reported the value you set. After 0.10.10 the engine warns at startup that the key has no effect and the ready line no longer names a wire format. Leave it out. To read events in a human-readable form, read the JSON event log.
 

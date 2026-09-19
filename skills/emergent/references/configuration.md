@@ -117,6 +117,34 @@ subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ti
 | `max_connections` | Integer | unset | After 0.10.10. Maximum concurrent IPC connections. Unset keeps what acton-reactive resolves, from `$XDG_CONFIG_HOME/acton/ipc.toml` or its own default. Setting it overrides both |
 | `shutdown_drain_ms` | Integer | `500` | After 0.10.10. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
 | `shutdown_grace_ms` | Integer | `2000` | After 0.10.10. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
+| `enforce_declarations` | String | `"off"` | After 0.10.10. Whether a primitive's `publishes` list binds it: `"off"`, `"warn"` or `"strict"` |
+
+A primitive's `publishes` list was advisory up to engine 0.10.10: the broker
+stored and forwarded whatever a client sent. After 0.10.10,
+`enforce_declarations` decides whether it binds. `"warn"` logs a publish outside
+the declarations at WARN, naming the primitive, the operation and the message
+type, and lets the message through. `"strict"` also refuses it: the message is
+neither stored nor forwarded, the publisher's `publish_ack` fails, and the
+engine emits `system.error.<name>` carrying the same reason. Matching uses the
+same rule as subscriptions, an exact type or a single trailing `*`.
+`system.request.subscriptions` and `system.request.topology` are engine protocol
+and always allowed; the engine's own `system.*` lifecycle events never go
+through the check.
+
+The default is `"off"` because enforcement can stop messages a working topology
+depends on. The shipped example configs are clean under `"strict"`, but an
+`exec` handler configured the way its documented example is written violates on
+every failure, because its `--error-as` topic (default `exec.error`) is not in
+`publishes`. Run `"warn"`, fix what it names, then go `"strict"`.
+
+Be precise about the guarantee. The check is keyed on the message's `source`
+field, which the client writes itself, so it catches a primitive that names
+itself honestly and publishes something undeclared. It does not stop a client
+that claims another primitive's name: the engine has no connection identity to
+check against (Govcraft/emergent#24). Subscriptions are not enforced at all,
+because acton-reactive 9.3.0 handles and acknowledges a SUBSCRIBE frame inside
+its own listener with no hook for the engine, so in `"strict"` mode `publishes`
+binds while `subscribes` stays advisory.
 
 Every enabled primitive holds one IPC connection for the life of its process,
 so the connection ceiling is a hard cap on topology size. On engine 0.10.10 and
