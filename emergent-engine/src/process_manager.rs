@@ -465,6 +465,40 @@ impl ProcessManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::PrimitiveState;
+
+    /// Build a source config for a real executable.
+    fn source_config(name: &str, path: &str, args: &[&str]) -> SourceConfig {
+        SourceConfig {
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            args: args.iter().map(|a| (*a).to_string()).collect(),
+            enabled: true,
+            publishes: Vec::new(),
+            env: HashMap::new(),
+        }
+    }
+
+    /// Poll the manager until a primitive satisfies `predicate`.
+    ///
+    /// The actor spawns its child in `after_start`, so the state a query sees
+    /// depends on how far that has got. Polling keeps the test honest without
+    /// fixing an arbitrary sleep.
+    async fn wait_for(
+        manager: &ProcessManager,
+        name: &str,
+        predicate: impl Fn(&PrimitiveInfo) -> bool,
+    ) -> Option<PrimitiveInfo> {
+        for _ in 0..100 {
+            if let Some(info) = manager.get_info(name).await
+                && predicate(&info)
+            {
+                return Some(info);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
 
     #[tokio::test]
     async fn test_process_manager_creation() {
@@ -477,5 +511,68 @@ mod tests {
         let manager = ProcessManager::new(PathBuf::from("/tmp/test.sock"), 8891);
         let primitives = manager.list_all().await;
         assert!(primitives.is_empty());
+    }
+
+    /// The defect behind Govcraft/emergent#40: every managed primitive reported
+    /// `Configured` with no pid for the life of the engine.
+    #[tokio::test]
+    async fn queries_report_the_live_state_of_each_primitive() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-40-test.sock"), 0);
+
+        let alive = source_config("alive", "/bin/sleep", &["30"]);
+        let one_shot = source_config("one-shot", "/bin/true", &[]);
+        let crasher = source_config("crasher", "/bin/false", &[]);
+
+        for config in [&alive, &one_shot, &crasher] {
+            assert!(manager.register_source(&mut runtime, config).await.is_ok());
+        }
+
+        let running = wait_for(&manager, "alive", |i| i.state == PrimitiveState::Running).await;
+        let Some(running) = running else {
+            panic!(
+                "alive never reported Running: {:?}",
+                manager.get_info("alive").await
+            );
+        };
+        assert!(running.pid.is_some(), "a running primitive reports its pid");
+        assert_eq!(running.error, None);
+
+        let stopped = wait_for(&manager, "one-shot", |i| i.state == PrimitiveState::Stopped).await;
+        let Some(stopped) = stopped else {
+            panic!(
+                "one-shot never reported Stopped: {:?}",
+                manager.get_info("one-shot").await
+            );
+        };
+        assert_eq!(stopped.pid, None, "a stopped primitive has no pid");
+        assert_eq!(stopped.error, None);
+
+        let failed = wait_for(&manager, "crasher", |i| i.state == PrimitiveState::Failed).await;
+        let Some(failed) = failed else {
+            panic!(
+                "crasher never reported Failed: {:?}",
+                manager.get_info("crasher").await
+            );
+        };
+        assert_eq!(failed.pid, None);
+        assert_eq!(failed.error.as_deref(), Some("Exited with status: 1"));
+
+        // list_all agrees with the per-primitive query, since both read the
+        // state the actors publish.
+        let all = manager.list_all().await;
+        assert_eq!(all.len(), 3);
+        assert!(
+            all.iter()
+                .any(|i| i.name == "alive" && i.state == PrimitiveState::Running)
+        );
+
+        manager.stop_all().await;
+
+        let after_stop = wait_for(&manager, "alive", |i| i.state != PrimitiveState::Running).await;
+        let Some(after_stop) = after_stop else {
+            panic!("alive stayed Running after stop_all");
+        };
+        assert_ne!(after_stop.state, PrimitiveState::Running);
     }
 }
