@@ -95,6 +95,56 @@ export function encodeFrame(
 }
 
 /**
+ * Decode a frame body.
+ *
+ * An empty body decodes to `null`. A heartbeat frame is a bare header, and
+ * neither JSON nor MessagePack can parse zero bytes.
+ *
+ * @throws {ProtocolError} If the format byte is unknown
+ */
+export function decodePayload(
+  payloadBytes: Uint8Array,
+  format: number,
+): unknown {
+  if (format !== FORMAT_MSGPACK && format !== FORMAT_JSON) {
+    throw new ProtocolError(`Unknown format: ${format}`);
+  }
+
+  if (payloadBytes.length === 0) {
+    return null;
+  }
+
+  if (format === FORMAT_JSON) {
+    return JSON.parse(textDecoder.decode(payloadBytes));
+  }
+  return decode(payloadBytes);
+}
+
+/** Names of the frame types this SDK knows, keyed by their wire byte. */
+const FRAME_TYPE_NAMES: Readonly<Record<number, string>> = {
+  [MSG_TYPE_REQUEST]: "REQUEST",
+  [MSG_TYPE_RESPONSE]: "RESPONSE",
+  [MSG_TYPE_ERROR]: "ERROR",
+  [MSG_TYPE_HEARTBEAT]: "HEARTBEAT",
+  [MSG_TYPE_PUSH]: "PUSH",
+  [MSG_TYPE_SUBSCRIBE]: "SUBSCRIBE",
+  [MSG_TYPE_UNSUBSCRIBE]: "UNSUBSCRIBE",
+  [MSG_TYPE_DISCOVER]: "DISCOVER",
+  [MSG_TYPE_STREAM]: "STREAM",
+  [MSG_TYPE_SUBSCRIBE_PATTERNS]: "SUBSCRIBE_PATTERNS",
+  [MSG_TYPE_UNSUBSCRIBE_PATTERNS]: "UNSUBSCRIBE_PATTERNS",
+};
+
+/**
+ * Name a frame type byte for a log line.
+ *
+ * Returns `undefined` for a byte this SDK does not know.
+ */
+export function frameTypeName(msgType: number): string | undefined {
+  return FRAME_TYPE_NAMES[msgType];
+}
+
+/**
  * Decoded frame result.
  */
 export interface DecodedFrame {
@@ -146,17 +196,7 @@ export function tryDecodeFrame(buffer: Uint8Array): DecodedFrame | null {
   const msgType = buffer[5];
   const format = buffer[6];
 
-  const payloadBytes = buffer.subarray(HEADER_SIZE, totalLen);
-  let payload: unknown;
-
-  if (format === FORMAT_MSGPACK) {
-    payload = decode(payloadBytes);
-  } else if (format === FORMAT_JSON) {
-    const jsonStr = textDecoder.decode(payloadBytes);
-    payload = JSON.parse(jsonStr);
-  } else {
-    throw new ProtocolError(`Unknown format: ${format}`);
-  }
+  const payload = decodePayload(buffer.subarray(HEADER_SIZE, totalLen), format);
 
   return {
     msgType,

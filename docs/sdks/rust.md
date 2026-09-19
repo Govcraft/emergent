@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `publish(message)` | Send a message (fire-and-forget) |
 | `publish_all(messages)` | Publish all messages from an iterator, return count |
 | `publish_stream(stream)` | Publish messages from an async stream, return count |
-| `discover()` | Query available message types and primitives |
+| `discover()` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `disconnect()` | Graceful disconnection |
 | `name()` | Get this source's name |
 
@@ -192,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `publish_all(messages)` | Publish all messages from an iterator, return count |
 | `publish_stream(stream)` | Publish messages from an async stream, return count |
 | `unsubscribe(types)` | Remove subscriptions |
-| `discover()` | Query available message types |
+| `discover()` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `disconnect()` | Graceful disconnection |
 | `subscribed_types()` | Get current subscriptions |
 
@@ -251,7 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `subscribe(types)` | Subscribe and get message stream |
 | `get_my_subscriptions()` | Query configured subscriptions from engine |
 | `unsubscribe(types)` | Remove subscriptions |
-| `discover()` | Query available message types |
+| `discover()` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `disconnect()` | Graceful disconnection |
 
 ### Convenience Method
@@ -384,19 +384,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Discovery
 
-Query available message types and primitives:
+`discover()` asks the engine's IPC layer what it exposes. The reply describes the transport, not the workflow:
+
+- `message_types` holds the IPC type names the engine has registered (`SystemEvent`, `EmergentMessage`). These are envelope names, not topics such as `timer.tick`.
+- `primitives` holds the actors the engine exposes over IPC (`message_broker`). These are engine internals, not the sources, handlers and sinks in the config, and `kind` is always empty.
+
+To list the primitives and the topics they publish and subscribe to, call `get_topology()` on a sink, which publishes `system.request.topology`, or read `GET /api/topology`.
 
 ```rust
 let info = source.discover().await?;
 
-println!("Message types:");
+println!("IPC type names:");
 for msg_type in &info.message_types {
     println!("  - {}", msg_type);
 }
 
-println!("Primitives:");
-for primitive in &info.primitives {
-    println!("  - {} ({})", primitive.name, primitive.kind);
+println!("IPC-exposed actors:");
+for actor in &info.primitives {
+    println!("  - {}", actor.name);
 }
 ```
 

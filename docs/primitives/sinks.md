@@ -348,7 +348,7 @@ let mut stream = EmergentSink::messages("console", Vec::<String>::new()).await?;
 | `subscribe(types)` | Subscribe and get message stream |
 | `get_my_subscriptions()` | Query configured subscriptions from engine |
 | `unsubscribe(types)` | Remove subscriptions |
-| `discover()` | Query available message types |
+| `discover()` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `disconnect()` | Graceful disconnection |
 
 See also: [Sources](sources.md), [Handlers](handlers.md), [Rust SDK](../sdks/rust.md), [TypeScript SDK](../sdks/typescript.md), [Python SDK](../sdks/python.md), [Go SDK](../sdks/go.md)

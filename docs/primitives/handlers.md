@@ -325,7 +325,7 @@ let stream = handler.subscribe(topics).await?;
 | `subscribe(types)` | Subscribe and get message stream |
 | `publish(message)` | Send a message |
 | `unsubscribe(types)` | Remove subscriptions |
-| `discover()` | Query available message types |
+| `discover()` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `disconnect()` | Graceful disconnection |
 | `subscribed_types()` | Get current subscriptions |
 

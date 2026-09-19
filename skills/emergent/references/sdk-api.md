@@ -150,7 +150,7 @@ source.disconnect().await?;
 | `publish_ack` | `async fn publish_ack(&self, message: EmergentMessage) -> Result<()>` | Publish and wait for the engine's acknowledgment |
 | `publish_all` | `async fn publish_all(&self, messages: impl IntoIterator<Item = EmergentMessage>) -> Result<usize>` | Publish each message with `publish_ack`; returns the count |
 | `publish_stream` | `async fn publish_stream<S>(&self, stream: S) -> Result<usize>` | Same, from an async `Stream` |
-| `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | Discover available message types |
+| `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `name` | `fn name(&self) -> &str` | Get the source name |
 | `disconnect` | `async fn disconnect(&self) -> Result<()>` | Gracefully disconnect |
 
@@ -178,7 +178,7 @@ handler.disconnect().await?;
 | `publish_ack` | `async fn publish_ack(&self, message: EmergentMessage) -> Result<()>` | Publish and wait for the engine's acknowledgment |
 | `publish_all` / `publish_stream` | as on `EmergentSource` | Acked batch publish; returns the count |
 | `stream_offer` / `stream_consume` | see Pull-Based Streaming below | Consumer-driven streaming |
-| `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | Discover message types |
+| `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `get_my_subscriptions` | `async fn get_my_subscriptions(&self) -> Result<Vec<String>>` | The `subscribes` list from the engine config |
 | `name` | `fn name(&self) -> &str` | Get handler name |
 | `subscribed_types` | `fn subscribed_types(&self) -> &[String]` | Types passed to the last `subscribe` call |
@@ -208,7 +208,7 @@ let mut stream = EmergentSink::messages("my_sink", ["timer.tick"]).await?;
 | `connect_to` | `async fn connect_to(name: &str, socket_path: &Path) -> Result<Self>` | Connect to an explicit socket |
 | `messages` | `async fn messages(name, types) -> Result<MessageStream>` | Connect and subscribe to `types`. Pass an empty list to use the **config's** `subscribes` instead. Clients up to 0.13.1 ignored `types` and always used the config |
 | `subscribe` | `async fn subscribe(&mut self, types: impl IntoSubscription) -> Result<MessageStream>` | Subscribe and get stream |
-| `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | Discover message types |
+| `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `get_my_subscriptions` | `async fn get_my_subscriptions(&self) -> Result<Vec<String>>` | Get configured subscriptions |
 | `get_topology` | `async fn get_topology(&self) -> Result<TopologyState>` | Publishes `system.request.topology` and waits up to 30 s for `system.response.topology`. Engines after 0.10.10 answer it at once. On 0.10.10 and earlier nothing answers, so it returns `ClientError::Timeout` (Govcraft/emergent#46); use `GET /api/topology` there |
 | `name` | `fn name(&self) -> &str` | Get sink name |

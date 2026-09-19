@@ -205,13 +205,19 @@ export class EmergentSink extends BaseClient
   }
 
   /**
-   * Discover available message types and primitives.
+   * Ask the engine's IPC layer what it exposes.
+   *
+   * The reply lists the IPC type names the engine has registered
+   * (`EmergentMessage`, `SystemEvent`) and the actors it exposes over IPC
+   * (`message_broker`). It never lists Emergent topics such as `timer.tick`,
+   * and it never lists sources, handlers or sinks. `getTopology()` answers that
+   * question.
    *
    * @example
    * ```typescript
    * const info = await sink.discover();
-   * console.log("Available types:", info.messageTypes);
-   * console.log("Connected primitives:", info.primitives);
+   * console.log("IPC type names:", info.messageTypes);
+   * console.log("IPC-exposed actors:", info.primitives);
    * ```
    */
   async discover(): Promise<DiscoveryInfo> {

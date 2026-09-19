@@ -152,23 +152,38 @@ export interface EmergentMessageData {
 }
 
 /**
- * Discovery information about the engine.
+ * What the engine's IPC layer reports about itself.
+ *
+ * This describes the transport, not the workflow. It never lists Emergent
+ * topics such as `timer.tick`, and it never lists sources, handlers or sinks.
+ * Ask `EmergentSink.getTopology()` for the primitives and the topics they
+ * publish and subscribe to.
  */
 export interface DiscoveryInfo {
-  /** Available message types that can be subscribed to */
+  /**
+   * IPC type names the engine has registered, such as `EmergentMessage` and
+   * `SystemEvent`. These are transport envelope names, not topics, and
+   * subscribing to one delivers nothing useful.
+   */
   readonly messageTypes: readonly string[];
-  /** List of connected primitives */
+  /**
+   * Actors the engine exposes over IPC, such as `message_broker`. These are
+   * engine internals, not the primitives in the config.
+   */
   readonly primitives: readonly PrimitiveInfo[];
 }
 
 /**
- * Information about a registered primitive.
+ * An actor the engine exposes over IPC, as listed by `discover()`.
  */
 export interface PrimitiveInfo {
-  /** Name of the primitive */
+  /** Name the actor is exposed under, such as `message_broker` */
   readonly name: string;
-  /** Type of primitive (Source, Handler, Sink) */
-  readonly kind: PrimitiveKind;
+  /**
+   * Never set by `discover()`: the engine's reply carries a name for each
+   * actor and no kind.
+   */
+  readonly kind?: PrimitiveKind;
 }
 
 /**
@@ -318,12 +333,30 @@ export interface IpcPatternSubscriptionResponse {
 }
 
 /**
+ * IPC discover request.
+ * @internal
+ */
+export interface IpcDiscoverRequest {
+  correlation_id: string;
+  include_actors: boolean;
+  include_message_types: boolean;
+}
+
+/**
  * IPC discover response.
+ *
+ * The engine writes these fields at the top level of the frame body, beside
+ * `correlation_id` and `success`, and not under `payload`. It leaves out
+ * whichever list was not asked for.
  * @internal
  */
 export interface IpcDiscoverResponse {
-  message_types: string[];
-  primitives: Array<{ name: string; kind: string }>;
+  correlation_id: string;
+  success: boolean;
+  error?: string;
+  protocol_version?: Record<string, unknown>;
+  actors?: Array<{ name: string; ern?: string }>;
+  message_types?: string[];
 }
 
 /**
