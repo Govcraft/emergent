@@ -640,6 +640,7 @@ breaks a prompt or a jq program in a way that still loads and still runs. The
 only thing a literal string cannot hold is `'''` itself. End the body with a
 space before the closing `'''` when its last character is a single quote.
 
-Leave `[engine] wire_format` unset. The key parses (`"messagepack"` by default,
-or `"json"`) but is currently only logged. For human-readable inspection, read
-the event store's JSON logs.
+Leave `[engine] wire_format` unset. The key parses (`"messagepack"` or
+`"json"`) but selects nothing: IPC is always MessagePack. On engine 0.10.10 and
+earlier it was silently inert; after 0.10.10 setting it earns a warning at
+startup. For human-readable inspection, read the event store's JSON logs.

@@ -52,7 +52,9 @@ Use `{domain}.{action}` naming:
 
 - **Socket Type**: Unix domain sockets
 - **Wire Format**: MessagePack, always. `[engine].wire_format` still parses
-  (`"messagepack"` or `"json"`) but nothing reads it, so omit it.
+  (`"messagepack"` or `"json"`) but nothing reads it, so omit it. On engine
+  0.10.10 and earlier it was inert and unannounced; after 0.10.10 setting it
+  earns a warning at startup.
 - **Frame Protocol**: Length-prefixed frames from acton-reactive
 
 ### Environment Variables

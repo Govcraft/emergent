@@ -6,9 +6,11 @@ looks for `--config/-c FILE`, then `./emergent.toml`, then
 and `--verbose/-v` logs to stderr instead of
 `~/.local/share/emergent/<engine.name>/emergent.log`.
 
-Unknown keys are ignored without a warning, so a typo such as `subscribe =`
-produces a primitive that loads and receives nothing. Check spelling first when a
-primitive is silent.
+On engine 0.10.10 and earlier unknown keys were ignored without a warning, so a
+typo such as `subscribe =` produced a primitive that loaded and received nothing.
+After 0.10.10 an unknown key is a load error naming the key, the keys its table
+accepts, and the file. On an older engine, check spelling first when a primitive
+is silent.
 
 ## Complete Example
 
@@ -43,7 +45,7 @@ json_log_dir = "auto"
 # "auto": uses XDG data directory
 sqlite_path = "auto"
 
-# Parsed but not enforced: no cleanup runs, so prune the store yourself
+# Days of events to keep. 0 keeps everything
 retention_days = 30
 
 # =============================================================================
@@ -115,7 +117,7 @@ subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ti
 | `shutdown_drain_ms` | Integer | `500` | After 0.10.10. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
 | `shutdown_grace_ms` | Integer | `2000` | After 0.10.10. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
 
-Leave `wire_format` unset. The key still parses (`"messagepack"` or `"json"`) but has no effect: IPC is always MessagePack. For human-readable inspection, read the event store's JSON logs.
+Leave `wire_format` unset. The key still parses (`"messagepack"` or `"json"`) but has no effect: IPC is always MessagePack. On engine 0.10.10 and earlier it was silently inert and the ready line echoed it back; after 0.10.10 setting it earns a warning at startup and the ready line no longer names a format. For human-readable inspection, read the event store's JSON logs.
 
 ### [event_store]
 
@@ -123,10 +125,18 @@ Leave `wire_format` unset. The key still parses (`"messagepack"` or `"json"`) bu
 |-------|------|---------|-------------|
 | `json_log_dir` | Path | `"auto"` | Directory for JSON log files. `"auto"` is `~/.local/share/emergent/<engine.name>/logs` on Linux |
 | `sqlite_path` | Path | `"auto"` | SQLite database path. `"auto"` is `~/.local/share/emergent/<engine.name>/events.db` on Linux |
-| `retention_days` | Integer | `30` | Parsed but not enforced. Nothing prunes either store |
+| `retention_days` | Integer | `30` | Days of events to keep. `0` keeps everything |
 
 Both stores are always on. `~` is **not** expanded in `json_log_dir`,
 `sqlite_path`, or `socket_path`; only a primitive's `path` gets tilde expansion.
+
+On engine 0.10.10 and earlier `retention_days` was parsed and nothing pruned
+either store, so a fast source filled the disk. After 0.10.10 the engine prunes
+at startup and once a day: SQLite rows older than the window are deleted, and
+`events-YYYY-MM-DD.jsonl` files dated before it are removed, keeping the day at
+the edge of the window and never touching files that are not rotated event logs.
+Each pass logs what it removed. `retention_days = 0` disables pruning and keeps
+everything, which the engine states at startup.
 
 The JSON log is one file per UTC day, `events-YYYY-MM-DD.jsonl`, one line per
 event: `{"timestamp": "<RFC3339>", "message": <envelope>}`.

@@ -30,7 +30,10 @@ pub enum ConfigError {
     PathNotFound(PathBuf),
 }
 
-/// Wire format for IPC communication.
+/// Wire format named by the inert `[engine].wire_format` key.
+///
+/// The key is still accepted so configurations written for 0.10.10 and earlier
+/// keep loading, but it selects nothing: IPC is always MessagePack.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WireFormat {
@@ -41,8 +44,39 @@ pub enum WireFormat {
     Messagepack,
 }
 
+impl WireFormat {
+    /// Returns the TOML spelling of this wire format.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Messagepack => "messagepack",
+        }
+    }
+}
+
+impl std::fmt::Display for WireFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Build the startup warning for an inert `wire_format` key (pure function).
+///
+/// Returns `None` when the key is absent, which is the only configuration that
+/// describes the engine accurately. Returns the warning text otherwise.
+#[must_use]
+pub fn wire_format_warning(wire_format: Option<WireFormat>) -> Option<String> {
+    wire_format.map(|format| {
+        format!(
+            "[engine] wire_format = \"{format}\" has no effect: IPC is always MessagePack. Remove the key. For human-readable events, read the JSON event log."
+        )
+    })
+}
+
 /// Engine configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     /// Name of this engine instance.
     #[serde(default = "default_engine_name")]
@@ -52,9 +86,10 @@ pub struct EngineConfig {
     #[serde(default = "default_socket_path")]
     pub socket_path: String,
 
-    /// Wire format for IPC communication.
-    #[serde(default)]
-    pub wire_format: WireFormat,
+    /// Wire format for IPC communication. Accepted but inert: IPC is always
+    /// MessagePack, and setting the key only earns a warning at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_format: Option<WireFormat>,
 
     /// HTTP API port for topology queries. Set to 0 to disable.
     #[serde(default = "default_api_port")]
@@ -120,7 +155,7 @@ impl Default for EngineConfig {
         Self {
             name: default_engine_name(),
             socket_path: default_socket_path(),
-            wire_format: WireFormat::default(),
+            wire_format: None,
             api_port: default_api_port(),
             shutdown_drain_ms: default_shutdown_drain_ms(),
             shutdown_grace_ms: default_shutdown_grace_ms(),
@@ -130,6 +165,7 @@ impl Default for EngineConfig {
 
 /// Event store configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventStoreConfig {
     /// Directory for JSON log files.
     #[serde(default = "default_json_log_dir")]
@@ -140,6 +176,9 @@ pub struct EventStoreConfig {
     pub sqlite_path: PathBuf,
 
     /// Retention period in days for old events.
+    ///
+    /// The engine prunes both stores at startup and once a day afterwards.
+    /// `0` disables pruning and keeps every event forever.
     #[serde(default = "default_retention_days")]
     pub retention_days: u32,
 }
@@ -241,6 +280,7 @@ impl RestartConfig {
 
 /// Configuration for a Source primitive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceConfig {
     /// Unique name for this source.
     pub name: String,
@@ -271,6 +311,7 @@ pub struct SourceConfig {
 
 /// Configuration for a Handler primitive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HandlerConfig {
     /// Unique name for this handler.
     pub name: String,
@@ -313,6 +354,7 @@ pub struct HandlerConfig {
 
 /// Configuration for a Sink primitive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SinkConfig {
     /// Unique name for this sink.
     pub name: String,
@@ -580,6 +622,7 @@ fn check_paths_exist<'a, T: PrimitiveConfig + 'a>(
 
 /// Complete Emergent configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmergentConfig {
     /// Engine settings.
     #[serde(default)]
@@ -837,7 +880,7 @@ name = "test"
 "#;
         let config = EmergentConfig::parse(toml)?;
         assert_eq!(config.engine.name, "test");
-        assert_eq!(config.engine.wire_format, WireFormat::Messagepack);
+        assert_eq!(config.engine.wire_format, None);
         Ok(())
     }
 
@@ -894,15 +937,129 @@ subscribes = ["timer.filtered"]
 wire_format = "json"
 "#;
         let config = EmergentConfig::parse(json_config)?;
-        assert_eq!(config.engine.wire_format, WireFormat::Json);
+        assert_eq!(config.engine.wire_format, Some(WireFormat::Json));
 
         let msgpack_config = r#"
 [engine]
 wire_format = "messagepack"
 "#;
         let config = EmergentConfig::parse(msgpack_config)?;
-        assert_eq!(config.engine.wire_format, WireFormat::Messagepack);
+        assert_eq!(config.engine.wire_format, Some(WireFormat::Messagepack));
         Ok(())
+    }
+
+    #[test]
+    fn wire_format_warning_is_silent_when_the_key_is_absent() {
+        assert_eq!(wire_format_warning(None), None);
+    }
+
+    #[test]
+    fn wire_format_warning_names_the_setting_and_the_real_format() {
+        let json = wire_format_warning(Some(WireFormat::Json)).unwrap_or_default();
+        assert!(json.contains("wire_format = \"json\""), "got: {json}");
+        assert!(json.contains("no effect"), "got: {json}");
+        assert!(json.contains("MessagePack"), "got: {json}");
+
+        let msgpack = wire_format_warning(Some(WireFormat::Messagepack)).unwrap_or_default();
+        assert!(
+            msgpack.contains("wire_format = \"messagepack\""),
+            "got: {msgpack}"
+        );
+    }
+
+    #[test]
+    fn unknown_engine_key_is_a_load_error_naming_the_key() {
+        let toml = r#"
+[engine]
+name = "test"
+not_a_real_key = true
+"#;
+        let Err(error) = EmergentConfig::parse(toml) else {
+            panic!("expected an unknown key to fail the load");
+        };
+        let message = error.to_string();
+        assert!(message.contains("not_a_real_key"), "got: {message}");
+    }
+
+    #[test]
+    fn unknown_event_store_key_is_a_load_error() {
+        let toml = r#"
+[event_store]
+retension_days = 7
+"#;
+        let Err(error) = EmergentConfig::parse(toml) else {
+            panic!("expected a misspelled retention key to fail the load");
+        };
+        let message = error.to_string();
+        assert!(message.contains("retension_days"), "got: {message}");
+        assert!(message.contains("retention_days"), "got: {message}");
+    }
+
+    #[test]
+    fn restart_keys_load_under_the_strict_schema() -> Result<(), ConfigError> {
+        let toml = r#"
+[[handlers]]
+name = "filter"
+path = "/bin/true"
+subscribes = ["timer.tick"]
+restart = "on-failure"
+restart_backoff_ms = 250
+restart_max_retries = 7
+"#;
+        let config = EmergentConfig::parse(toml)?;
+        let restart = &config.handlers[0].restart;
+        assert_eq!(restart.restart, "on-failure");
+        assert_eq!(restart.restart_backoff_ms, 250);
+        assert_eq!(restart.restart_max_retries, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn misspelled_restart_key_is_a_load_error() {
+        for table in ["sources", "handlers", "sinks"] {
+            let toml = format!(
+                r#"
+[[{table}]]
+name = "p"
+path = "/bin/true"
+restart = "always"
+restart_backof_ms = 250
+"#
+            );
+            let Err(error) = EmergentConfig::parse(&toml) else {
+                panic!("expected a misspelled restart key to fail the load in [[{table}]]");
+            };
+            let message = error.to_string();
+            assert!(message.contains("restart_backof_ms"), "got: {message}");
+        }
+    }
+
+    #[test]
+    fn unknown_primitive_key_is_a_load_error() {
+        let toml = r#"
+[[handlers]]
+name = "filter"
+path = "/bin/true"
+subscribe = ["timer.tick"]
+"#;
+        let Err(error) = EmergentConfig::parse(toml) else {
+            panic!("expected a singular subscribe key to fail the load");
+        };
+        let message = error.to_string();
+        assert!(message.contains("subscribe"), "got: {message}");
+    }
+
+    #[test]
+    fn unknown_top_level_table_is_a_load_error() {
+        let toml = r#"
+[engines]
+name = "test"
+"#;
+        let Err(error) = EmergentConfig::parse(toml) else {
+            panic!("expected an unknown top-level table to fail the load");
+        };
+        let message = error.to_string();
+        assert!(message.contains("engines"), "got: {message}");
     }
 
     #[test]

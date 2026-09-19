@@ -122,7 +122,7 @@ Types are in `sdks/rust/src/types/` — `MessageId`, `MessageType`, `PrimitiveNa
 
 ### IPC Protocol
 
-- Wire format: MessagePack (default) or JSON
+- Wire format: MessagePack, always. `[engine].wire_format` is accepted so older configs keep loading but selects nothing; after engine 0.10.10 setting it warns at startup
 - Transport: Unix domain sockets
 - Messages registered with `#[acton_message(ipc)]` macro from acton-reactive
 - Environment variables set by engine: `EMERGENT_SOCKET`, `EMERGENT_NAME`, `EMERGENT_PUBLISHES` (comma-separated), `EMERGENT_SUBSCRIBES` (comma-separated)
@@ -142,6 +142,10 @@ TOML-based configuration in `config/emergent.toml`:
 - `[[handlers]]` / `[[sinks]]` — `name`, `path`, `args`, `enabled`, `subscribes`, `publishes`, `env`, `unwrap_stdout`
 
 Path resolution: tilde expansion (`~/bin/app`), bare command lookup via PATH (`path = "uv"`), and "auto" XDG paths.
+
+Unknown keys: after engine 0.10.10 every config table denies unknown fields, so a typo is a load error that names the key and its table. On 0.10.10 and earlier it was ignored.
+
+Retention: after engine 0.10.10 `retention_days` is enforced by a prune at startup and once a day, over both the SQLite store and the rotated `events-YYYY-MM-DD.jsonl` logs. `0` disables pruning. The decisions live in `emergent-engine/src/retention.rs` as pure functions.
 
 ## Release Process
 

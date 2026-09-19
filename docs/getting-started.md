@@ -253,10 +253,10 @@ api_port = 8891                   # HTTP topology API (0 to disable)
 [event_store]
 json_log_dir = "./logs"           # Append-only JSON logs (one per day)
 sqlite_path = "./events.db"       # Structured storage for queries
-retention_days = 30
+retention_days = 30                # Days of events to keep (0 keeps everything)
 ```
 
-Every message is persisted before routing. You can replay workflows, trace causation chains, and audit all activity.
+Every message is persisted before routing. You can replay workflows, trace causation chains, and audit all activity. On engine 0.10.10 and earlier `retention_days` was never enforced and both stores grew without bound; after 0.10.10 the engine prunes them at startup and once a day.
 
 ### The Three Primitive Types
 
