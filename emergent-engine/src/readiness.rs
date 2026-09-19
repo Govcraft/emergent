@@ -44,6 +44,16 @@
 //! measured gap, and it is charged once per tier rather than once per
 //! primitive.
 //!
+//! # Why only startup
+//!
+//! A restart-policy respawn is one primitive coming back inside its own actor,
+//! with no tier behind it. The rest of the topology is already running and
+//! publishing whether or not it has re-subscribed, the events lost between the
+//! crash and the respawn are gone either way, and holding them would mean
+//! pausing every other primitive for this one, which the engine has no way to
+//! do. So a restart gets no wait. Startup is the only place where the engine
+//! controls what happens next and can usefully hold it.
+//!
 //! [`evaluate_tier`], [`classify`] and [`is_primitive_subscription`] are pure.
 //! [`ActonSubscriberProbe`] and the polling loop in
 //! [`crate::process_manager`] gather the observations; these decide.

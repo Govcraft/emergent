@@ -397,6 +397,11 @@ impl ProcessManager {
     /// confirmation the engine cannot see.
     async fn wait_for_tier(&self, kind: PrimitiveKind, readiness: &StartupReadiness) {
         let timeout = readiness.timeout;
+        // A zero deadline is an operator opting out, not a tier that failed to
+        // become ready, so it earns no warning.
+        if timeout.is_zero() {
+            return;
+        }
         let started = Instant::now();
         loop {
             let subscribed = readiness.subscribed_pids();
@@ -761,6 +766,36 @@ mod tests {
             unwrap_stdout: false,
             restart: RestartConfig::default(),
         }
+    }
+
+    /// `startup_ready_timeout_ms = 0` opts out of the wait entirely, which is
+    /// the pre-0.10.10 behaviour minus the sleeps.
+    #[tokio::test]
+    async fn a_zero_deadline_skips_the_wait() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-66-zero.sock"), 0);
+        let readiness = StartupReadiness::unobserved(Duration::ZERO);
+
+        let mute = sink_config("mute", "/bin/sleep", &["30"], &["burst.event"]);
+
+        let started = Instant::now();
+        assert!(
+            manager
+                .start_all(&mut runtime, &[&mute], &[], &[], &readiness)
+                .await
+                .is_ok()
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a zero deadline still waited: {:?}",
+            started.elapsed()
+        );
+
+        let timings = ShutdownTimings {
+            drain: Duration::ZERO,
+            grace: Duration::from_secs(2),
+        };
+        manager.graceful_shutdown(&runtime.broker(), timings).await;
     }
 
     /// Govcraft/emergent#66: the wait must be bounded. `/bin/sleep` never
