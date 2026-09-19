@@ -358,6 +358,23 @@ func main() {
 }
 ```
 
+## Building with a Coding Agent
+
+A coding agent left to its defaults will wrap your whole workflow in one `exec-handler` and call it a pipeline. It runs, and it throws away everything the engine gives you: nothing inside that step is observable, extensible, resumable, or swappable.
+
+This repository ships an [Agent Skill](skills/emergent/) that teaches the idiom: name the events before writing any file, split until each primitive is one observable state change, route with exclusive `jq` predicates instead of branching inside a script, and let a model choose the next event without letting it run the workflow. It carries the exact flags and payload shapes of every marketplace primitive, so the agent stops guessing at them.
+
+Install it where your agent looks for skills. For Claude Code:
+
+```bash
+git clone --depth 1 https://github.com/govcraft/emergent /tmp/emergent
+
+cp -r /tmp/emergent/skills/emergent ~/.claude/skills/   # every project
+cp -r /tmp/emergent/skills/emergent .claude/skills/     # or this project only
+```
+
+The skill is a plain directory with a `SKILL.md` and a `references/` folder, so any agent that reads the Agent Skills format can use it from its own skills directory. It activates on its own when Emergent, `emergent.toml`, or a pipeline that will run on Emergent comes up.
+
 ## Features
 
 - **Tool-agnostic composition**: Any CLI tool or API call becomes a pipeline building block via exec primitives
@@ -377,6 +394,7 @@ func main() {
 - **[Primitives](docs/primitives/)** -- Reference for Sources, Handlers, Sinks
 - **[Configuration](docs/configuration.md)** -- All configuration options
 - **[SDKs](docs/sdks/)** -- Rust, TypeScript, Python, Go
+- **[Agent Skill](skills/emergent/)** -- Teach a coding agent to build idiomatic topologies
 
 ## Requirements
 
