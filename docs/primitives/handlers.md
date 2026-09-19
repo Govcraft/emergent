@@ -2,7 +2,7 @@
 
 Handlers are the transformation layer in an Emergent pipeline. They subscribe to messages, process them, and publish new messages. This is where your processing logic lives -- filtering, enrichment, model inference, routing, aggregation.
 
-## Two Approaches
+## Approaches
 
 ### Marketplace exec-handler (zero code)
 
@@ -49,6 +49,28 @@ emergent marketplace install exec-handler
 ```
 
 The exec-handler is **stateless** -- each message spawns a fresh process. This is a feature: process isolation means a crashed model call cannot corrupt state or take down other handlers.
+
+### Marketplace jev-handler (calibrated judgment)
+
+When the step is a judgment rather than a transformation -- is this message unwanted, which of these folders fits, how urgent is it -- the marketplace `jev-handler` asks [TypeSafe System One](https://typesafe.ai) a fixed set of typed questions about each payload and publishes the answers with calibrated confidence. It is a single API call per message, typically well under a second, so it suits high-volume triage where an LLM call per event is too slow or too costly.
+
+```toml
+[[handlers]]
+name = "judge-message"
+path = "~/.local/share/emergent/primitives/bin/jev-handler"
+args = ["-s", "mail.fetched", "--questions", "./questions.toml",
+        "--state-pointer", "/mail", "--publish-as", "mail.judged", "-e", "mail.judge-failed"]
+subscribes = ["mail.fetched"]
+publishes = ["mail.judged", "mail.judge-failed"]
+```
+
+The API key is read from the `TYPESAFE_API_KEY` environment variable only. The handler publishes one verdict type and never routes: turn confidence into behavior with exclusive `exec-handler` + `jq -c 'select(...)'` routers on the verdict, so thresholds stay a config edit. The [emergent-primitives README](https://github.com/govcraft/emergent-primitives#jev-handler) covers the questions file, the answer shapes, and routing on `error.kind`.
+
+Install with:
+
+```bash
+emergent marketplace install jev-handler
+```
 
 ### Custom SDK Handler (when exec is not enough)
 
