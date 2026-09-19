@@ -30,10 +30,11 @@ expensive.
 Read this before designing anything that processes "each" of something, because
 the obvious approach silently does not work.
 
-**Every exec primitive publishes exactly one event per execution.** `exec-source`
-puts all stdout into one `stdout` string. `exec-handler` parses stdout as a
-single JSON value and, when that fails, wraps the whole thing as
-`{"output": "..."}`. So this, which appears in a lot of plausible-looking
+**No exec primitive splits its stdout.** `exec-handler` publishes at most one
+event per execution: it parses stdout as a single JSON value and, when that
+fails, wraps the whole thing as `{"output": "..."}`. `exec-source` publishes at
+most one stdout event, holding all output in one `stdout` string (plus a stderr
+event when stderr is non-blank, and always an exit event). So this, which appears in a lot of plausible-looking
 configs, is wrong:
 
 ```toml
@@ -62,33 +63,63 @@ This is the marketplace primitive built for the job, and the first thing to
 reach for. Hand it a collection, it emits one item at a time.
 
 ```toml
+# The poll prints ONE JSON array. `--shell sh` because the command is a pipe.
+[[sources]]
+name = "list-inbox"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--interval", "300000", "--shell", "sh", "--command",
+  '''find /srv/inbox -name '*.pdf' | jq -R -s -c 'split("\n") | map(select(length > 0) | {path: .})' ''']
+publishes = ["inbox.listed", "inbox.list-failed", "inbox.list-done"]
+
 [[handlers]]
 name = "split-invoices"
 path = "~/.local/share/emergent/primitives/bin/stream-runner"
 args = ["--load-topic", "inbox.listed", "--publish-as", "invoice.detected",
-        "--ack-topic", "invoice.settled", "--end-topic", "inbox.drained",
-        "--items-key", "items"]
+        "--ack-topic", "invoice.settled", "--end-topic", "inbox.drained"]
+unwrap_stdout = true
 subscribes = ["inbox.listed", "invoice.settled"]
 publishes = ["invoice.detected", "inbox.drained"]
 ```
 
+The load must be a bare JSON array, or an object holding one under
+`--items-key` (default `items`). An `exec-source` payload is neither: it is
+`{command, stdout, exit_code}`. `unwrap_stdout = true` has the SDK parse
+`.stdout` before `stream-runner` sees the message, so the array arrives bare and
+no shaping handler is needed. A load of the wrong shape is dropped, and the
+warning is visible only with `RUST_LOG=warn` in the primitive's `env`.
+
 It holds each item until the ack topic fires, so exactly one item is in flight
 at a time. That is a feature: in-flight work is bounded, and a slow downstream
 stage applies backpressure to the whole batch rather than building a queue.
+Items and the end event carry the load's `correlation_id` and a `causation_id`
+pointing at the load. The end payload is `{"count": N}`, and an empty array
+publishes it immediately.
 
-Two constraints to design around:
+Three constraints to design around:
 
-- **One collection at a time.** A `load` arriving while a stream is still
-  running is logged and dropped. With an interval poller, size the interval so a
-  batch drains before the next arrives, or gate polling on the end topic.
-- **A missing ack stalls it forever.** The ack topic must be something the
-  downstream path always publishes, on both the success and failure paths.
+- **One collection at a time.** A load arriving while a stream is still running
+  is dropped (again, a warning you only see with `RUST_LOG=warn`). With an
+  interval poller that is usually what you want, because no item is ever in
+  flight twice. Size the interval so a batch normally drains first.
+- **A missing ack stalls it until the engine restarts.** There is no timeout.
+  The ack topic must be something the downstream path always publishes, on the
+  success path and on every failure path. Route each `--error-as` topic to an
+  event that ends in the ack; never leave one on `exec.error`.
+- **Acks are not matched to items.** Any message on the ack topic releases the
+  next item. Keep that topic exclusive to this stream.
+
+`worked-example.md` runs this shape end to end, including the failure paths.
 
 ### 2. HTTP fan-out (when items must be concurrent)
 
 A shell step POSTs once per item into an `http-source`. Each POST is an
-independent event, they do not wait on each other, and no custom code is needed.
-This is the default when items are independent.
+independent event and no custom code is needed. Reach for it when items being
+in flight together is the actual requirement.
+
+Splitting alone does not make items overlap. Every `exec-handler` and
+`exec-sink` runs **one command at a time, in arrival order**, unless you raise
+`--max-concurrent`. So add `"--max-concurrent", "N"` to each per-item handler
+downstream, and expect output order to follow completion rather than arrival.
 
 ```toml
 [[sources]]
@@ -101,21 +132,19 @@ publishes = ["invoice.detected"]
 name = "split-inbox"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "inbox.listed", "--", "bash", "-c",
-  """jq -r '.stdout' | while IFS= read -r line; do \
-       [ -n "$line" ] || continue; \
-       jq -n --arg p "$line" '{path: $p}' \
-       | curl -sf -X POST -H 'Content-Type: application/json' -d @- \
-           http://127.0.0.1:8090; \
-     done"""]
+  '''jq -c '.stdout | fromjson | .[]' | while IFS= read -r item; do \
+       curl -sf -X POST -H 'Content-Type: application/json' -d "$item" http://127.0.0.1:8090; \
+     done''']
 subscribes = ["inbox.listed"]
 ```
 
 The body arrives nested, so downstream handlers read `.body.path`.
 
-Note the `while` loop. That is not the Internal Loop anti-pattern: it performs
-no work per item, it only *emits*. A loop that publishes one event per item is
-the fan-out mechanism itself. A loop that processes items is what you are
-avoiding.
+Note the `while` loop. It is the one loop the ladder in `SKILL.md` permits: its
+body performs no work, it only *emits*. A loop that publishes one event per item
+is a splitter. A loop that processes items is the Internal Loop anti-pattern.
+Prefer `stream-runner` anyway unless you need the overlap, because it is a
+marketplace primitive used as itself and this is a shell body you have to own.
 
 ### 3. A small SDK splitter
 
@@ -142,13 +171,14 @@ asyncio.run(run_handler("split-inbox", ["inbox.listed"], split))
 |---|---|
 | Split a collection, marketplace primitives only | `stream-runner`. The default. |
 | Bounded in-flight work, backpressure, or ordering | `stream-runner`. That is what the ack buys. |
-| Many items genuinely in flight at once | HTTP fan-out |
+| Many items genuinely in flight at once | HTTP fan-out, plus `--max-concurrent N` on each per-item handler |
 | Clean causation, high volume, willing to write ten lines | SDK splitter |
 | One item per poll anyway | Nothing. The source already emits one event. |
 
 Note that concurrency across *handlers* is unaffected by this choice. Whichever
-splitter you use, every subscriber to an item's event still runs in parallel.
-The only thing at stake here is how many items are in flight simultaneously.
+splitter you use, every subscriber to an item's event still runs in parallel
+with the others. What is at stake here is how many items are in flight, and
+within one handler that is also capped by its `--max-concurrent` (default 1).
 
 ## Fan-out: concurrency
 
@@ -161,17 +191,25 @@ supervised, observable, and retryable on its own.
 [[handlers]]
 name = "score-severity"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "issue.found", "--publish-as", "issue.scored", "--", "./score.sh"]
+args = ["-s", "issue.found", "--publish-as", "issue.scored", "-t", "60000", "--", "bash", "-c",
+  '''p=$(cat); jq -r '"Rate this issue as JSON {severity, confidence}.\n\(.title)\n\(.body)"' <<< "$p" \
+     | claude -p --output-format text \
+     | jq -c --argjson orig "$p" '$orig + .' ''']
 subscribes = ["issue.found"]
 publishes = ["issue.scored"]
 
 [[handlers]]
 name = "detect-duplicates"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "issue.found", "--publish-as", "issue.dupe-checked", "--", "./dupes.sh"]
+args = ["-s", "issue.found", "--publish-as", "issue.dupe-checked", "--", "bash", "-c",
+  '''p=$(cat); gh issue list --state open --search "$(jq -r .title <<< "$p")" --json number \
+     | jq -c --argjson orig "$p" '{number: $orig.number, duplicate_of: (map(.number) - [$orig.number] | first)}' ''']
 subscribes = ["issue.found"]
 publishes = ["issue.dupe-checked"]
 ```
+
+Each body is one act between two shapes: capture the payload, call one thing,
+merge the identity back. Neither is a script file, and neither needs one.
 
 Neither knows the other exists. Adding a third analysis is one more block and
 zero edits, which is the whole point.
@@ -189,9 +227,17 @@ subscription is by message type, so any number of primitives can feed one.
 ```toml
 [[handlers]]
 name = "formatter"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "metric.cpu", "-s", "metric.memory", "-s", "metric.disk",
+        "--publish-as", "monitor.metric", "--",
+        "jq", "-c", "{metric: env.EMERGENT_MESSAGE_TYPE, reading: .}"]
 subscribes = ["metric.cpu", "metric.memory", "metric.disk"]
 publishes = ["monitor.metric"]
 ```
+
+`exec-handler` exports the inbound message's type, id, source, correlation and
+causation ids to the command as `EMERGENT_MESSAGE_TYPE` and friends, so a
+converging handler can tell its inputs apart without a shell.
 
 The two shapes of fan-in worth distinguishing:
 
@@ -202,21 +248,49 @@ The two shapes of fan-in worth distinguishing:
 
 ## The join: waiting for N
 
-When you need *all* results before proceeding, accumulate by a key.
-`exec-handler` publishes nothing on exit 0 with empty stdout, so the joiner stays
-silent until the last arrival.
+When you need *all* results before proceeding, accumulate by a key. A join is
+three small things, and keeping them separate is what stops it turning into a
+script: an accumulator that publishes its bucket on every arrival, a router
+that recognizes a full bucket, and a sink that clears it.
 
 ```toml
+# The accumulator. It owns the bucket and nothing else, and it publishes every
+# state change, so a partial join is visible in the log as it fills.
 [[handlers]]
-name = "joiner"
+name = "collect-analyses"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "analysis.done", "--publish-as", "analysis.complete", "--", "sh", "-c",
-  """p=$(cat); k=$(jq -r .invoice_id <<< "$p"); f=/tmp/join-$k.jsonl; \
-     echo "$p" >> $f; \
-     [ $(wc -l < $f) -ge 3 ] && jq -s -c --arg k "$k" '{invoice_id: $k, results: .}' $f && rm -f $f"""]
+args = ["-s", "analysis.done", "--publish-as", "analysis.collected", "--", "bash", "-c",
+  '''p=$(cat); f="/tmp/join-$(jq -r .invoice_id <<< "$p").jsonl"; \
+     jq -c . <<< "$p" >> "$f"; \
+     jq -s -c '{invoice_id: .[0].invoice_id, results: .}' "$f" ''']
 subscribes = ["analysis.done"]
+publishes = ["analysis.collected"]
+
+# The completeness test is a predicate in the config, not an `if` in a shell.
+# `==` rather than `>=`, so a late fourth arrival cannot fire it twice.
+[[handlers]]
+name = "route-complete"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "analysis.collected", "--publish-as", "analysis.complete", "--",
+        "jq", "-c", "select(.results | length == 3)"]
+subscribes = ["analysis.collected"]
 publishes = ["analysis.complete"]
+
+[[sinks]]
+name = "clear-joined"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "analysis.complete", "--", "bash", "-c",
+  '''rm -f "/tmp/join-$(jq -r .invoice_id).jsonl"''']
+subscribes = ["analysis.complete"]
 ```
+
+The accumulator is safe without a lock because `exec-handler` runs one command
+at a time by default. Do not raise `--max-concurrent` on it.
+
+Do not collapse this into `[ $(wc -l < $f) -ge 3 ] && jq ...`. It reads as
+silent-until-full and is not: a false `[ ]` exits 1, and since primitives 0.10.0
+every non-zero exit publishes an error event. Two of three arrivals would land
+on `exec.error`.
 
 ### Choosing the join key
 
@@ -236,11 +310,18 @@ So `correlation_id` identifies **a run, not an item**:
 | Interval poller emitting many items | A natural key from the payload (invoice path, issue number, deploy sha). `correlation_id` would collide every item into one bucket. |
 | Work spanning two engines | `--correlation-id` to adopt the parent's ID, deliberately grouping both. |
 
-`correlation_id` remains the right thing for tracing a run in the event store and
-for `bin/audit.sh`-style queries. It is just not an item key.
+`correlation_id` remains the right thing for tracing a run in the event store.
+It is just not an item key:
+
+```bash
+sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
+  "SELECT message_type, source, payload_json FROM events
+   WHERE correlation_id = 'cor_...' ORDER BY timestamp_ms"
+```
 
 The count is hardcoded above. When the expected count varies, carry it in the
-payload and compare against it, or use a small stateful SDK handler. A handler
+payload and compare against it (`select(.results | length == .[0].expected)`),
+or use a small stateful SDK handler. A handler
 holding a join table is one of the few genuinely good reasons to write custom
 code, because the accumulator is irreducible.
 
@@ -256,6 +337,7 @@ predicates. Nothing decides between them. All of them look; one matches.
 ```toml
 [[handlers]]
 name = "route-confident"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "issue.scored", "--publish-as", "issue.triaged", "--",
         "jq", "-c", "select(.confidence >= 0.8)"]
 subscribes = ["issue.scored"]
@@ -263,8 +345,9 @@ publishes = ["issue.triaged"]
 
 [[handlers]]
 name = "route-uncertain"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "issue.scored", "--publish-as", "issue.uncertain", "--",
-        "jq", "-c", "select(.confidence < 0.8)"]
+        "jq", "-c", "select(.confidence >= 0.8 | not)"]
 subscribes = ["issue.scored"]
 publishes = ["issue.uncertain"]
 ```
@@ -276,13 +359,24 @@ readable without opening any code.
 
 Keep predicates mutually exclusive and exhaustive. Overlapping predicates mean an
 event takes two paths, which is occasionally what you want but never what you
-want by accident.
+want by accident. Write the last arm as the negation of the others, as above,
+rather than as its own comparison. jq compares across types (`null` sorts below
+every number, every string above), so a missing or malformed `confidence` lands
+somewhere surprising, and the moment you tighten the first arm a hand-written
+opposite stops being its opposite. The negation cannot drift. An event that
+matches no router vanishes without a trace.
 
 ## The silent filter
 
-`jq select()` exits non-zero with empty stderr when the predicate is false, and
-`exec-handler` treats that as a silent drop. Filtering therefore needs no code
-and no explicit "discard" path.
+`jq select()` prints nothing and exits 0 when the predicate is false, and
+`exec-handler` publishes nothing on exit 0 with empty stdout. Filtering therefore
+needs no code and no explicit "discard" path.
+
+That is the *only* silence. Every non-zero exit publishes the error type, so a
+shell test such as `[ -n "$x" ] && cmd` is not a filter: its false case exits 1
+and lands on `exec.error`. When a command's non-zero exit really is a normal
+outcome (`jq -e` exits 4 on no output, `grep` exits 1 on no match), declare it
+with `"--silent-exit-codes", "4"` before the `--`.
 
 ```toml
 args = ["-s", "raw.event", "--", "jq", "-c",
@@ -294,43 +388,67 @@ args = ["-s", "raw.event", "--", "jq", "-c",
 An event re-entering an earlier stage. This is the mechanism that separates a
 system from a pipeline, and nothing genuinely emergent happens without one.
 
-The shape: a downstream handler republishes a type that an upstream stage already
-subscribes to, usually with something changed in the payload.
+The shape: a downstream handler publishes an event that an upstream stage
+subscribes to, with something changed in the payload.
 
 ```toml
 [[handlers]]
 name = "enrich-context"
-args = ["-s", "issue.uncertain", "--publish-as", "issue.found", "--", "sh", "-c",
-        "jq -c '.context += [\"related issues attached\"] | .attempt += 1'"]
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "issue.uncertain", "--publish-as", "issue.enriched", "--",
+        "jq", "-c", ".context += [\"related issues attached\"] | .attempt += 1"]
 subscribes = ["issue.uncertain"]
-publishes = ["issue.found"]
+publishes = ["issue.enriched"]
+
+# The upstream stage listens for the edge as well as the ingress event.
+[[handlers]]
+name = "score-severity"
+# ...
+subscribes = ["issue.found", "issue.enriched"]
 ```
 
-`issue.found` is where triage began, so an uncertain issue re-enters triage with
-more context than it had. Nothing coordinates this. How many passes an item takes
-is a consequence of the data meeting the thresholds, which is precisely the
-behavior nobody wrote.
+An uncertain issue goes back to the judge with more context than it had. Nothing
+coordinates this. How many passes an item takes is a consequence of the data
+meeting the thresholds, which is precisely the behavior nobody wrote.
+
+Name the edge for what became true (`issue.enriched`) and subscribe the upstream
+stage to it. The tempting shortcut is to republish the ingress type
+(`issue.found`), and it has a cost: *every* subscriber of the ingress type runs
+again on each pass, including the ones that had nothing to do with the loop. In
+the worked example that shortcut re-ran the duplicate check and re-applied its
+label once per attempt.
 
 Always pair a feedback edge with a depth guard.
 
 ## Depth guards: terminating a loop
 
-A loop counter lives in the payload; the guard is a predicate.
+A loop counter lives in the payload, and the guard is one arm of the branch that
+feeds the loop. It must *divert*, not merely observe:
 
 ```toml
 [[handlers]]
+name = "route-uncertain"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "issue.scored", "--publish-as", "issue.uncertain", "--",
+        "jq", "-c", "select((.confidence >= 0.8 | not) and .attempt < 3)"]
+subscribes = ["issue.scored"]
+publishes = ["issue.uncertain"]
+
+[[handlers]]
 name = "depth-guard"
-args = ["-s", "issue.found", "--publish-as", "issue.escalated", "--",
-        "jq", "-c", "select(.attempt >= 3)"]
-subscribes = ["issue.found"]
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "issue.scored", "--publish-as", "issue.escalated", "--",
+        "jq", "-c", "select((.confidence >= 0.8 | not) and .attempt >= 3) | {number, attempt}"]
+subscribes = ["issue.scored"]
 publishes = ["issue.escalated"]
 ```
 
-Note that this runs *alongside* normal processing rather than gating it. If you
-want the guard to actually divert rather than duplicate, make the normal path's
-predicate exclusive too (`select(.attempt < 3)`). Being explicit about both sides
-is worth the extra block, because an unbounded feedback loop is the one failure
-mode of this architecture that will fill a disk.
+The two predicates split the uncertain case between them, so a third-attempt
+issue matches the guard and nothing else. A guard that only subscribes alongside
+the normal path (a bare `select(.attempt >= 3)` next to an unguarded loop)
+raises the alarm while the item keeps circulating. An unbounded feedback loop is
+the one failure mode of this architecture that will fill a disk, so check that
+some predicate on the loop's own path goes false.
 
 ## Failure as data
 
@@ -338,28 +456,58 @@ Errors are events, not exceptions. Publish `<domain>.failed` and let a separate
 subscriber own the response, which means the failure path is as observable and
 extensible as the success path.
 
-`exec-handler` does this for you: a non-zero exit with stderr publishes on the
-`--error-as` topic (default `exec.error`). Give failures a domain-specific name
-when the response differs by domain:
+`exec-handler` does this for you. Any non-zero exit, a timeout, or a failure to
+spawn the command publishes on the `--error-as` topic (default `exec.error`).
+The payload is the inbound payload with one reserved key added:
+
+```
+{...inbound fields, "error": {"exit_code": 22, "stderr": "...", "command": "..."}}
+```
+
+A timeout reports `exit_code: null` and `stderr: "process timed out"`, after the
+whole process group gets SIGTERM and then, `--kill-grace-ms` later, SIGKILL. The
+error event keeps the inbound `correlation_id` and `causation_id`, so the failure
+sits in the same trace as the attempt. Because the original fields survive, a
+retry handler can republish the item by dropping `.error`.
+
+Give failures a domain-specific name when the response differs by domain:
 
 ```toml
 args = ["-s", "issue.found", "--publish-as", "issue.scored",
-        "--error-as", "issue.score-failed", "--", "./score.sh"]
+        "--error-as", "issue.score-failed", "--",
+        "curl", "-sf", "-X", "POST", "--data-binary", "@-", "http://127.0.0.1:11434/score"]
 ```
 
 ## Retry with backoff
 
-Failure event, delay, republish the original type. The attempt count rides in the
-payload and a guard ends it.
+Failure event, delay, publish an event the failed stage subscribes to. The
+attempt count rides in the payload, and two exclusive subscribers on the failure
+event decide between another try and giving up.
 
 ```toml
 [[handlers]]
 name = "retry-scoring"
-args = ["-s", "issue.score-failed", "--publish-as", "issue.found", "--", "sh", "-c",
-        "sleep $(( 2 ** ${ATTEMPT:-1} )); jq -c '.attempt += 1'"]
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "issue.score-failed", "--publish-as", "issue.rescore-due",
+        "-t", "20000", "--max-concurrent", "8", "--", "bash", "-c",
+  '''p=$(cat); sleep $((2 ** $(jq -r '.attempt // 1' <<< "$p"))); \
+     jq -c 'select(.attempt < 3) | del(.error) | .attempt += 1' <<< "$p" ''']
 subscribes = ["issue.score-failed"]
-publishes = ["issue.found"]
+publishes = ["issue.rescore-due"]
+
+[[handlers]]
+name = "escalate-unscorable"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "issue.score-failed", "--publish-as", "issue.escalated", "--",
+        "jq", "-c", "select(.attempt >= 3) | {number, attempt, reason: \"scoring failed\"}"]
+subscribes = ["issue.score-failed"]
+publishes = ["issue.escalated"]
 ```
+
+Three details carry the weight. The backoff reads the attempt from the payload,
+because nothing else knows it. `-t` must exceed the longest sleep, or the delay
+itself times out and publishes an error. And a sleeping handler holds its slot,
+so raise `--max-concurrent` or one slow retry queues every other one behind it.
 
 The retry is a first-class part of the topology, so you can see every attempt in
 the log and change the policy without touching the thing being retried.
@@ -439,12 +587,12 @@ name = "judge-file"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "file.changed", "--publish-as", "review.submitted",
         "-e", "review.judge-failed", "-t", "180000", "--", "bash", "-c",
-  """f=$(jq -r .path); \
+  '''f=$(jq -r .path); \
      claude -p "Review $f against our conventions. Print exactly one JSON object \
        on stdout and nothing else, either {\"verdict\":\"approved\",\"path\":\"$f\"} \
        or {\"verdict\":\"needs_work\",\"path\":\"$f\",\"reasons\":[...]}. \
        Do not edit files, do not comment, do not act further." \
-       --allowedTools Read Grep"""]
+       --allowedTools Read Grep''']
 subscribes = ["file.changed"]
 publishes = ["review.submitted", "review.judge-failed"]
 
@@ -476,6 +624,12 @@ subscribes = ["review.submitted"]
 publishes = ["review.invalid-verdict"]
 ```
 
+The shell body is a TOML *literal* string (`'''`), and that matters. In a basic
+`"""` string TOML decodes `\"` to a bare `"` before the shell sees it, which
+closes the shell's own quote: the model receives `{verdict:approved,...}` with
+the JSON quotes stripped, and a path containing a space splits into extra
+arguments. In a literal string the shell receives exactly what is written.
+
 Adding a third outcome (`review.blocked`, say) is one more router and one more
 line in the prompt. Nothing else in the topology moves.
 
@@ -485,18 +639,17 @@ Four properties make this the default:
   `correlation_id` and stamps `causation_id` from the triggering message, so the
   verdict is causally linked to the file change that provoked it. Shape B
   severs both.
-- **Failure is already an event.** A non-zero exit with stderr, or a timeout,
-  publishes the error type (`-e`, default `exec.error`). Route it like anything
-  else.
+- **Failure is already an event.** Any non-zero exit, a timeout, or a spawn
+  failure publishes the error type (`-e`, default `exec.error`). Route it like
+  anything else.
 - **Malformed output is still an event.** `exec-handler` parses stdout as JSON
   and falls back to `{"output": "..."}`, so an agent that ignores the format and
   narrates lands at `route-invalid` rather than vanishing.
 - **No listening port**, so there is no actuator to defend and no untrusted
   network input.
 
-The one hole: a clean exit with empty stdout publishes nothing, and so does a
-non-zero exit with empty stderr. If either is plausible for your agent, add the
-reaper below.
+The one hole: a clean exit with empty stdout publishes nothing. If that is
+plausible for your agent, add the reaper below.
 
 ### Shape B: the agent re-enters through an `http-source`
 
@@ -530,28 +683,36 @@ publishes = ["review.submitted"]
 name = "dispatch-review"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "file.changed", "-t", "180000", "--", "bash", "-c",
-  """p=$(cat); f=$(jq -r .path <<< "$p"); r="$EMERGENT_CORRELATION_ID"; \
-     touch "/tmp/pending-review-$(basename "$f")"; \
+  '''f=$(jq -r .path); r="$EMERGENT_CORRELATION_ID"; \
      claude -p "Review $f against our conventions. POST one verdict per issue \
        you find to localhost:8091 with curl, as JSON: \
        {\"verdict\":\"needs_work\",\"path\":\"$f\",\"run\":\"$r\",\"reason\":\"...\"}. \
        If the file is clean, POST exactly one \
        {\"verdict\":\"approved\",\"path\":\"$f\",\"run\":\"$r\"} instead. \
        Do not edit files, do not comment, do not act further." \
-       --allowedTools Bash Read"""]
+       --allowedTools Bash Read''']
 subscribes = ["file.changed"]
 
-[[handlers]]
+# The pending marker is its own act, so it is its own primitive. Both sinks see
+# the same event; neither waits for the other.
+[[sinks]]
+name = "mark-pending"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "file.changed", "--", "bash", "-c",
+  '''touch "/tmp/pending-review-$(basename "$(jq -r .path)")"''']
+subscribes = ["file.changed"]
+
+[[sinks]]
 name = "clear-pending"
-path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "review.approved", "-s", "review.needs-work",
-        "--publish-as", "review.settled", "--", "bash", "-c",
-  """p=$(cat); f=$(jq -r .path <<< "$p"); \
-     rm -f "/tmp/pending-review-$(basename "$f")"; \
-     echo "$p\""""]
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "review.approved", "-s", "review.needs-work", "--", "bash", "-c",
+  '''rm -f "/tmp/pending-review-$(basename "$(jq -r .path)")"''']
 subscribes = ["review.approved", "review.needs-work"]
-publishes = ["review.settled"]
 ```
+
+`EMERGENT_CORRELATION_ID` is set only when the inbound message carries a
+correlation id, which requires an upstream `exec-source --correlate` (or
+`--correlation-id`). Otherwise the variable is unset and `$r` is empty.
 
 The routers from Shape A apply unchanged except that the body arrives nested, so
 each predicate reads `.body.verdict` and emits `.body`.
@@ -589,24 +750,28 @@ nothing downstream fires and nothing complains. Pair the dispatch with a pending
 marker (above) and scan for stale ones:
 
 ```toml
+# One execution, at most one stdout event, so the sweep prints ONE JSON value
+# holding every stale marker.
 [[sources]]
 name = "review-reaper"
 path = "~/.local/share/emergent/primitives/bin/exec-source"
-args = ["--interval", "60000", "--shell", "bash", "--command",
-  """find /tmp -maxdepth 1 -name 'pending-review-*' -mmin +5 \
-     -exec basename {} \\; | sed 's/^pending-review-//' \
-     | jq -R -c '{file: ., reason: "agent emitted no verdict"}'"""]
-publishes = ["exec.output"]
+args = ["--interval", "60000", "--shell", "sh", "--command",
+  '''find /tmp -maxdepth 1 -name 'pending-review-*' -mmin +5 | jq -R -s -c '{files: (split("\n") | map(select(length > 0) | sub("^.*/pending-review-"; "")))}' ''']
+publishes = ["reviews.swept", "reviews.sweep-failed", "reviews.sweep-done"]
 
 [[handlers]]
 name = "raise-stalled"
-args = ["-s", "exec.output", "--publish-as", "review.stalled", "--",
-        "jq", "-c", ".stdout | select(length > 0) | fromjson"]
-subscribes = ["exec.output"]
-publishes = ["review.stalled"]
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "reviews.swept", "--publish-as", "reviews.stalled", "--",
+        "jq", "-c", ".stdout | fromjson | select(.files | length > 0)"]
+subscribes = ["reviews.swept"]
+publishes = ["reviews.stalled"]
 ```
 
-`review.stalled` is then just another event: retry it, escalate it, or route it
+`reviews.stalled` carries every stale file from one sweep. Put a `stream-runner`
+behind it when each needs its own response.
+
+`reviews.stalled` is then just another event: retry it, escalate it, or route it
 to a human. The non-determinism is contained because its failure mode has a
 name.
 
@@ -619,7 +784,7 @@ to one row there.
 | Concern | What happens | What to do |
 |---|---|---|
 | Causation | `http-source` sets no `causation_id`. The chain severs. | Accept it, or write a small SDK source that stamps it from the body. |
-| Correlation | `http-source` sets no `correlation_id` either. | Have the agent echo `EMERGENT_CORRELATION_ID` (the sink gets it in env) into the body; use it as the trace key downstream. |
+| Correlation | `http-source` sets no `correlation_id` either. | Have the agent echo `EMERGENT_CORRELATION_ID` into the body and use it as the trace key downstream. The sink gets it in env only when the inbound message carries one, so the run must start from an `exec-source --correlate`. |
 | Payload shape | Everything the agent POSTs arrives nested under `.body`. | Unwrap with `.body` in the first handler, as the routers above do. |
 | Trust | The endpoint is an actuator: whatever can POST there drives the system. | Bind `--host 127.0.0.1`, consider `--secret` for HMAC, and always validate the vocabulary. |
 | Cost and latency | Every decision is a model call. | Filter hard *before* the judging primitive so the agent only judges what genuinely needs judgment. |
@@ -648,11 +813,23 @@ they are subscribable like any other type.
 | `system.shutdown` | Engine shutting down (SDKs handle internally) |
 | `system.shutdown.requested` | Shutdown signal received, before drain |
 
-Wildcards match: `system.started.*`, `system.error.*`.
+**Subscriptions are exact-match. There is no wildcard routing.**
+`system.error.*` is accepted and never delivers, so name each type:
 
-This makes the system reflexive. A watchdog that reacts to `system.error.*` by
-publishing an alert event is three lines of TOML, and the topology can respond to
-its own health the same way it responds to domain data.
+```toml
+[[handlers]]
+name = "watchdog"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "system.error.score-severity", "-s", "system.error.poll-issues",
+        "--publish-as", "triage.degraded", "--", "jq", "-c", "{name, error}"]
+subscribes = ["system.error.score-severity", "system.error.poll-issues"]
+publishes = ["triage.degraded"]
+```
+
+This makes the system reflexive: the topology can respond to its own health the
+same way it responds to domain data. Remember what the engine does not do. It
+never restarts a primitive that exited, so `triage.degraded` is a page, not a
+self-heal.
 
 ## Self-seeding
 
@@ -663,14 +840,22 @@ the seeding step to `system.started.<name>` of whatever must be ready first.
 [[sinks]]
 name = "seeder"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
-args = ["-s", "system.started.webhook", "--", "sh", "-c",
-        "curl -s -X POST -d '{\"count\":0}' http://localhost:8088"]
+args = ["-s", "system.started.webhook", "--",
+        "curl", "-s", "--retry", "5", "--retry-connrefused", "--retry-delay", "1",
+        "-X", "POST", "-H", "Content-Type: application/json",
+        "-d", '{"count": 0}', "http://127.0.0.1:8088"]
 subscribes = ["system.started.webhook"]
 ```
 
+`system.started.<name>` fires when the engine has *spawned* the process, not
+when the process is ready, so the port may not be bound yet. `--retry-connrefused`
+covers the gap.
+
 Combined with a feedback edge, this is the ouroboros: the loop seeds itself on
 startup and then sustains itself. Startup order (Sinks, then Handlers, then
-Sources) guarantees the consumers exist before anything is published.
+Sources) spawns the consumers before anything is published, with a fixed 50 ms
+pause between primitives and no readiness handshake. A slow-starting consumer
+can therefore miss a source's very first event.
 
 ## Stateful accumulators
 
@@ -709,9 +894,22 @@ isolation, and how a human intervenes in a running system without restarting it.
 [[sources]]
 name = "inject"
 path = "~/.local/share/emergent/primitives/bin/http-source"
-args = ["--port", "8099", "--path", "/inject"]
+args = ["--host", "127.0.0.1", "--port", "8099", "--path", "/inject"]
 publishes = ["http.request"]
+
+[[handlers]]
+name = "inject-issue"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "http.request", "--publish-as", "issue.found", "--", "jq", "-c", ".body"]
+subscribes = ["http.request"]
+publishes = ["issue.found"]
 ```
 
-Route the body to whatever type you want to simulate with a one-line jq handler.
+`--host` defaults to `0.0.0.0`. An injection endpoint is an actuator, so bind it
+to loopback. The payload is `{method, path, headers, body, remote_addr}`; the
+handler above unwraps `.body` into whatever type you want to simulate.
+
+This is also how you replay. The engine has no replay command, so replaying an
+event means reading its `payload_json` from the event store and POSTing it here.
+The replayed event gets new ids and no causation link to the original.
 A topology you can poke is a topology you can debug.
