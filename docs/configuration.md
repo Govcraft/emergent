@@ -80,6 +80,8 @@ subscribes = ["timer.filtered", "filter.processed", "system.started.*"]
 name = "emergent"              # Instance name (used in socket path)
 socket_path = "auto"           # Socket location
 api_port = 8891                # HTTP API port (0 to disable)
+shutdown_drain_ms = 500        # Voluntary-exit window per shutdown phase
+shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
 ```
 
 | Option | Default | Description |
@@ -87,6 +89,15 @@ api_port = 8891                # HTTP API port (0 to disable)
 | `name` | `"emergent"` | Engine instance name |
 | `socket_path` | `"auto"` | `"auto"` for XDG-compliant path, or explicit path like `"/tmp/emergent.sock"` |
 | `api_port` | `8891` | HTTP API port for topology queries. Set to `0` to disable. |
+| `shutdown_drain_ms` | `500` | How long a shutdown phase waits for its primitives to exit on the `system.shutdown` broadcast alone, before SIGTERM. Sources skip this window because they cannot subscribe. |
+| `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
+
+**Shutdown timing:** both windows are deadlines, not sleeps. A phase moves on the
+moment every one of its primitives has exited, so a topology of well-behaved
+primitives shuts down in well under a second. A primitive that ignores SIGTERM
+is SIGKILLed at the grace deadline, together with anything it spawned, and the
+engine logs a warning naming it. Raise `shutdown_grace_ms` for primitives that
+legitimately need longer to flush.
 
 **Socket path resolution:**
 
@@ -130,6 +141,8 @@ publishes = ["timer.tick"]
 | `args` | No | Command-line arguments (array of strings) |
 | `enabled` | No | `true` (default) or `false` to disable |
 | `publishes` | Yes | Message types this source will emit |
+| `env` | No | Extra environment variables (key-value map) |
+| `restart` | No | Supervision policy. See [Restart Policy](#restart-policy). |
 
 **Path resolution:** Tilde expansion (`~/bin/app`), bare command lookup via PATH (`path = "python3"`), and `"auto"` XDG paths are all supported.
 
@@ -157,6 +170,7 @@ publishes = ["timer.filtered"]
 | `publishes` | Yes | Message types this handler will emit |
 | `unwrap_stdout` | No | When `true`, the SDK automatically extracts and parses the `.stdout` field from exec-source's `{command, stdout, exit_code}` envelope before delivering messages. Eliminates the need for a dedicated unwrap handler. |
 | `env` | No | Extra environment variables (key-value map) |
+| `restart` | No | Supervision policy. See [Restart Policy](#restart-policy). |
 
 ## Sinks
 
@@ -180,6 +194,78 @@ subscribes = ["timer.filtered", "system.started.*"]
 | `subscribes` | Yes | Message types to receive |
 | `unwrap_stdout` | No | When `true`, the SDK automatically extracts and parses the `.stdout` field from exec-source's envelope before delivering messages. |
 | `env` | No | Extra environment variables (key-value map) |
+| `restart` | No | Supervision policy. See [Restart Policy](#restart-policy). |
+
+## Restart Policy
+
+By default a primitive that exits stays down until the engine is restarted. Set
+`restart` on any source, handler or sink to have the engine respawn it.
+
+```toml
+[[handlers]]
+name = "enricher"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "order.placed", "--", "jq", "-c", "."]
+subscribes = ["order.placed"]
+restart = "on-failure"
+restart_backoff_ms = 500       # Delay before the first retry
+restart_max_backoff_ms = 30000 # Ceiling for the doubling backoff
+restart_max_retries = 5        # Restarts allowed inside the window
+restart_window_ms = 60000      # Sliding window for counting restarts
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `restart` | `"never"` | `"never"`, `"on-failure"` or `"always"` |
+| `restart_backoff_ms` | `500` | Delay before the first restart attempt |
+| `restart_max_backoff_ms` | `30000` | Ceiling for the backoff, which doubles each attempt |
+| `restart_max_retries` | `5` | Restarts allowed inside `restart_window_ms` |
+| `restart_window_ms` | `60000` | Sliding window over which restarts are counted |
+
+| Policy | Restarts on |
+|--------|-------------|
+| `never` | Nothing. The default, and the behaviour of every earlier release. |
+| `on-failure` | A non-zero exit code, or death by a signal other than SIGTERM. |
+| `always` | Any exit, clean or not. |
+
+The delay doubles with each attempt inside the window (500 ms, 1 s, 2 s, ...)
+up to `restart_max_backoff_ms`. Once `restart_max_retries` restarts have
+happened inside `restart_window_ms`, the primitive is left in the `Failed`
+state and the engine emits `system.error.<name>` with an error of
+`"Restarts exhausted: N attempts within W ms"`. Attempts age out of the window,
+so a primitive that fails rarely is restarted indefinitely.
+
+A restart is never attempted while the engine is shutting down, whatever the
+policy says.
+
+Any value of `restart` other than the three above is a configuration error
+naming both the primitive and the value, and the engine refuses to start.
+
+### Reacting to Restarts
+
+Each successful respawn emits `system.restarted.<name>`, alongside the
+`system.error.<name>` that reported the exit:
+
+```toml
+[[sinks]]
+name = "alerts"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "system.restarted.*", "--", "jq", "-c", "."]
+subscribes = ["system.restarted.*"]
+```
+
+The payload carries the same fields as `system.started.<name>` plus
+`restart_attempt`, the 1-based attempt number inside the current window:
+
+```json
+{
+  "name": "enricher",
+  "kind": "handler",
+  "pid": 48211,
+  "subscribes": ["order.placed"],
+  "restart_attempt": 2
+}
+```
 
 ## Subscription Patterns
 
@@ -291,6 +377,7 @@ The engine publishes lifecycle events:
 | `system.started.<name>` | Primitive connected |
 | `system.stopped.<name>` | Primitive disconnected |
 | `system.error.<name>` | Primitive failed |
+| `system.restarted.<name>` | Primitive respawned by its restart policy |
 | `system.shutdown.requested` | Shutdown requested -- cleanup window before teardown |
 | `system.shutdown` | Graceful shutdown in progress (intercepted by SDK) |
 

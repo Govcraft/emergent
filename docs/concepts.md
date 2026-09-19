@@ -184,6 +184,7 @@ The engine publishes lifecycle events that primitives can subscribe to:
 | `system.started.<name>` | `{name, kind}` | Primitive connected |
 | `system.stopped.<name>` | `{name, kind}` | Primitive disconnected |
 | `system.error.<name>` | `{name, kind, error}` | Primitive failed |
+| `system.restarted.<name>` | `{name, kind, pid, restart_attempt}` | Primitive respawned by its restart policy |
 | `system.shutdown.requested` | | Shutdown requested -- cleanup window |
 | `system.shutdown` | `{kind}` | Graceful shutdown in progress |
 
