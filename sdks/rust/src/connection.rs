@@ -140,6 +140,28 @@ async fn connect_to_engine(
         })
 }
 
+/// Extract the primitive kind a `system.shutdown` broadcast targets.
+///
+/// The engine forwards system events with the whole serialized
+/// `EmergentMessage` as the notification payload, so the kind sits at
+/// `payload.kind` inside that envelope. A bare `{"kind": ...}` object is
+/// accepted too, which keeps a hand-written broadcast working. Returns `None`
+/// when no string kind is present. The result is lowercased so callers can
+/// compare it against a primitive kind directly.
+fn extract_shutdown_kind(notification_payload: &serde_json::Value) -> Option<String> {
+    fn kind_of(value: &serde_json::Value) -> Option<String> {
+        value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_lowercase)
+    }
+
+    notification_payload
+        .get("payload")
+        .and_then(kind_of)
+        .or_else(|| kind_of(notification_payload))
+}
+
 /// Build an `IpcEnvelope` for publishing an `EmergentMessage` (fire-and-forget).
 fn build_publish_envelope(message: EmergentMessage) -> Result<IpcEnvelope> {
     let ipc_message = IpcEmergentMessage { inner: message };
@@ -183,17 +205,16 @@ async fn push_to_message_stream(
     while let Some(notification) = push_rx.recv().await {
         // Check for shutdown signal
         if notification.message_type == "system.shutdown" {
-            let kind = notification
-                .payload
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+            let kind = extract_shutdown_kind(&notification.payload);
             info!(
                 primitive.name = %name,
-                shutdown_kind = %kind,
+                shutdown_kind = %kind.as_deref().unwrap_or("unknown"),
                 "received shutdown signal"
             );
-            if kind == shutdown_kind {
+            if kind
+                .as_deref()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case(shutdown_kind))
+            {
                 info!(
                     primitive.name = %name,
                     "shutting down (engine requested)"
@@ -1381,5 +1402,174 @@ impl EmergentSink {
             .map_err(|e| ClientError::ConnectionFailed(format!("disconnect failed: {e}")))?;
         info!(primitive.name = %self.name, "disconnected from engine");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A `system.shutdown` notification payload exactly as the engine sends it:
+    /// the whole serialized `EmergentMessage`, with the kind one level in.
+    fn engine_shutdown_envelope(kind: &str) -> serde_json::Value {
+        json!({
+            "id": "msg_01m2xskqtyffgve4n1yw9vr8kz",
+            "message_type": "system.shutdown",
+            "source": "emergent",
+            "timestamp_ms": 1_758_318_000_000_u64,
+            "payload": { "kind": kind }
+        })
+    }
+
+    fn shutdown_notification(kind: &str) -> IpcPushNotification {
+        IpcPushNotification::new(
+            "system.shutdown",
+            Some("emergent".to_string()),
+            engine_shutdown_envelope(kind),
+        )
+    }
+
+    /// Await a stream read under a deadline, so a regression fails the test
+    /// instead of hanging it.
+    async fn next_within(
+        stream: &mut MessageStream,
+    ) -> std::result::Result<Option<EmergentMessage>, &'static str> {
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| "timed out waiting on the message stream")
+    }
+
+    fn message_notification(message_type: &str) -> IpcPushNotification {
+        let message = EmergentMessage::new(message_type).with_source("ticker");
+        IpcPushNotification::new(
+            message_type,
+            Some("ticker".to_string()),
+            serde_json::to_value(&message).unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn extracts_the_kind_from_the_engine_envelope() {
+        assert_eq!(
+            extract_shutdown_kind(&engine_shutdown_envelope("sink")).as_deref(),
+            Some("sink")
+        );
+    }
+
+    #[test]
+    fn extracts_the_kind_from_a_bare_kind_object() {
+        assert_eq!(
+            extract_shutdown_kind(&json!({ "kind": "handler" })).as_deref(),
+            Some("handler")
+        );
+    }
+
+    #[test]
+    fn lowercases_the_extracted_kind() {
+        assert_eq!(
+            extract_shutdown_kind(&engine_shutdown_envelope("SINK")).as_deref(),
+            Some("sink")
+        );
+    }
+
+    #[test]
+    fn prefers_the_inner_envelope_over_an_outer_kind() {
+        let payload = json!({
+            "kind": "source",
+            "payload": { "kind": "sink" }
+        });
+        assert_eq!(extract_shutdown_kind(&payload).as_deref(), Some("sink"));
+    }
+
+    #[test]
+    fn reports_no_kind_when_the_payload_carries_none() {
+        for payload in [
+            json!({}),
+            json!({ "payload": {} }),
+            json!({ "payload": { "kind": 7 } }),
+            json!({ "kind": null }),
+            json!("sink"),
+            json!(null),
+        ] {
+            assert_eq!(extract_shutdown_kind(&payload), None, "payload: {payload}");
+        }
+    }
+
+    #[tokio::test]
+    async fn matching_shutdown_ends_the_message_stream() {
+        let (push_tx, push_rx) = mpsc::channel(8);
+        let (tx, rx) = mpsc::channel(8);
+        let mut stream = MessageStream::new(rx);
+
+        let bridge = tokio::spawn(push_to_message_stream(
+            push_rx,
+            tx,
+            "printer".to_string(),
+            "sink",
+        ));
+
+        push_tx
+            .send(message_notification("timer.tick"))
+            .await
+            .map_err(|e| e.to_string())
+            .ok();
+        push_tx
+            .send(shutdown_notification("sink"))
+            .await
+            .map_err(|e| e.to_string())
+            .ok();
+
+        let first = next_within(&mut stream).await;
+        assert_eq!(
+            first.map(|msg| msg.map(|msg| msg.message_type.to_string())),
+            Ok(Some("timer.tick".to_string()))
+        );
+        assert_eq!(
+            next_within(&mut stream).await.map(|msg| msg.is_none()),
+            Ok(true),
+            "stream should end on a shutdown that targets this kind"
+        );
+        assert!(bridge.await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn shutdown_for_another_kind_leaves_the_stream_open() {
+        let (push_tx, push_rx) = mpsc::channel(8);
+        let (tx, rx) = mpsc::channel(8);
+        let mut stream = MessageStream::new(rx);
+
+        let bridge = tokio::spawn(push_to_message_stream(
+            push_rx,
+            tx,
+            "printer".to_string(),
+            "sink",
+        ));
+
+        push_tx
+            .send(shutdown_notification("source"))
+            .await
+            .map_err(|e| e.to_string())
+            .ok();
+        push_tx
+            .send(shutdown_notification("handler"))
+            .await
+            .map_err(|e| e.to_string())
+            .ok();
+        push_tx
+            .send(message_notification("timer.tick"))
+            .await
+            .map_err(|e| e.to_string())
+            .ok();
+
+        let next = next_within(&mut stream).await;
+        assert_eq!(
+            next.map(|msg| msg.map(|msg| msg.message_type.to_string())),
+            Ok(Some("timer.tick".to_string())),
+            "a shutdown for another kind must not end the stream"
+        );
+
+        drop(push_tx);
+        assert!(bridge.await.is_ok());
     }
 }
