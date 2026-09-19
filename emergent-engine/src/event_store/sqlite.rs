@@ -248,8 +248,9 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<EmergentMessage, rusqlite::
         })
         .transpose()?;
 
-    #[allow(clippy::cast_sign_loss)]
-    let timestamp = Timestamp::from_millis(timestamp_ms as u64);
+    let timestamp = Timestamp::from_millis(u64::try_from(timestamp_ms).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Integer, Box::new(e))
+    })?);
 
     Ok(EmergentMessage {
         id,
@@ -284,8 +285,8 @@ impl EventStore for SqliteEventStore {
         let correlation_id_str = message.correlation_id.as_ref().map(ToString::to_string);
         let causation_id_str = message.causation_id.as_ref().map(ToString::to_string);
 
-        #[allow(clippy::cast_possible_wrap)]
-        let timestamp_ms = message.timestamp_ms.as_millis() as i64;
+        let timestamp_ms = i64::try_from(message.timestamp_ms.as_millis())
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
         conn.execute(
             r"
