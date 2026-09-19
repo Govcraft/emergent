@@ -2,6 +2,7 @@
 
 import pytest
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from emergent.types import (
     DiscoveryInfo,
@@ -62,7 +63,7 @@ class TestEmergentMessage:
             timestamp_ms=1234567890123,
         )
 
-        with pytest.raises(Exception):  # ValidationError from Pydantic
+        with pytest.raises(PydanticValidationError):
             msg.id = "different_id"  # type: ignore[misc]
 
     def test_payload_as_dict(self) -> None:
@@ -176,7 +177,7 @@ class TestPrimitiveInfo:
         """Test that primitive info is immutable."""
         info = PrimitiveInfo(name="my_handler", kind="Handler")
 
-        with pytest.raises(Exception):
+        with pytest.raises(PydanticValidationError):
             info.name = "different"  # type: ignore[misc]
 
 

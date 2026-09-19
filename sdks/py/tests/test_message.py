@@ -1,6 +1,7 @@
 """Tests for the message module."""
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 
 from emergent.errors import ValidationError
 from emergent.message import MessageBuilder, create_message
@@ -111,7 +112,7 @@ class TestMessageBuilder:
         msg = create_message("timer.tick").payload({"count": 1}).build()
 
         # Message should be frozen
-        with pytest.raises(Exception):
+        with pytest.raises(PydanticValidationError):
             msg.payload = {"count": 2}  # type: ignore[misc]
 
     def test_multiple_builds_create_different_messages(self) -> None:

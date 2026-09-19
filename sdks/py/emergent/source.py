@@ -6,7 +6,6 @@ A Source can only publish messages (ingress).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from ._client import BaseClient
@@ -14,6 +13,8 @@ from ._protocol import Format
 from .message import MessageBuilder, create_message
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterable, Iterable
+
     from .types import DiscoveryInfo, EmergentMessage
 
 

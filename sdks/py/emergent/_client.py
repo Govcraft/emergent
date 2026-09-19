@@ -699,19 +699,19 @@ class BaseClient:
         self._pending_requests.clear()
 
         # Cancel pending topology requests
-        for pending in self._pending_topology_requests.values():
-            if pending.timer is not None:
-                pending.timer.cancel()
-            if not pending.future.done():
-                pending.future.set_exception(ConnectionError("Connection closed"))
+        for topology_pending in self._pending_topology_requests.values():
+            if topology_pending.timer is not None:
+                topology_pending.timer.cancel()
+            if not topology_pending.future.done():
+                topology_pending.future.set_exception(ConnectionError("Connection closed"))
         self._pending_topology_requests.clear()
 
         # Cancel pending subscriptions requests
-        for pending in self._pending_subscriptions_requests.values():
-            if pending.timer is not None:
-                pending.timer.cancel()
-            if not pending.future.done():
-                pending.future.set_exception(ConnectionError("Connection closed"))
+        for subscriptions_pending in self._pending_subscriptions_requests.values():
+            if subscriptions_pending.timer is not None:
+                subscriptions_pending.timer.cancel()
+            if not subscriptions_pending.future.done():
+                subscriptions_pending.future.set_exception(ConnectionError("Connection closed"))
         self._pending_subscriptions_requests.clear()
 
         self._subscribed_types.clear()
@@ -865,11 +865,11 @@ class BaseClient:
                 wire_message = WireMessage.model_validate(notification.payload)
                 correlation_id = wire_message.correlation_id
                 if correlation_id:
-                    pending = self._pending_topology_requests.pop(correlation_id, None)
-                    if pending is not None:
-                        if pending.timer is not None:
-                            pending.timer.cancel()
-                        if not pending.future.done():
+                    topology_pending = self._pending_topology_requests.pop(correlation_id, None)
+                    if topology_pending is not None:
+                        if topology_pending.timer is not None:
+                            topology_pending.timer.cancel()
+                        if not topology_pending.future.done():
                             # Extract primitives from payload
                             payload_data = wire_message.payload or {}
                             primitives_data = (
@@ -889,7 +889,7 @@ class BaseClient:
                                 )
                                 for p in primitives_data
                             )
-                            pending.future.set_result(TopologyState(primitives=primitives))
+                            topology_pending.future.set_result(TopologyState(primitives=primitives))
                 return  # Don't forward to message stream
 
             # Handle system.response.subscriptions messages
@@ -897,11 +897,13 @@ class BaseClient:
                 wire_message = WireMessage.model_validate(notification.payload)
                 correlation_id = wire_message.correlation_id
                 if correlation_id:
-                    pending = self._pending_subscriptions_requests.pop(correlation_id, None)
-                    if pending is not None:
-                        if pending.timer is not None:
-                            pending.timer.cancel()
-                        if not pending.future.done():
+                    subscriptions_pending = self._pending_subscriptions_requests.pop(
+                        correlation_id, None
+                    )
+                    if subscriptions_pending is not None:
+                        if subscriptions_pending.timer is not None:
+                            subscriptions_pending.timer.cancel()
+                        if not subscriptions_pending.future.done():
                             # Extract subscribes from payload
                             payload_data = wire_message.payload or {}
                             subscribes = (
@@ -909,7 +911,7 @@ class BaseClient:
                                 if isinstance(payload_data, dict)
                                 else []
                             )
-                            pending.future.set_result(subscribes)
+                            subscriptions_pending.future.set_result(subscribes)
                 return  # Don't forward to message stream
 
             if self._message_stream is not None:

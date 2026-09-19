@@ -87,8 +87,9 @@ class TestMessageStream:
             await asyncio.sleep(0.01)
             stream.push(make_message(count=1))
 
-        asyncio.create_task(push_later())
+        task = asyncio.create_task(push_later())
         result = await stream.next()
+        await task
 
         assert result is not None
         assert result.id == "msg_1"
@@ -111,8 +112,9 @@ class TestMessageStream:
             await asyncio.sleep(0.01)
             stream.close()
 
-        asyncio.create_task(close_later())
+        task = asyncio.create_task(close_later())
         result = await stream.next()
+        await task
 
         assert result is None
 
@@ -180,12 +182,13 @@ class TestMessageStream:
             await asyncio.sleep(0.01)
             stream.close()
 
-        asyncio.create_task(close_later())
+        task = asyncio.create_task(close_later())
 
         # Collect messages
         messages = []
         async for msg in stream:
             messages.append(msg)
+        await task
 
         assert len(messages) == 3
         assert [m.payload["count"] for m in messages] == [0, 1, 2]
