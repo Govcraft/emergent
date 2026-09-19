@@ -118,6 +118,12 @@ func TryDecodeFrame(buffer []byte) (*DecodedFrame, error) {
 	format := buffer[6]
 	payloadBytes := buffer[HeaderSize:totalLen]
 
+	// A heartbeat is a bare header. Its body is empty, which neither format
+	// can decode, so it is returned with a nil payload.
+	if payloadLen == 0 {
+		return &DecodedFrame{MsgType: msgType, Format: format, BytesConsumed: totalLen}, nil
+	}
+
 	var payload any
 	var err error
 

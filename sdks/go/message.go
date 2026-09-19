@@ -160,11 +160,7 @@ func MessageFromWire(wire map[string]any) *EmergentMessage {
 	if cid, ok := wire["causation_id"].(string); ok {
 		msg.CausationID = cid
 	}
-	if ts, ok := wire["timestamp_ms"].(uint64); ok {
-		msg.TimestampMs = Timestamp(ts)
-	} else if ts, ok := wire["timestamp_ms"].(int64); ok {
-		msg.TimestampMs = Timestamp(ts)
-	} else if ts, ok := wire["timestamp_ms"].(float64); ok {
+	if ts, ok := wireUint64(wire["timestamp_ms"]); ok {
 		msg.TimestampMs = Timestamp(ts)
 	}
 	msg.Payload = wire["payload"]

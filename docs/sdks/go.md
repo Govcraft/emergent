@@ -152,7 +152,7 @@ emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) 
 | `Publish(message)` | Send a message (fire-and-forget) |
 | `PublishAll(messages)` | Publish all messages from a slice, return count |
 | `PublishStream(ctx, ch)` | Publish messages from a channel, return count |
-| `Discover(ctx)` | Query available message types and primitives |
+| `Discover(ctx)` | List the IPC type names and IPC-exposed actors the engine reports (`SystemEvent`, `message_broker`). These are not Emergent topics or primitives: use `GetTopology` on a sink for those |
 | `Close()` | Graceful disconnection |
 | `Name()` | Get this source's name |
 
@@ -166,7 +166,7 @@ emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) 
 | `PublishAll(messages)` | Publish all messages from a slice, return count |
 | `PublishStream(ctx, ch)` | Publish messages from a channel, return count |
 | `Unsubscribe(ctx, types)` | Remove subscriptions |
-| `Discover(ctx)` | Query available message types |
+| `Discover(ctx)` | List the IPC type names and IPC-exposed actors the engine reports (`SystemEvent`, `message_broker`). These are not Emergent topics or primitives: use `GetTopology` on a sink for those |
 | `Close()` | Graceful disconnection |
 | `SubscribedTypes()` | Get current subscriptions |
 
@@ -179,7 +179,7 @@ emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) 
 | `GetMySubscriptions(ctx)` | Query configured subscriptions from engine |
 | `GetTopology(ctx)` | Query current system topology |
 | `Unsubscribe(ctx, types)` | Remove subscriptions |
-| `Discover(ctx)` | Query available message types |
+| `Discover(ctx)` | List the IPC type names and IPC-exposed actors the engine reports (`SystemEvent`, `message_broker`). These are not Emergent topics or primitives: use `GetTopology` on a sink for those |
 | `Close()` | Graceful disconnection |
 
 ## MessageStream

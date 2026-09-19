@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -21,6 +22,10 @@ type fakeReply struct {
 	delayed bool
 }
 
+// fakeTimerPID is the PID the fake engine reports for its running timer. The
+// console primitive reports none.
+const fakeTimerPID uint32 = 70000
+
 // fakeTopologyPrimitives is the topology the fake engine reports.
 func fakeTopologyPrimitives() []any {
 	return []any{
@@ -28,6 +33,7 @@ func fakeTopologyPrimitives() []any {
 			"name":       "timer",
 			"kind":       "source",
 			"state":      "running",
+			"pid":        fakeTimerPID,
 			"publishes":  []any{"timer.tick"},
 			"subscribes": []any{},
 		},
@@ -50,6 +56,9 @@ func fakeEngineReply(msgType byte, payload any) (fakeReply, bool) {
 	}
 
 	switch msgType {
+	case MsgTypeDiscover:
+		correlationID, _ := payloadMap["correlation_id"].(string)
+		return fakeReply{msgType: MsgTypeResponse, payload: engineDiscoveryBody(correlationID)}, true
 	case MsgTypeSubscribe, MsgTypeUnsubscribe:
 		correlationID, _ := payloadMap["correlation_id"].(string)
 		return fakeReply{
@@ -94,6 +103,34 @@ func fakeEngineReply(msgType byte, payload any) (fakeReply, bool) {
 	default:
 		return fakeReply{}, false
 	}
+}
+
+// fakeRejectionError and fakeRejectionCode are the error the fake engine
+// reports when it rejects a request. They are the text and code a real engine
+// gave for a request aimed at an actor that does not exist.
+const (
+	fakeRejectionError = "Actor not found: no_such_actor"
+	fakeRejectionCode  = "ACTOR_NOT_FOUND"
+)
+
+// fakeEngineRejection answers a request with the ERROR frame the engine sends
+// when the request failed: the usual response body, under frame type 0x03.
+// It is pure. A frame with no correlation id gets no answer.
+func fakeEngineRejection(payload any) (fakeReply, bool) {
+	payloadMap, _ := payload.(map[string]any)
+	correlationID, _ := payloadMap["correlation_id"].(string)
+	if correlationID == "" {
+		return fakeReply{}, false
+	}
+	return fakeReply{
+		msgType: MsgTypeError,
+		payload: &IpcResponse{
+			CorrelationID: correlationID,
+			Success:       false,
+			Error:         fakeRejectionError,
+			ErrorCode:     fakeRejectionCode,
+		},
+	}, true
 }
 
 func TestFakeEngineReply(t *testing.T) {
@@ -147,10 +184,33 @@ type fakeEngine struct {
 	// pushDelay holds back pub/sub answers so they land around the client's
 	// request timeout.
 	pushDelay time.Duration
+	// muteLookups drops pub/sub answers, so a lookup waits until its caller
+	// gives up.
+	muteLookups atomic.Bool
+	// rejectRequests answers every request with an ERROR frame, the way the
+	// engine answers a request that failed.
+	rejectRequests atomic.Bool
 
 	mu    sync.Mutex
-	conns []net.Conn
+	conns []*fakeConn
 	wg    sync.WaitGroup
+}
+
+// fakeConn is one accepted client connection. Its mutex keeps frames whole
+// when a reply and a broadcast are written at the same time.
+type fakeConn struct {
+	net.Conn
+	writeMu sync.Mutex
+}
+
+func (fc *fakeConn) send(reply fakeReply) {
+	frame, err := EncodeFrame(reply.msgType, reply.payload, FormatMsgPack)
+	if err != nil {
+		return
+	}
+	fc.writeMu.Lock()
+	_, _ = fc.Write(frame)
+	fc.writeMu.Unlock()
 }
 
 func startFakeEngine(t *testing.T, pushDelay time.Duration) *fakeEngine {
@@ -191,13 +251,37 @@ func (e *fakeEngine) stop() {
 	e.wg.Wait()
 }
 
+// connections returns the client connections accepted so far.
+func (e *fakeEngine) connections() []*fakeConn {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]*fakeConn(nil), e.conns...)
+}
+
+// broadcast pushes one frame to every connected client, the way the engine
+// fans a system event out to its subscribers.
+func (e *fakeEngine) broadcast(reply fakeReply) {
+	for _, conn := range e.connections() {
+		conn.send(reply)
+	}
+}
+
+// dropConnections closes every client connection from the engine side, which
+// is what a client sees when the engine dies.
+func (e *fakeEngine) dropConnections() {
+	for _, conn := range e.connections() {
+		_ = conn.Close()
+	}
+}
+
 func (e *fakeEngine) acceptLoop() {
 	defer e.wg.Done()
 	for {
-		conn, err := e.listener.Accept()
+		accepted, err := e.listener.Accept()
 		if err != nil {
 			return
 		}
+		conn := &fakeConn{Conn: accepted}
 		e.mu.Lock()
 		e.conns = append(e.conns, conn)
 		e.mu.Unlock()
@@ -207,19 +291,8 @@ func (e *fakeEngine) acceptLoop() {
 	}
 }
 
-func (e *fakeEngine) serve(conn net.Conn) {
+func (e *fakeEngine) serve(conn *fakeConn) {
 	defer e.wg.Done()
-
-	var writeMu sync.Mutex
-	send := func(reply fakeReply) {
-		frame, err := EncodeFrame(reply.msgType, reply.payload, FormatMsgPack)
-		if err != nil {
-			return
-		}
-		writeMu.Lock()
-		_, _ = conn.Write(frame)
-		writeMu.Unlock()
-	}
 
 	var buffer []byte
 	chunk := make([]byte, 64*1024)
@@ -241,7 +314,13 @@ func (e *fakeEngine) serve(conn net.Conn) {
 			buffer = buffer[frame.BytesConsumed:]
 
 			reply, ok := fakeEngineReply(frame.MsgType, frame.Payload)
+			if e.rejectRequests.Load() {
+				reply, ok = fakeEngineRejection(frame.Payload)
+			}
 			if !ok {
+				continue
+			}
+			if reply.delayed && e.muteLookups.Load() {
 				continue
 			}
 			if reply.delayed && e.pushDelay > 0 {
@@ -249,11 +328,11 @@ func (e *fakeEngine) serve(conn net.Conn) {
 				go func() {
 					defer e.wg.Done()
 					time.Sleep(e.pushDelay)
-					send(reply)
+					conn.send(reply)
 				}()
 				continue
 			}
-			send(reply)
+			conn.send(reply)
 		}
 	}
 }

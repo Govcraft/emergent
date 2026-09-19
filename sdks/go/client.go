@@ -176,9 +176,13 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 
 	correlationID := generateCorrelationID("sub")
 
-	stream := newMessageStream(channelBufferSize, func() {
+	// The callback forgets the stream only while it is still the registered
+	// one. A stream detached by the read loop is closed after c.mu is released,
+	// and by then a new subscription may have taken its place.
+	var stream *MessageStream
+	stream = newMessageStream(channelBufferSize, func() {
 		c.mu.Lock()
-		if c.messageStream != nil {
+		if c.messageStream == stream {
 			c.messageStream = nil
 		}
 		c.mu.Unlock()
@@ -311,17 +315,50 @@ func (c *baseClient) unsubscribeInternal(ctx context.Context, messageTypes []str
 	return nil
 }
 
+// connState is the snapshot of baseClient that decides whether a write may go
+// ahead.
+type connState struct {
+	disposed bool
+	conn     net.Conn
+	kind     PrimitiveKind
+}
+
+// usableConn returns the connection to write through, or the error a caller
+// gets when the client is closed or was never connected. It is pure, so the
+// decision is tested without a socket.
+func usableConn(state connState) (net.Conn, error) {
+	if state.disposed {
+		return nil, &DisposedError{ClientType: string(state.kind)}
+	}
+	if state.conn == nil {
+		return nil, &ConnectionError{Msg: "not connected"}
+	}
+	return state.conn, nil
+}
+
+// activeConn must be called with c.mu held. Writers keep the returned
+// connection in a local: close() sets c.conn to nil under c.mu, so reading
+// c.conn again without the lock is a data race and can yield nil.
+func (c *baseClient) activeConn() (net.Conn, error) {
+	return usableConn(connState{disposed: c.disposed, conn: c.conn, kind: c.primitiveKind})
+}
+
+// writeFrame writes one whole frame. writeMu keeps concurrent frames from
+// interleaving on the socket.
+func (c *baseClient) writeFrame(conn net.Conn, frame []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_, err := conn.Write(frame)
+	return err
+}
+
 func (c *baseClient) publishInternal(message *EmergentMessage) error {
 	c.mu.Lock()
-	if c.disposed {
-		c.mu.Unlock()
-		return &DisposedError{ClientType: string(c.primitiveKind)}
-	}
-	if c.conn == nil {
-		c.mu.Unlock()
-		return &ConnectionError{Msg: "not connected"}
-	}
+	conn, err := c.activeConn()
 	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
 
 	// Set source to this client's name
 	wireMsg := message.ToWire()
@@ -341,11 +378,7 @@ func (c *baseClient) publishInternal(message *EmergentMessage) error {
 		return &PublishError{Msg: fmt.Sprintf("encode error: %v", err), MessageType: string(message.MessageType)}
 	}
 
-	c.writeMu.Lock()
-	_, err = c.conn.Write(frame)
-	c.writeMu.Unlock()
-
-	if err != nil {
+	if err = c.writeFrame(conn, frame); err != nil {
 		c.logger.Error("failed to publish message", "message_type", message.MessageType, "error", err)
 		return &PublishError{Msg: err.Error(), MessageType: string(message.MessageType)}
 	}
@@ -411,15 +444,11 @@ func (c *baseClient) discoverInternal(ctx context.Context) (*DiscoveryInfo, erro
 
 	correlationID := generateCorrelationID("req")
 
-	envelope := &IpcEnvelope{
-		CorrelationID: correlationID,
-		Target:        "broker",
-		MessageType:   "Discover",
-		Payload:       nil,
-		ExpectsReply:  true,
-	}
-
-	resp, err := c.sendRequest(ctx, MsgTypeDiscover, envelope, correlationID)
+	resp, err := c.sendRequest(ctx, MsgTypeDiscover, &IpcDiscoverRequest{
+		CorrelationID:       correlationID,
+		IncludeActors:       true,
+		IncludeMessageTypes: true,
+	}, correlationID)
 	if err != nil {
 		return nil, &DiscoveryError{Msg: err.Error()}
 	}
@@ -431,32 +460,9 @@ func (c *baseClient) discoverInternal(ctx context.Context) (*DiscoveryInfo, erro
 		return nil, &DiscoveryError{Msg: errMsg}
 	}
 
-	// Parse discovery response from payload
-	info := &DiscoveryInfo{}
-	payloadMap, ok := resp.Payload.(map[string]any)
-	if ok {
-		if types, ok := payloadMap["message_types"].([]any); ok {
-			for _, t := range types {
-				if s, ok := t.(string); ok {
-					info.MessageTypes = append(info.MessageTypes, s)
-				}
-			}
-		}
-		if primitives, ok := payloadMap["primitives"].([]any); ok {
-			for _, p := range primitives {
-				if pm, ok := p.(map[string]any); ok {
-					pi := PrimitiveInfo{}
-					if name, ok := pm["name"].(string); ok {
-						pi.Name = name
-					}
-					if kind, ok := pm["kind"].(string); ok {
-						pi.Kind = PrimitiveKind(kind)
-					}
-					info.Primitives = append(info.Primitives, pi)
-				}
-			}
-		}
-	}
+	// The engine answers with actors and message_types at the top level of
+	// the response body, not under payload.
+	info := discoveryInfoFromBody(resp.Body)
 
 	c.logger.Debug("discovery complete", "message_types", len(info.MessageTypes), "primitives", len(info.Primitives))
 	return info, nil
@@ -485,6 +491,11 @@ func (c *baseClient) getMySubscriptionsInternal(ctx context.Context) ([]string, 
 		MessageTypes:  []string{"system.response.subscriptions"},
 	}, subCorrelationID)
 	if err != nil {
+		// A cancelled context is reported as itself, so callers can match it
+		// with errors.Is.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to subscribe to response type: %v", err)}
 	}
 	if !subResp.Success {
@@ -525,9 +536,15 @@ func (c *baseClient) getMySubscriptionsInternal(ctx context.Context) ([]string, 
 		return nil, pubErr
 	}
 
-	// Wait for response
-	result := <-resultCh
-	timer.Stop()
+	// Wait for the response, the request timer, or the caller's context
+	result, err := awaitPubSubResult(ctx, resultCh, timer, func() {
+		c.mu.Lock()
+		delete(c.pendingSubscriptionRequests, correlationID)
+		c.mu.Unlock()
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	switch v := result.(type) {
 	case []string:
@@ -563,6 +580,11 @@ func (c *baseClient) getTopologyInternal(ctx context.Context) (*TopologyState, e
 		MessageTypes:  []string{"system.response.topology"},
 	}, subCorrelationID)
 	if err != nil {
+		// A cancelled context is reported as itself, so callers can match it
+		// with errors.Is.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to subscribe to response type: %v", err)}
 	}
 	if !subResp.Success {
@@ -603,9 +625,15 @@ func (c *baseClient) getTopologyInternal(ctx context.Context) (*TopologyState, e
 		return nil, pubErr
 	}
 
-	// Wait for response
-	result := <-resultCh
-	timer.Stop()
+	// Wait for the response, the request timer, or the caller's context
+	result, err := awaitPubSubResult(ctx, resultCh, timer, func() {
+		c.mu.Lock()
+		delete(c.pendingTopologyRequests, correlationID)
+		c.mu.Unlock()
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	switch v := result.(type) {
 	case *TopologyState:
@@ -615,6 +643,22 @@ func (c *baseClient) getTopologyInternal(ctx context.Context) (*TopologyState, e
 		return nil, v
 	default:
 		return nil, &ConnectionError{Msg: "unexpected response type"}
+	}
+}
+
+// awaitPubSubResult waits for a pub/sub lookup to finish. The result channel
+// carries either the answer or the request timer's TimeoutError. When ctx ends
+// first it stops the timer, calls forget to remove the pending entry, and
+// returns the context's error.
+func awaitPubSubResult(ctx context.Context, resultCh <-chan any, timer *time.Timer, forget func()) (any, error) {
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		forget()
+		return nil, ctx.Err()
+	case result := <-resultCh:
+		timer.Stop()
+		return result, nil
 	}
 }
 
@@ -632,10 +676,9 @@ func (c *baseClient) close() error {
 		c.readCancel()
 	}
 
-	// Capture stream reference under lock, then close outside lock
-	// to avoid deadlock with the stream's onClose callback.
-	stream := c.messageStream
-	c.messageStream = nil
+	// Detach the stream under the lock and close it after unlocking, to
+	// avoid deadlock with the stream's onClose callback.
+	stream := c.detachStream()
 
 	// Close connection
 	if c.conn != nil {
@@ -684,9 +727,7 @@ func (c *baseClient) close() error {
 	c.mu.Unlock()
 
 	// Close message stream outside lock to avoid deadlock with onClose callback
-	if stream != nil {
-		stream.Close()
-	}
+	closeStream(stream)
 
 	// Wait for read loop to finish
 	select {
@@ -740,13 +781,12 @@ func (c *baseClient) readLoop(ctx context.Context) {
 				return // Context cancelled
 			}
 			c.logger.Info("connection closed (EOF)")
-			// Close the message stream on EOF
+			// Close the message stream on EOF. Detach it under c.mu and close
+			// it unlocked: Close runs the onClose callback, which takes c.mu.
 			c.mu.Lock()
-			if c.messageStream != nil {
-				c.messageStream.Close()
-				c.messageStream = nil
-			}
+			stream := c.detachStream()
 			c.mu.Unlock()
+			closeStream(stream)
 			return
 		}
 
@@ -758,78 +798,118 @@ func (c *baseClient) readLoop(ctx context.Context) {
 	}
 }
 
-// processFrames decodes every complete frame in the read buffer and dispatches
+// detachStream unregisters the message stream and returns it, or nil when
+// there is none. Must be called with c.mu held. The caller closes the returned
+// stream with closeStream after releasing c.mu.
+func (c *baseClient) detachStream() *MessageStream {
+	stream := c.messageStream
+	c.messageStream = nil
+	return stream
+}
+
+// closeStream closes a detached stream. Must be called without c.mu held:
+// MessageStream.Close runs the onClose callback, which takes c.mu, and
+// sync.Mutex is not reentrant.
+func closeStream(stream *MessageStream) {
+	if stream != nil {
+		stream.Close()
+	}
+}
+
+// processFrames dispatches every complete frame in the read buffer, then
+// closes the stream a system.shutdown detached, now that c.mu is released.
+func (c *baseClient) processFrames() {
+	closeStream(c.dispatchFrames())
+}
+
+// dispatchFrames decodes every complete frame in the read buffer and dispatches
 // it. It holds c.mu for the whole pass, so handleFrame and every handler below
 // it run with c.mu held. That lock is what serializes the read loop's access
 // to the pending-request maps against callers and request timers.
-func (c *baseClient) processFrames() {
+//
+// It returns the stream a handler detached, if any, for the caller to close
+// once c.mu is released. At most one stream can be detached in a pass, because
+// nothing can register a new one while c.mu is held.
+func (c *baseClient) dispatchFrames() *MessageStream {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	var detached *MessageStream
 	for len(c.readBuffer) >= HeaderSize {
 		frame, err := TryDecodeFrame(c.readBuffer)
 		if err != nil {
 			c.logger.Error("protocol error while processing frame", "error", err)
 			c.readBuffer = c.readBuffer[:0] // Reset buffer
-			return
+			return detached
 		}
 		if frame == nil {
-			return // Not enough data
+			return detached // Not enough data
 		}
 
 		c.readBuffer = c.readBuffer[frame.BytesConsumed:]
-		c.handleFrame(frame.MsgType, frame.Payload)
+		if stream := c.handleFrame(frame.MsgType, frame.Payload); stream != nil {
+			detached = stream
+		}
 	}
+	return detached
 }
 
-func (c *baseClient) handleFrame(msgType byte, payload any) {
+// handleFrame dispatches one frame. It returns the stream the frame detached,
+// if any, which must be closed only after c.mu is released.
+func (c *baseClient) handleFrame(msgType byte, payload any) *MessageStream {
 	// Must be called with c.mu held. The handlers it dispatches to inherit the
 	// lock and must not take c.mu themselves: sync.Mutex is not reentrant, so
-	// locking again would deadlock the read loop.
+	// locking again would deadlock the read loop. For the same reason they must
+	// not close a MessageStream, whose onClose callback takes c.mu.
 	switch msgType {
-	case MsgTypeResponse:
-		c.handleResponse(payload)
+	case MsgTypeResponse, MsgTypeError:
+		// The engine picks the frame type from the response's success field,
+		// so a failed request arrives as ERROR with the same body.
+		c.handleResponse(msgType, payload)
 	case MsgTypePush:
-		c.handlePush(payload)
+		return c.handlePush(payload)
+	case MsgTypeHeartbeat, MsgTypeStream:
+		// The engine echoes a heartbeat only after receiving one, and streams
+		// only to a request that asked for a stream. This SDK sends neither,
+		// so there is nothing to route.
+		c.logger.Debug("ignoring frame", "msg_type", fmt.Sprintf("0x%02x", msgType))
 	default:
-		// Ignore unhandled message types (drain)
+		c.logger.Warn("ignoring frame of unknown type", "msg_type", fmt.Sprintf("0x%02x", msgType))
 	}
+	return nil
 }
 
-// handleResponse completes a pending request. Must be called with c.mu held.
-func (c *baseClient) handleResponse(payload any) {
-	payloadMap, ok := payload.(map[string]any)
+// handleResponse completes the pending request a RESPONSE or ERROR frame
+// answers. Must be called with c.mu held.
+//
+// An ERROR frame that matches no pending request is logged, because nothing
+// else will report it. That covers a request that already timed out, a body
+// with no usable correlation id, and the engine's connection-limit rejection,
+// which carries the sentinel id "__acton_connection_rejected__".
+func (c *baseClient) handleResponse(msgType byte, payload any) {
+	resp, ok := responseFromFrame(msgType, payload)
 	if !ok {
+		if msgType == MsgTypeError {
+			c.logger.Error("engine error matched no pending request",
+				"correlation_id", frameCorrelationID(payload), "error", errorFrameText(payload))
+			return
+		}
+		c.logger.Warn("dropping malformed response frame")
 		return
 	}
 
-	correlationID, _ := payloadMap["correlation_id"].(string)
-	if correlationID == "" {
-		return
-	}
-
-	pending, exists := c.pendingRequests[correlationID]
+	pending, exists := c.pendingRequests[resp.CorrelationID]
 	if !exists {
-		return // No pending request — drain
+		if msgType == MsgTypeError {
+			c.logger.Error("engine error matched no pending request",
+				"correlation_id", resp.CorrelationID, "error", errorFrameText(payload))
+		}
+		return // No pending request: drain
 	}
 
-	delete(c.pendingRequests, correlationID)
+	delete(c.pendingRequests, resp.CorrelationID)
 	if pending.timer != nil {
 		pending.timer.Stop()
-	}
-
-	resp := &IpcResponse{
-		CorrelationID: correlationID,
-	}
-	if success, ok := payloadMap["success"].(bool); ok {
-		resp.Success = success
-	}
-	resp.Payload = payloadMap["payload"]
-	if errStr, ok := payloadMap["error"].(string); ok {
-		resp.Error = errStr
-	}
-	if code, ok := payloadMap["error_code"].(string); ok {
-		resp.ErrorCode = code
 	}
 
 	select {
@@ -838,31 +918,32 @@ func (c *baseClient) handleResponse(payload any) {
 	}
 }
 
-// handlePush routes a push notification. Must be called with c.mu held.
-func (c *baseClient) handlePush(payload any) {
+// handlePush routes a push notification. Must be called with c.mu held. It
+// returns the stream a system.shutdown detached, if any, which the caller
+// closes after releasing c.mu.
+func (c *baseClient) handlePush(payload any) *MessageStream {
 	payloadMap, ok := payload.(map[string]any)
 	if !ok {
-		return
+		return nil
 	}
 
 	messageType, _ := payloadMap["message_type"].(string)
 
 	// Handle system.shutdown internally
 	if messageType == "system.shutdown" {
-		c.handleShutdown(payloadMap)
-		return
+		return c.handleShutdown(payloadMap)
 	}
 
 	// Handle system.response.topology
 	if messageType == "system.response.topology" {
 		c.handleTopologyResponse(payloadMap)
-		return
+		return nil
 	}
 
 	// Handle system.response.subscriptions
 	if messageType == "system.response.subscriptions" {
 		c.handleSubscriptionsResponse(payloadMap)
-		return
+		return nil
 	}
 
 	// Skip the transport's own envelope broadcasts, which only a "*"
@@ -870,7 +951,7 @@ func (c *baseClient) handlePush(payload any) {
 	// under its own Emergent message type.
 	if !IsEmergentMessageType(messageType) {
 		c.logger.Debug("skipping non-Emergent IPC broadcast", "message_type", messageType)
-		return
+		return nil
 	}
 
 	// Forward to message stream
@@ -886,24 +967,28 @@ func (c *baseClient) handlePush(payload any) {
 			c.messageStream.push(msg)
 		}
 	}
+	return nil
 }
 
-func (c *baseClient) handleShutdown(payloadMap map[string]any) {
-	shutdownPayload, ok := payloadMap["payload"].(map[string]any)
-	if !ok {
-		return
+// handleShutdown acts on a system.shutdown broadcast. Must be called with c.mu
+// held. When the broadcast targets this primitive's kind it detaches the
+// message stream and returns it. It must not close the stream itself: see
+// closeStream.
+func (c *baseClient) handleShutdown(payloadMap map[string]any) *MessageStream {
+	// payloadMap is the push notification. Its payload is the EmergentMessage
+	// envelope, and the kind sits in that envelope's own payload.
+	shutdownKind, found := ExtractShutdownKind(payloadMap["payload"])
+	if !found {
+		c.logger.Info("received shutdown signal", "kind", "unknown")
+		return nil
 	}
-
-	shutdownKind, _ := shutdownPayload["kind"].(string)
 	c.logger.Info("received shutdown signal", "kind", shutdownKind)
 
-	if strings.EqualFold(shutdownKind, string(c.primitiveKind)) {
-		c.logger.Info("shutting down (engine requested)")
-		if c.messageStream != nil {
-			c.messageStream.Close()
-			c.messageStream = nil
-		}
+	if !strings.EqualFold(shutdownKind, string(c.primitiveKind)) {
+		return nil
 	}
+	c.logger.Info("shutting down (engine requested)")
+	return c.detachStream()
 }
 
 // handleTopologyResponse completes a pending GetTopology call.
@@ -932,45 +1017,57 @@ func (c *baseClient) handleTopologyResponse(payloadMap map[string]any) {
 	// Extract primitives from the nested payload
 	innerPayload, _ := wirePayload["payload"].(map[string]any)
 	primitivesRaw, _ := innerPayload["primitives"].([]any)
-
-	state := &TopologyState{}
-	for _, pRaw := range primitivesRaw {
-		if pm, ok := pRaw.(map[string]any); ok {
-			tp := TopologyPrimitive{}
-			tp.Name, _ = pm["name"].(string)
-			tp.Kind, _ = pm["kind"].(string)
-			tp.State, _ = pm["state"].(string)
-
-			if pubs, ok := pm["publishes"].([]any); ok {
-				for _, p := range pubs {
-					if s, ok := p.(string); ok {
-						tp.Publishes = append(tp.Publishes, s)
-					}
-				}
-			}
-			if subs, ok := pm["subscribes"].([]any); ok {
-				for _, s := range subs {
-					if str, ok := s.(string); ok {
-						tp.Subscribes = append(tp.Subscribes, str)
-					}
-				}
-			}
-			if pid, ok := pm["pid"].(float64); ok {
-				p := uint32(pid)
-				tp.PID = &p
-			}
-			if errStr, ok := pm["error"].(string); ok {
-				tp.Error = &errStr
-			}
-
-			state.Primitives = append(state.Primitives, tp)
-		}
-	}
+	state := topologyStateFromWire(primitivesRaw)
 
 	select {
 	case pending.ch <- state:
 	default:
 	}
+}
+
+// topologyStateFromWire builds a TopologyState from the decoded "primitives"
+// list of a system.response.topology payload. Entries that are not maps are
+// skipped. It is pure, so both wire formats are tested without a socket.
+func topologyStateFromWire(primitivesRaw []any) *TopologyState {
+	state := &TopologyState{}
+	for _, pRaw := range primitivesRaw {
+		if pm, ok := pRaw.(map[string]any); ok {
+			state.Primitives = append(state.Primitives, topologyPrimitiveFromWire(pm))
+		}
+	}
+	return state
+}
+
+// topologyPrimitiveFromWire builds one TopologyPrimitive from its decoded map.
+func topologyPrimitiveFromWire(pm map[string]any) TopologyPrimitive {
+	tp := TopologyPrimitive{}
+	tp.Name, _ = pm["name"].(string)
+	tp.Kind, _ = pm["kind"].(string)
+	tp.State, _ = pm["state"].(string)
+	tp.Publishes = wireStrings(pm["publishes"])
+	tp.Subscribes = wireStrings(pm["subscribes"])
+
+	// The PID is a float64 over JSON and an integer kind over MessagePack.
+	if pid, ok := wireUint32(pm["pid"]); ok {
+		tp.PID = &pid
+	}
+	if errStr, ok := pm["error"].(string); ok {
+		tp.Error = &errStr
+	}
+	return tp
+}
+
+// wireStrings returns the strings of a decoded wire list, skipping any other
+// element. It returns nil for a value that is not a list.
+func wireStrings(value any) []string {
+	items, _ := value.([]any)
+	var result []string
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // handleSubscriptionsResponse completes a pending GetMySubscriptions call.
@@ -998,14 +1095,7 @@ func (c *baseClient) handleSubscriptionsResponse(payloadMap map[string]any) {
 
 	// Extract subscribes list from nested payload
 	innerPayload, _ := wirePayload["payload"].(map[string]any)
-	subscribesRaw, _ := innerPayload["subscribes"].([]any)
-
-	var result []string
-	for _, s := range subscribesRaw {
-		if str, ok := s.(string); ok {
-			result = append(result, str)
-		}
-	}
+	result := wireStrings(innerPayload["subscribes"])
 
 	select {
 	case pending.ch <- result:
@@ -1027,7 +1117,15 @@ func (c *baseClient) sendRequest(ctx context.Context, msgType byte, payload any,
 		}
 	})
 
+	// Take the connection and register the request under one lock, so close()
+	// either sees the request and cancels it or has already refused it here.
 	c.mu.Lock()
+	conn, err := c.activeConn()
+	if err != nil {
+		c.mu.Unlock()
+		timer.Stop()
+		return nil, err
+	}
 	c.pendingRequests[correlationID] = &pendingRequest{ch: resultCh, timer: timer}
 	c.mu.Unlock()
 
@@ -1040,11 +1138,7 @@ func (c *baseClient) sendRequest(ctx context.Context, msgType byte, payload any,
 		return nil, fmt.Errorf("encode error: %w", err)
 	}
 
-	c.writeMu.Lock()
-	_, err = c.conn.Write(frame)
-	c.writeMu.Unlock()
-
-	if err != nil {
+	if err = c.writeFrame(conn, frame); err != nil {
 		timer.Stop()
 		c.mu.Lock()
 		delete(c.pendingRequests, correlationID)
