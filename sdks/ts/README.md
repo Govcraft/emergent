@@ -288,17 +288,37 @@ try {
 
 ### Error Types
 
-| Error                 | Code                  | Extra Fields   |
-| --------------------- | --------------------- | -------------- |
-| `ConnectionError`     | `CONNECTION_FAILED`   |                |
-| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socketPath`   |
-| `TimeoutError`        | `TIMEOUT`             | `timeoutMs`    |
-| `ProtocolError`       | `PROTOCOL_ERROR`      |                |
-| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `messageTypes` |
-| `PublishError`        | `PUBLISH_FAILED`      | `messageType`  |
-| `DiscoveryError`      | `DISCOVERY_FAILED`    |                |
-| `DisposedError`       | `DISPOSED`            |                |
-| `ValidationError`     | `VALIDATION_ERROR`    | `field`        |
+| Error                 | Code                  | Extra Fields   | Thrown when                                                                              |
+| --------------------- | --------------------- | -------------- | ---------------------------------------------------------------------------------------- |
+| `ConnectionError`     | `CONNECTION_FAILED`   |                | The socket cannot be reached, a request cannot be sent, or the client closes             |
+| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socketPath`   | No socket file exists at the path                                                        |
+| `TimeoutError`        | `TIMEOUT`             | `timeoutMs`    | The engine does not answer a request in time                                             |
+| `ProtocolError`       | `PROTOCOL_ERROR`      |                | A frame cannot be encoded, or a discovery reply is malformed                             |
+| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `messageTypes` | The engine rejects a subscription, including the one a topology query makes              |
+| `PublishError`        | `PUBLISH_FAILED`      | `messageType`  | The broker rejects an acknowledged publish (`publishAck`, `publishAll`, `publishStream`) |
+| `DiscoveryError`      | `DISCOVERY_FAILED`    |                | The engine rejects `discover()`                                                          |
+| `DisposedError`       | `DISPOSED`            |                | A closed client is used                                                                  |
+| `ValidationError`     | `VALIDATION_ERROR`    | `field`        | A message or a subscription topic is not valid                                           |
+
+`SubscriptionError`, `PublishError` and `DiscoveryError` extend
+`ConnectionError`. On SDK release 0.13.1 and earlier they were exported and
+never thrown: each of those rejections threw a plain `ConnectionError` with the
+code `CONNECTION_FAILED`. A handler that catches `ConnectionError` still catches
+them, so test for the specific class first. A handler that compares `code`
+against `CONNECTION_FAILED` for one of these rejections now sees the code in the
+table.
+
+A frame the engine sends with a malformed body is never thrown to the caller.
+After SDK release 0.13.1 it is logged and skipped, and the subscription stays
+open. On 0.13.1 and earlier one such frame ended the read loop and closed the
+stream.
+
+After SDK release 0.13.1 every frame is written to the socket in full, and
+frames are written one at a time, so two concurrent publishes cannot interleave.
+On 0.13.1 and earlier the SDK called `Deno.Conn.write` once per frame and
+ignored the byte count, so a socket that took only part of a large frame left
+half a frame on the wire and the engine lost framing for the rest of the
+connection.
 
 ## Message Shape
 

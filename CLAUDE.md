@@ -196,10 +196,18 @@ git add -A && git commit -S -m "chore: bump to X.Y.Z"
 git push && git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 ```
 
-Tagging triggers two GitHub Actions. The release workflow first runs `ci.yml` (the Rust, Python, TypeScript and Go gates) as its quality gate, and the builds, the GitHub release and the crates.io publish all wait for it:
-- **Release workflow** — builds engine binaries for Linux/macOS
-- **PyPI workflow** — publishes Python SDK to PyPI
-- TypeScript SDK (JSR) is published manually by the maintainer
+The `vX.Y.Z` tag triggers the release workflow. It first runs `ci.yml` (the Rust, Python, TypeScript and Go gates) as its quality gate; the engine builds for Linux and macOS, the GitHub release, the `emergent-engine` crates.io publish and the AUR update all wait for it.
+
+Each SDK publishes from its own tag, not from the engine tag:
+
+| Tag | Workflow | Publishes |
+|-----|----------|-----------|
+| `sdks/rust/vX.Y.Z` | `workflow-crates-io.yml` | `emergent-client` to crates.io |
+| `sdks/py/vX.Y.Z` | `workflow-pypi.yml` | Python SDK to PyPI |
+| `sdks/ts/vX.Y.Z` | `workflow-jsr.yml` | `@govcraft/emergent` to JSR |
+| `sdks/go/vX.Y.Z` | `workflow-go-proxy.yml` | Go module to the Go proxy |
+
+Every SDK workflow also accepts a manual `workflow_dispatch`. The engine and the SDKs are versioned separately (engine 0.10.x, SDKs 0.13.x at the time of writing). A `v0.11.0` engine tag and GitHub release already exist from March 2026, so the next engine minor must skip that number.
 
 ### Step 2: Release emergent-primitives
 
@@ -247,6 +255,6 @@ Workspace-level clippy configuration denies `unwrap_used` and `expect_used`. Use
 
 ## Dependencies
 
-- **acton-reactive**: Published crate (version 9.3.0) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
+- **acton-reactive**: Published crate (version 9.4.0) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
 - Uses Rust 2024 edition
 - Release profile optimized for binary size: `opt-level = "z"`, LTO, single codegen unit, panic = abort, stripped

@@ -838,19 +838,24 @@ func (c *baseClient) dispatchFrames() *MessageStream {
 
 	var detached *MessageStream
 	for len(c.readBuffer) >= HeaderSize {
-		frame, err := TryDecodeFrame(c.readBuffer)
-		if err != nil {
-			c.logger.Error("protocol error while processing frame", "error", err)
+		step := nextFrame(c.readBuffer)
+		switch step.kind {
+		case frameIncomplete:
+			return detached // Not enough data
+		case frameBadFraming:
+			// Nothing says where the next frame starts, so drop what is buffered.
+			c.logger.Error("protocol error while processing frame", "error", step.reason)
 			c.readBuffer = c.readBuffer[:0] // Reset buffer
 			return detached
-		}
-		if frame == nil {
-			return detached // Not enough data
-		}
-
-		c.readBuffer = c.readBuffer[frame.BytesConsumed:]
-		if stream := c.handleFrame(frame.MsgType, frame.Payload); stream != nil {
-			detached = stream
+		case frameBadBody:
+			c.logger.Warn("skipping frame with malformed body",
+				"msg_type", fmt.Sprintf("0x%02x", step.msgType), "error", step.reason)
+			c.readBuffer = c.readBuffer[step.bytesConsumed:]
+		case frameDecoded:
+			c.readBuffer = c.readBuffer[step.frame.BytesConsumed:]
+			if stream := c.handleFrame(step.frame.MsgType, step.frame.Payload); stream != nil {
+				detached = stream
+			}
 		}
 	}
 	return detached
@@ -957,19 +962,51 @@ func (c *baseClient) handlePush(payload any) *MessageStream {
 	}
 
 	// Forward to message stream
-	if c.messageStream != nil {
-		wirePayload, ok := payloadMap["payload"].(map[string]any)
-		if ok {
-			msg := MessageFromWire(wirePayload)
-			// Auto-unwrap exec-source stdout payloads when configured
-			if c.unwrapStdout && !strings.HasPrefix(string(msg.MessageType), "system.") {
-				msg.UnwrapStdout()
-			}
-			c.logger.Debug("received message", "message_type", msg.MessageType, "source", msg.Source)
-			c.messageStream.push(msg)
+	if c.messageStream == nil {
+		return nil
+	}
+	wirePayload, ok := wireMessageFromPush(payloadMap["payload"])
+	if !ok {
+		c.logger.Warn("dropping push with a malformed message", "message_type", messageType)
+		return nil
+	}
+
+	msg := MessageFromWire(wirePayload)
+	// Auto-unwrap exec-source stdout payloads when configured
+	if c.unwrapStdout && !strings.HasPrefix(string(msg.MessageType), "system.") {
+		msg.UnwrapStdout()
+	}
+	c.logger.Debug("received message", "message_type", msg.MessageType, "source", msg.Source)
+	c.messageStream.push(msg)
+	return nil
+}
+
+// wireMessageFromPush reads the Emergent message a push notification carries
+// as its payload. The id, message_type and source must be strings and
+// timestamp_ms a number. correlation_id and causation_id must be strings when
+// present, and a nil there reads as absent. It reports false for anything
+// else, so a message of the wrong shape never reaches the subscriber.
+func wireMessageFromPush(payload any) (map[string]any, bool) {
+	wire, ok := payload.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	for _, field := range []string{"id", "message_type", "source"} {
+		if _, isString := wire[field].(string); !isString {
+			return nil, false
 		}
 	}
-	return nil
+	if _, isNumber := wireUint64(wire["timestamp_ms"]); !isNumber {
+		return nil, false
+	}
+	for _, field := range []string{"correlation_id", "causation_id"} {
+		if value := wire[field]; value != nil {
+			if _, isString := value.(string); !isString {
+				return nil, false
+			}
+		}
+	}
+	return wire, true
 }
 
 // handleShutdown acts on a system.shutdown broadcast. Must be called with c.mu

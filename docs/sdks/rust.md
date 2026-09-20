@@ -143,7 +143,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |--------|-------------|
 | `connect(name)` | Connect to engine |
 | `connect_to(name, socket_path)` | Connect to engine at a specific socket path |
-| `publish(message)` | Send a message (fire-and-forget) |
+| `publish(message)` | Queue a message, fire-and-forget. See [What publish guarantees](#what-publish-guarantees) |
+| `publish_ack(message)` | Publish and wait for the broker's verdict |
+| `publish_stats()` | Counts of accepted, rejected and unanswered `publish` calls |
 | `publish_all(messages)` | Publish all messages from an iterator, return count |
 | `publish_stream(stream)` | Publish messages from an async stream, return count |
 | `discover()` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
@@ -188,7 +190,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `connect(name)` | Connect to engine |
 | `connect_to(name, socket_path)` | Connect to engine at a specific socket path |
 | `subscribe(types)` | Subscribe and get message stream |
-| `publish(message)` | Send a message |
+| `publish(message)` | Queue a message, fire-and-forget. See [What publish guarantees](#what-publish-guarantees) |
+| `publish_ack(message)` | Publish and wait for the broker's verdict |
+| `publish_stats()` | Counts of accepted, rejected and unanswered `publish` calls |
 | `publish_all(messages)` | Publish all messages from an iterator, return count |
 | `publish_stream(stream)` | Publish messages from an async stream, return count |
 | `unsubscribe(types)` | Remove subscriptions |
@@ -319,6 +323,62 @@ let count = source.publish_stream(ReceiverStream::new(rx)).await?;
 
 Both `publish_all` and `publish_stream` are available on `EmergentSource` and `EmergentHandler`.
 
+## What publish guarantees
+
+`publish` and `publish_ack` do not promise the same thing.
+
+| Call | `Ok(())` means | A rejection shows up as |
+|------|----------------|-------------------------|
+| `publish(message)` | The message was queued for the engine, in publish order | A `WARN` log line and a `publish_stats().rejected` increment |
+| `publish_ack(message)` | The broker stored the event and handed it to every subscriber's queue | `ClientError::PublishFailed` carrying the engine's error text |
+
+`publish` returns before the engine has seen the message, which is what makes
+it cheap. The engine can still refuse it. The IPC connection is rate limited to
+**100 messages per second with a burst of 50**, and the broker also refuses a
+message when its mailbox is full or when the engine is shutting down. A refused
+message is never delivered to anyone.
+
+After engine 0.13.1 the SDK claims the engine's answer to every `publish` and
+makes a refusal visible. On 0.13.1 and earlier the answer was dropped at `trace`
+level and `publish` reported success over lost messages.
+
+```rust
+for record in records {
+    source.publish(EmergentMessage::new("record.imported").with_payload(json!(record))).await?;
+}
+
+// The counts settle once the queue drains, so read them after disconnect
+// or after the publishing loop has been idle for a moment.
+let stats = source.publish_stats();
+if stats.rejected > 0 {
+    eprintln!("{} of {} records never reached the engine", stats.rejected, records.len());
+}
+```
+
+A refusal logs at `WARN` from the `emergent_client::publish_watch` target:
+
+```
+WARN emergent_client::publish_watch: engine rejected a published message; it was
+not delivered primitive.name=importer message.type=record.imported
+reason=RATE_LIMITED: Rate limit exceeded, retry after 6ms rejections=1
+```
+
+A publisher far over the rate limit is refused thousands of times a second, so
+the log carries one line per second and each names how many refusals it stands
+for. `publish_stats()` always counts every one.
+
+### Staying under the rate limit
+
+A source that emits more than 100 messages per second on its own connection
+needs one of:
+
+- `publish_ack` for each message, which waits for the broker and so cannot
+  outpace it. `publish_all` and `publish_stream` already do this.
+- Batching several records into one message.
+- Raising the IPC limit, which lives in acton's own config
+  (`$XDG_CONFIG_HOME/acton/ipc.toml`, `[rate_limit] requests_per_second` and
+  `burst_size`), not in `emergent.toml`.
+
 ## Error Handling
 
 ```rust
@@ -347,8 +407,14 @@ match source.publish(message).await {
 | `ConnectionFailed` | Failed to connect to engine |
 | `Timeout` | Operation timed out |
 | `SubscriptionFailed` | Subscription request failed |
+| `PublishFailed` | The broker rejected an acknowledged publish |
 | `DiscoveryFailed` | Discovery request failed |
-| `ProtocolError` | Unexpected protocol message |
+| `InvalidSubscriptionTopic` | A topic that could never match, such as `system.*.error` |
+| `SerializationError` | A message could not be serialized or deserialized |
+
+`ClientError` also has `IoError`, `IpcError`, `ProtocolError` and
+`EngineError`. The SDK does not return any of them today. The first two have
+`From` conversions so your own code can use `?` on those error types.
 
 ## Graceful Shutdown
 

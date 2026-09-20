@@ -95,6 +95,23 @@ stream is dropped. After engine 0.10.10 the engine will not start a topology
 whose enabled primitives, plus 4 reserved connections, exceed the effective
 limit.
 
+**That one connection is also rate limited: 100 messages per second, burst 50.**
+acton-reactive applies a token bucket per connection, with those defaults, so
+each primitive gets that budget to itself. Over it, the engine answers the
+publish frame with a `RATE_LIMITED` error and the message is never delivered. A
+full broker mailbox (`TARGET_BUSY`) and a draining engine (`SHUTTING_DOWN`)
+refuse a publish the same way. The numbers live in
+`$XDG_CONFIG_HOME/acton/ipc.toml` under `[rate_limit]`; `emergent.toml` has no
+key for them. A primitive that needs more throughput batches records into
+fewer messages or publishes with an acknowledgment, which waits for the broker
+and so cannot outpace it.
+
+The engine answers every publish frame, acknowledged or not, so a refusal is
+always on the wire. After engine 0.13.1 the Rust SDK claims that answer and
+logs a refusal at `WARN` with the engine's error text; before that its
+fire-and-forget `publish` reported success and the answer went into acton's
+unclaimed-response drain at `trace` level (Govcraft/emergent#65).
+
 **A subscription is a literal message type or a terminal-wildcard prefix.**
 The broker keeps two indexes. A literal topic is looked up character for
 character. A topic ending in a single `*` matches every message type that
@@ -166,6 +183,8 @@ Axum-based server on configurable port (default: 8891, `api_port = 0` to disable
 - `GET /api/topology` returns `{"primitives": [{name, kind, state, publishes, subscribes, pid, error}]}`
 
 The first entry is a synthetic `emergent-engine` of kind `"source"` whose `publishes` shows `system.started.*` style strings. Those are display labels for a family of concrete types rather than types the engine ever publishes under that name, though after 0.10.10 the same string does work as a subscription selector. Disabled primitives are absent.
+
+After 0.10.10 the entries after the engine are sorted: by kind in data-flow order (sources, then handlers, then sinks) and by name within a kind. `system.response.topology` carries the same sorted list, so two reads of an unchanged topology are identical and can be diffed directly. On 0.10.10 and earlier the order came from a hash map and changed between reads (Govcraft/emergent#67).
 
 Use it for the graph (`name`, `kind`, `publishes`, `subscribes`) on any engine. Whether it is also good for health depends on the version. On engine 0.10.10 and earlier it is not: every managed primitive reports `state: "configured"` and `pid: null` even while it is running, because the engine serves its registration-time copy (Govcraft/emergent#40). There, read liveness from `system.started.<name>`, `system.stopped.<name>` and `system.error.<name>` in the event store. After 0.10.10 `state`, `pid` and `error` are live: a running primitive reports `running` with its pid, one that exited cleanly reports `stopped` with `pid: null`, and one that crashed reports `failed` with the exit status in `error`. `starting` and `stopping` show up around those transitions.
 
