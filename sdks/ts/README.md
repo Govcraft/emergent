@@ -204,6 +204,9 @@ for await (const msg of stream) {
 using stream = await sink.subscribe(["timer.tick"]);
 ```
 
+The stream also ends when the connection to the engine is lost, so the loop
+stops and the code after it runs. See [Error Handling](#error-handling).
+
 ## Resource Cleanup
 
 All primitives implement `Disposable` and `AsyncDisposable`. Use `using` or
@@ -314,6 +317,15 @@ whose `cause` is the `Deno.errors.*` error. On 0.13.1 and earlier `publish()`
 threw that `Deno.errors.*` error itself, which is not an `EmergentError`, so a
 handler written against the classes above never saw it. Code that tested for
 `Deno.errors.BrokenPipe` on `publish()` should now test `err.cause`.
+
+When the engine closes the connection, every call still waiting for an answer
+(`publishAck()`, `discover()`, `subscribe()`, `getTopology()`,
+`getMySubscriptions()`) rejects with `ConnectionError("Connection closed")` at
+once, and the message stream ends, so a `for await` over it stops. That holds
+after SDK release 0.13.1. On 0.13.1 and earlier each call waited out its own
+timeout, 30 seconds by default, and then rejected with `TimeoutError`, and the
+stream never ended, so a `for await` consumer waited until the process was
+stopped.
 
 A frame the engine sends with a malformed body is never thrown to the caller.
 After SDK release 0.13.1 it is logged and skipped, and the subscription stays

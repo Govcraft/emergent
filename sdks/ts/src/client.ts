@@ -533,7 +533,7 @@ export class BaseClient {
         path,
         transport: "unix",
       });
-      this.#startReadLoop();
+      this.startReadLoop();
       this.#logger.info("connected to engine", { kind: this.primitiveKind });
     } catch (err) {
       if (err instanceof SocketNotFoundError) {
@@ -1016,12 +1016,6 @@ export class BaseClient {
 
     this.#readLoopRunning = false;
 
-    // Close message stream
-    if (this.#messageStream) {
-      this.#messageStream.close();
-      this.#messageStream = null;
-    }
-
     // Close connection
     if (this.conn) {
       try {
@@ -1032,32 +1026,44 @@ export class BaseClient {
       this.conn = null;
     }
 
-    // Cancel pending requests
-    for (const [, pending] of this.#pendingRequests) {
-      if (pending.timer) clearTimeout(pending.timer);
-      pending.reject(new ConnectionError("Connection closed"));
-    }
-    this.#pendingRequests.clear();
-
-    // Cancel pending topology requests
-    for (const [, pending] of this.#pendingTopologyRequests) {
-      if (pending.timer) clearTimeout(pending.timer);
-      pending.reject(new ConnectionError("Connection closed"));
-    }
-    this.#pendingTopologyRequests.clear();
-
-    // Cancel pending subscriptions requests
-    for (const [, pending] of this.#pendingSubscriptionsRequests) {
-      if (pending.timer) clearTimeout(pending.timer);
-      pending.reject(new ConnectionError("Connection closed"));
-    }
-    this.#pendingSubscriptionsRequests.clear();
+    this.#failEverythingPending();
 
     this.#subscribedTypes.clear();
 
     this.#logger.info("disconnected from engine");
 
     this.disposed = true;
+  }
+
+  /**
+   * End the message stream and fail every request still in flight.
+   *
+   * For a connection that is gone, whether the caller closed it or the engine
+   * did. Nothing pending can be answered any more, so each request and query
+   * fails with a ConnectionError now and does not wait out its timer, and a
+   * `for await` over the stream stops.
+   */
+  #failEverythingPending(): void {
+    if (this.#messageStream) {
+      this.#messageStream.close();
+      this.#messageStream = null;
+    }
+
+    const inFlight: Map<
+      string,
+      { reject: (error: Error) => void; timer?: ReturnType<typeof setTimeout> }
+    >[] = [
+      this.#pendingRequests,
+      this.#pendingTopologyRequests,
+      this.#pendingSubscriptionsRequests,
+    ];
+    for (const requests of inFlight) {
+      for (const pending of requests.values()) {
+        if (pending.timer) clearTimeout(pending.timer);
+        pending.reject(new ConnectionError("Connection closed"));
+      }
+      requests.clear();
+    }
   }
 
   /**
@@ -1141,17 +1147,28 @@ export class BaseClient {
     });
   }
 
-  #startReadLoop(): void {
+  /**
+   * Start reading the connection.
+   *
+   * @internal
+   */
+  protected startReadLoop(): void {
     if (this.#readLoopRunning || !this.conn) return;
     this.#readLoopRunning = true;
 
     // Start async read loop
-    this.#runReadLoop().catch((err) => {
-      if (this.#readLoopRunning) {
-        this.#logger.error("read loop error", { error: String(err) });
-        this.#messageStream?.closeWithError();
-      }
-    });
+    this.#runReadLoop()
+      .catch((err) => {
+        // close() ends the read under the loop; that is not an error.
+        if (!this.disposed) {
+          this.#logger.error("read loop error", { error: String(err) });
+        }
+      })
+      .then(() => {
+        // The engine is gone, so nothing in flight can be answered. After
+        // close() there is nothing left to fail.
+        if (!this.disposed) this.#failEverythingPending();
+      });
   }
 
   async #runReadLoop(): Promise<void> {
