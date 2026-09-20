@@ -42,4 +42,4 @@
 package emergent
 
 // Version is the SDK version, matching the Emergent release cycle.
-const Version = "0.10.5"
+const Version = "0.14.0"
