@@ -32,7 +32,11 @@
 //! pids of the children the engine spawned, which is exact for a primitive the
 //! engine launched directly. A peer with no pid, or a pid belonging to a
 //! descendant rather than the spawned process (a `uv` launcher's `python3`),
-//! stays unattributed and falls through to the deadline. acton reports the pid
+//! stays unattributed and falls through to the deadline. Measured on the
+//! polyglot example topology, that is every primitive whose `path` is `uv`:
+//! `uv run` does not exec-replace itself, so the engine's child is the
+//! launcher and the interpreter that connects is its child. Such a primitive
+//! costs its tier the whole deadline until #24 lands. acton reports the pid
 //! through tokio's `UnixStream::peer_cred` (`listener.rs:782-794`) and treats a
 //! platform that declines to report one as `None`
 //! (`subscription_manager.rs:161-167`), so the join is Linux-solid and
@@ -524,6 +528,9 @@ mod tests {
         }
     }
 
+    /// Real pids from the polyglot measurement in issue #23's notes: `uv run`
+    /// does not exec-replace itself, so `webhook_console`'s child is 3698333
+    /// and the process that connects is the interpreter it forked, 3698337.
     fn children(pairs: &[(u32, &str)]) -> HashMap<u32, String> {
         pairs
             .iter()
@@ -533,7 +540,7 @@ mod tests {
 
     #[test]
     fn a_subscriber_is_named_by_the_policy_or_by_its_pid() {
-        let spawned = children(&[(41, "console"), (42, "log")]);
+        let spawned = children(&[(3_698_263, "console"), (3_698_333, "webhook_console")]);
         let cases = [
             (
                 "the policy already knew the name",
@@ -542,12 +549,12 @@ mod tests {
             ),
             (
                 "a spawned child's pid names it",
-                ObservedSubscriber::Pid(42),
-                Some("log"),
+                ObservedSubscriber::Pid(3_698_263),
+                Some("console"),
             ),
             (
-                "a pid the engine did not spawn names nobody",
-                ObservedSubscriber::Pid(999),
+                "a uv launcher's interpreter is a grandchild, so it names nobody",
+                ObservedSubscriber::Pid(3_698_337),
                 None,
             ),
             (
@@ -606,6 +613,28 @@ mod tests {
             "the retry names it once the child is known"
         );
         assert!(later.unattributed.is_empty(), "and the backlog clears");
+    }
+
+    /// One primitive opens several IPC connections, and the engine measured
+    /// four admissions from a single sink's pid. Confirming a name twice must
+    /// be the same as confirming it once.
+    #[test]
+    fn several_connections_from_one_pid_confirm_one_primitive() {
+        let spawned = children(&[(3_698_263, "console")]);
+        let ledger = absorb(
+            Ledger::default(),
+            [
+                ObservedSubscriber::Pid(3_698_263),
+                ObservedSubscriber::Pid(3_698_263),
+                ObservedSubscriber::Named("console".to_string()),
+            ],
+            &spawned,
+        );
+        assert_eq!(
+            ledger.confirmed.iter().cloned().collect::<Vec<_>>(),
+            vec!["console".to_string()]
+        );
+        assert!(ledger.unattributed.is_empty());
     }
 
     #[test]
