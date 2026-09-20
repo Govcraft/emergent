@@ -310,7 +310,7 @@ except ConnectionError as e:
 | `TimeoutError`        | `TIMEOUT`             | `timeout`        | The engine does not answer a request in time                                 |
 | `ProtocolError`       | `PROTOCOL_ERROR`      |                  | A frame cannot be encoded or decoded                                         |
 | `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `message_types`  | The engine rejects a subscription, including the one a topology query makes  |
-| `PublishError`        | `PUBLISH_FAILED`      | `message_type`   | The broker rejects an acknowledged publish                                   |
+| `PublishError`        | `PUBLISH_FAILED`      | `message_type`   | The broker rejects an acknowledged publish, or the socket refuses a publish  |
 | `DiscoveryError`      | `DISCOVERY_FAILED`    |                  | The engine rejects `discover()`, or its reply is malformed                   |
 | `DisposedError`       | `DISPOSED`            |                  | A closed client is used                                                      |
 | `StreamError`         | `STREAM_ERROR`        |                  | `stream_offer` or `stream_consume` times out or loses its stream             |
@@ -323,6 +323,16 @@ plain `ConnectionError` with the code `CONNECTION_FAILED`. An
 Code that compares `code` against `CONNECTION_FAILED` for one of these
 failures now sees the code in the table. `PublishError` extends
 `EmergentError` directly, as it always has.
+
+When the socket refuses a write, which is what happens once the engine has gone
+away, the SDK error keeps the operating system's error as `__cause__`. After
+SDK release 0.13.1 a refused `publish()` or `publish_ack()` raises
+`PublishError`, and a refused `subscribe()`, `discover()` or other request
+raises `ConnectionError`. On 0.13.1 and earlier all of them raised the built-in
+error itself (`ConnectionResetError`, `BrokenPipeError`), which is not an
+`EmergentError`, so an `except EmergentError` never saw it. The built-in
+`ConnectionError` and the SDK's share a name and nothing else: code that caught
+`OSError` for these calls should now catch the SDK class and read `__cause__`.
 
 A frame the engine sends with a malformed body is never raised to the caller.
 After SDK release 0.13.1 it is logged and skipped, and the subscription stays

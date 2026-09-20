@@ -141,7 +141,7 @@ func (c *baseClient) connect(opts *ConnectOptions) error {
 	conn, err := net.DialTimeout("unix", socketPath, c.timeout)
 	if err != nil {
 		c.logger.Error("failed to connect to engine", "error", err)
-		return &ConnectionError{Msg: fmt.Sprintf("failed to connect to %s: %v", socketPath, err)}
+		return &ConnectionError{Msg: fmt.Sprintf("failed to connect to %s: %v", socketPath, err), Err: err}
 	}
 
 	c.conn = conn
@@ -504,7 +504,7 @@ func (c *baseClient) getMySubscriptionsInternal(ctx context.Context) ([]string, 
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to subscribe to response type: %v", err)}
+		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to subscribe to response type: %v", err), Err: err}
 	}
 	if !subResp.Success {
 		return nil, &ConnectionError{Msg: subResp.Error}
@@ -593,7 +593,7 @@ func (c *baseClient) getTopologyInternal(ctx context.Context) (*TopologyState, e
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to subscribe to response type: %v", err)}
+		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to subscribe to response type: %v", err), Err: err}
 	}
 	if !subResp.Success {
 		return nil, &ConnectionError{Msg: subResp.Error}
@@ -1190,7 +1190,7 @@ func (c *baseClient) sendRequest(ctx context.Context, msgType byte, payload any,
 		c.mu.Lock()
 		delete(c.pendingRequests, correlationID)
 		c.mu.Unlock()
-		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to send: %v", err)}
+		return nil, &ConnectionError{Msg: fmt.Sprintf("failed to send: %v", err), Err: err}
 	}
 
 	select {
