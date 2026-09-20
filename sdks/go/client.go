@@ -75,6 +75,9 @@ type baseClient struct {
 	writeMu    sync.Mutex
 	readCancel context.CancelFunc
 	readDone   chan struct{}
+	// lost is closed when the engine closes the connection. close() leaves
+	// it open.
+	lost chan struct{}
 }
 
 // parseUnwrapFlag decides whether EMERGENT_UNWRAP_STDOUT switches stdout
@@ -106,6 +109,7 @@ func newBaseClient(name string, kind PrimitiveKind, opts *ConnectOptions) *baseC
 		subscribedTypes:             make(map[string]struct{}),
 		unwrapStdout:                autoUnwrap,
 		readDone:                    make(chan struct{}),
+		lost:                        make(chan struct{}),
 	}
 }
 
@@ -755,16 +759,7 @@ func (c *baseClient) readLoop(ctx context.Context) {
 				return // Context cancelled
 			}
 			c.logger.Info("connection closed (EOF)")
-			// Close the message stream on EOF. Detach it under c.mu and close
-			// it unlocked: Close runs the onClose callback, which takes c.mu.
-			//
-			// Requests still in flight can never be answered now, so fail
-			// them here instead of leaving each one to wait out its timer.
-			c.mu.Lock()
-			stream := c.detachStream()
-			c.failPending(&ConnectionError{Msg: "connection closed"})
-			c.mu.Unlock()
-			closeStream(stream)
+			c.engineClosedConnection()
 			return
 		}
 
@@ -774,6 +769,22 @@ func (c *baseClient) readLoop(ctx context.Context) {
 
 		c.processFrames()
 	}
+}
+
+// engineClosedConnection settles a connection that ended without close()
+// being called. Only the read loop calls it, once, on its way out.
+//
+// The message stream is detached under c.mu and closed unlocked: Close runs
+// the onClose callback, which takes c.mu. Requests still in flight can never
+// be answered now, so they fail here instead of each waiting out its timer.
+// Closing c.lost comes last, so whoever waits on it finds everything settled.
+func (c *baseClient) engineClosedConnection() {
+	c.mu.Lock()
+	stream := c.detachStream()
+	c.failPending(&ConnectionError{Msg: "connection closed"})
+	c.mu.Unlock()
+	closeStream(stream)
+	close(c.lost)
 }
 
 // failPending settles every in-flight request with err and forgets it. Must
