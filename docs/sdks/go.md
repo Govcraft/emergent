@@ -126,7 +126,7 @@ err := msg.PayloadAs(&payload)
 Helpers handle connection, signal handling (SIGTERM/SIGINT), graceful shutdown, and cleanup automatically:
 
 ```go
-// Source: ctx is cancelled on SIGTERM/SIGINT
+// Source: ctx is cancelled on SIGTERM/SIGINT, or when the engine leaves
 emergent.RunSource("name", func(ctx context.Context, source *emergent.EmergentSource) error {
     // Your source logic
 })
@@ -141,6 +141,10 @@ emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) 
     // Consume msg
 })
 ```
+
+After SDK release 0.13.1 `RunSource` also cancels `ctx` when the engine closes
+the connection. A Source subscribes to nothing, so no stream ends to tell it the
+engine is gone. On 0.13.1 and earlier only SIGTERM and SIGINT cancelled it.
 
 ## API Reference
 
