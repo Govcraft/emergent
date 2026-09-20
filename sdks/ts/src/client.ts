@@ -582,7 +582,12 @@ export class BaseClient {
       }
     });
 
+    const replaced = this.#messageStream;
     this.#messageStream = stream;
+
+    // A client feeds one stream. Nothing would ever end the earlier one once
+    // it is unregistered, so it ends here and its consumer stops.
+    replaced?.close();
 
     // Add system.shutdown to subscriptions (SDK handles it internally)
     const allTypes = exact.includes("system.shutdown")

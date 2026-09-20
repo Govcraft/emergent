@@ -205,6 +205,12 @@ msg := stream.Next() // nil when closed
 msg := stream.TryNext() // nil if nothing available
 ```
 
+A client has one live stream, so call `Subscribe` once with every topic. After
+SDK release 0.13.1 a second `Subscribe` on the same client closes the earlier
+stream and returns a new one, which receives the earlier topics too because the
+engine keeps those subscriptions. On 0.13.1 and earlier the earlier stream was
+left open and unfed, and nothing ever closed it.
+
 ## Streaming Publish
 
 Publish a batch or channel of messages. Each message is sent individually so subscribers begin consuming immediately. Both methods return the count of successfully published messages and stop on the first error.

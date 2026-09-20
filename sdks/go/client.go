@@ -201,8 +201,14 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 	})
 
 	c.mu.Lock()
+	replaced := c.messageStream
 	c.messageStream = stream
 	c.mu.Unlock()
+
+	// A client feeds one stream. Nothing would ever end the earlier one once
+	// it is unregistered, so it ends here and a range over it stops. Closed
+	// after c.mu is released, because its onClose callback takes c.mu.
+	closeStream(replaced)
 
 	// Add system.shutdown to subscriptions (SDK handles internally)
 	allTypes := make([]string, len(exactTypes))

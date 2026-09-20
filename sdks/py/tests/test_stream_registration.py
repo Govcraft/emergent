@@ -109,6 +109,53 @@ class TestAReplacedStream:
         peer.close()
 
 
+class TestASecondSubscribe:
+    async def test_it_ends_the_stream_it_replaces(self) -> None:
+        client, peer = await connected_client(timeout=5.0)
+        first = await subscribed(client, "py86.first")
+
+        async def consume() -> int:
+            return len([message async for message in first])
+
+        consuming = asyncio.ensure_future(consume())
+        await asyncio.sleep(0)
+
+        second = await subscribed(client, "py86.second")
+
+        assert await asyncio.wait_for(consuming, timeout=1.0) == 0
+        assert first.closed
+        assert client._message_stream is second
+        assert not second.closed
+        client.close()
+        peer.close()
+
+    async def test_the_new_stream_gets_what_is_pushed_afterwards(self) -> None:
+        client, peer = await connected_client(timeout=5.0)
+        await subscribed(client, "py86.first")
+        second = await subscribed(client, "py86.second")
+
+        # The engine keeps the first subscription, so its topic still arrives.
+        push(client, "py86.first", {"n": 1})
+
+        message = await asyncio.wait_for(second.next(), timeout=1.0)
+        assert message is not None
+        assert message.payload == {"n": 1}
+        client.close()
+        peer.close()
+
+    async def test_it_ends_the_earlier_stream_even_when_it_then_fails(self) -> None:
+        client, peer = await connected_client(timeout=0.05)
+        first = await subscribed(client, "py86.first")
+
+        with pytest.raises(TimeoutError):
+            await client._subscribe(["py86.second"])
+
+        assert first.closed
+        assert client._message_stream is None
+        client.close()
+        peer.close()
+
+
 class TestASubscribeThatRaises:
     async def test_a_timed_out_subscribe_closes_and_unregisters_its_stream(self) -> None:
         client, peer = await connected_client(timeout=0.05)

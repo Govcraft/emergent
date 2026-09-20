@@ -297,6 +297,26 @@ handler.subscribe(vec!["timer.tick".to_string()]).await?;      // Vec<String>
 Overlapping topics deliver one copy: subscribing to both `"timer.tick"` and
 `"timer.*"` yields a single `timer.tick` message, not two.
 
+**One stream per client, in all four SDKs.** Pass every topic to one `subscribe`
+call. What a second call on the same Handler or Sink does differs:
+
+- **Python, TypeScript, Go:** the second call ends the earlier stream, so an
+  `async for`, `for await` or channel range over it stops, and returns a new
+  stream. The engine keeps the earlier subscriptions, so the new stream receives
+  the earlier topics as well as the new ones. The earlier stream ends when the
+  second call starts, even if that call then fails. That holds after SDK release
+  0.13.1. On 0.13.1 and earlier the earlier stream was left open and unfed, and
+  nothing ever ended it, not connection loss, not `system.shutdown`, not
+  `close()`, so its consumer loop waited for ever (Govcraft/emergent#86).
+- **Rust:** the second call returns `SubscriptionFailed`, because a client hands
+  its push channel to its first stream. After emergent-client 0.13.1 the refusal
+  comes before anything is sent, so the first stream and `subscribed_types()`
+  stay as they were. On 0.13.1 and earlier the engine was asked first and the
+  call failed afterwards, so the refused topics started arriving on the first
+  stream while `subscribed_types()` did not list them.
+
+To read two sets of topics apart from each other, connect two clients.
+
 ### MessageStream
 
 ```rust

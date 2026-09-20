@@ -135,3 +135,63 @@ Deno.test("a subscribe that succeeds keeps its stream registered", async () => {
   assertEquals(stream.closed, false);
   probe.close();
 });
+
+/** Subscribe with the engine's acceptance fed straight to the client. */
+async function subscribed(
+  probe: StreamProbe,
+  messageType: string,
+): Promise<MessageStream> {
+  const subscribing = probe.subscribe([messageType]);
+  probe.acceptTheLastRequest();
+  return await subscribing;
+}
+
+/** Count what a `for await` over `stream` sees before the stream ends. */
+async function consume(stream: MessageStream): Promise<number> {
+  let count = 0;
+  for await (const _ of stream) count++;
+  return count;
+}
+
+/** `running`, or "still waiting" when it has not settled after two seconds. */
+async function soon<T>(running: Promise<T>): Promise<T | "still waiting"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"still waiting">((resolve) => {
+    timer = setTimeout(() => resolve("still waiting"), 2_000);
+  });
+  try {
+    return await Promise.race([running, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+Deno.test("a second subscribe ends the stream it replaces", async (t) => {
+  await t.step(
+    "its consumer stops and the new stream is registered",
+    async () => {
+      const probe = new StreamProbe(60_000, 2);
+      const first = await subscribed(probe, "ts86.first");
+      const consuming = consume(first);
+
+      const second = await subscribed(probe, "ts86.second");
+
+      assertEquals(await soon(consuming), 0);
+      assertEquals(first.closed, true);
+      assertEquals(probe.stream, second);
+      assertEquals(second.closed, false);
+      probe.close();
+    },
+  );
+
+  await t.step("even when the second subscribe then fails", async () => {
+    const probe = new StreamProbe(20, 2);
+    const first = await subscribed(probe, "ts86.first");
+
+    await assertRejects(() => probe.subscribe(["ts86.second"]), TimeoutError);
+
+    assertEquals(first.closed, true);
+    assertEquals(probe.stream, null);
+    probe.close();
+  });
+});
