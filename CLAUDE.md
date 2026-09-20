@@ -208,9 +208,12 @@ Two repos are released, in this order: the SDKs, then emergent-primitives, then 
 ```bash
 # 1. SDK version: bump the workspace version in Cargo.toml (emergent-client
 #    inherits it), sdks/py/pyproject.toml, sdks/ts/deno.json and
-#    sdks/ts/package.json. The Go SDK has no version file; its tag is its version.
-# 2. Engine version: bump emergent-engine/Cargo.toml. It is separate from the
-#    SDK version.
+#    sdks/ts/package.json. Two constants repeat it and each has a test that
+#    fails when it drifts: `Version` in sdks/go/emergent.go and `__version__`
+#    in sdks/py/emergent/__init__.py. Refresh sdks/py/uv.lock with `uv lock`.
+# 2. Engine version: bump emergent-engine/Cargo.toml, and its emergent-client
+#    dependency version with it. From 0.14.0 the engine and the SDKs share one
+#    number; the field stays separate so either can take a patch release alone.
 # 3. Update example deps to match (examples/*/Cargo.toml)
 
 cargo fmt --all --check && cargo clippy --workspace --all-targets && cargo nextest run --workspace
@@ -238,7 +241,7 @@ Each SDK publishes from its own tag, not from the engine tag:
 | `sdks/ts/vX.Y.Z` | `workflow-jsr.yml` | `@govcraft/emergent` to JSR |
 | `sdks/go/vX.Y.Z` | `workflow-go-proxy.yml` | Go module to the Go proxy |
 
-Every SDK workflow also accepts a manual `workflow_dispatch`. The engine and the SDKs are versioned separately (engine 0.10.x, SDKs 0.13.x at the time of writing). A `v0.11.0` engine tag and GitHub release already exist from March 2026, so the next engine minor must skip that number.
+Every SDK workflow also accepts a manual `workflow_dispatch`. The engine and the SDKs each carry their own version field, and from 0.14.0 they share one number (the engine went from 0.10.10 straight to 0.14.0 to line up with the SDKs). A `v0.11.0` engine tag and GitHub release exist from March 2026 and belong to no release line; leave them alone.
 
 ### Step 2: Release emergent-primitives
 
