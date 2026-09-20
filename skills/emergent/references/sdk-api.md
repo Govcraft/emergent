@@ -46,6 +46,15 @@ rather than looping on the publish result. A Source that drives its own loop on
 a bare `EmergentSource` gets no such signal and has to exit on a failed publish
 itself.
 
+The Python, TypeScript and Go helpers do the same after SDK release 0.13.1:
+`run_source` sets its `shutdown_event`, `runSource` aborts its `AbortSignal` and
+`RunSource` cancels its `context.Context` when the engine closes the connection,
+whether the read ends in EOF or in a reset. On 0.13.1 and earlier those three
+reacted to SIGTERM and SIGINT only, so a Source that caught its publish errors
+kept running against a dead socket (Govcraft/emergent#83). An engine-spawned
+Source on Linux was covered anyway, because the engine asks the kernel to signal
+its children when it dies. A Source started by hand, or on macOS, was not.
+
 #### run_handler
 
 ```rust
@@ -407,7 +416,9 @@ a primitive by hand or wonder where its logs went.
 **Signals differ by SDK.** The Rust `run_*` helpers trap SIGTERM only, so
 Ctrl-C on a hand-run Rust primitive kills it without the graceful disconnect.
 Python, TypeScript, and Go trap both SIGTERM and SIGINT. Under the engine this
-does not matter: shutdown arrives as `system.shutdown` and then SIGTERM.
+does not matter: shutdown arrives as `system.shutdown` and then SIGTERM. A
+Source's shutdown signal also fires when the engine closes the connection, in
+all four SDKs (see `run_source` above).
 
 ### Errors an engine rejection raises
 

@@ -281,6 +281,15 @@ await run_sink("my_sink", ["timer.tick"], consume)
 The name argument is optional. When omitted or set to `None`, the helper reads
 from the `EMERGENT_NAME` environment variable.
 
+`run_source` sets `shutdown_event` on SIGTERM, on SIGINT, and, after SDK release
+0.13.1, when the engine closes the connection. A Source subscribes to nothing,
+so no stream ends to tell it the engine is gone, and a lost connection is the
+only notice an engine that was killed ever gives. On 0.13.1 and earlier only the
+two signals set the event, so a Source that caught its publish errors kept
+running against a dead socket unless the engine had spawned it on Linux, where
+the kernel signals the child when its parent dies. `run_handler` and `run_sink`
+end with their message stream, which a lost connection closes.
+
 ## Error Handling
 
 All SDK errors extend `EmergentError` and include a machine-readable `code`
