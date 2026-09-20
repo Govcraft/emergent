@@ -256,7 +256,11 @@ Every SDK workflow also accepts a manual `workflow_dispatch`. The engine and the
 ```bash
 # 1. Bump workspace version in Cargo.toml
 # 2. Update emergent-client dependency version in Cargo.toml
-# 3. Update JSR import versions in Deno primitives (jsr:@govcraft/emergent@X.Y.Z)
+# 3. Update the SDK pin in each Deno primitive's deno.json import map
+#    (primitives/{sse-sink,topology-viewer,websocket-handler}/deno.json,
+#    "@govcraft/emergent": "jsr:@govcraft/emergent@X.Y.Z"). The same file exempts
+#    that one package from Deno's 24 hour minimum dependency age, so a fresh SDK
+#    release does not block the primitives for a day.
 
 cd /path/to/emergent-primitives
 cargo check && cargo clippy --all-targets && cargo nextest run
