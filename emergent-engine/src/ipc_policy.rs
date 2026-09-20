@@ -54,6 +54,16 @@ pub trait PolicyObserver: Send + Sync + std::panic::RefUnwindSafe + 'static {
     fn on_admitted(&self, _identity: &ConnectionIdentity, _connection_id: usize) {}
 
     /// A `Subscribe` or `SubscribePatterns` was allowed, with these topics.
+    ///
+    /// Allowed is not the same as registered, and the difference is not the
+    /// same on both paths. acton applies a plain subscribe immediately after
+    /// authorizing it (`listener.rs:1570` then `:1592`, nothing in between),
+    /// so there the hook means the subscription exists. A pattern subscribe is
+    /// authorized at `:1497` and registered at `:1505` behind
+    /// `rate_limiter.try_acquire()` at `:1502`, so a pattern batch refused by
+    /// the rate limiter fires this hook and never registers. Treat the hook as
+    /// "the engine permitted this", and do not let anything that must be
+    /// correct wait on it without a deadline of its own.
     fn on_subscribed(&self, _identity: &ConnectionIdentity, _topics: &[String]) {}
 
     /// An operation fell outside the declarations, in warn or strict mode.
