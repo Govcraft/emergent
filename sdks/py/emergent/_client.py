@@ -477,7 +477,7 @@ class BaseClient:
         correlation_id = generate_correlation_id("sub")
 
         # Create stream and register close callback
-        stream = MessageStream(on_close=self._on_stream_close)
+        stream = MessageStream(on_close=lambda: self._on_stream_close(stream))
         self._message_stream = stream
 
         # Add system.shutdown to subscriptions (SDK handles it internally)
@@ -492,7 +492,8 @@ class BaseClient:
             patterns,
         )
 
-        response = await self._send_request(
+        response = await self._subscribe_request(
+            stream,
             MessageType.SUBSCRIBE,
             IpcSubscribeRequest(
                 correlation_id=correlation_id,
@@ -515,7 +516,8 @@ class BaseClient:
             # separate index for them. A connection matching a message through
             # both indexes still receives one copy.
             pattern_correlation_id = generate_correlation_id("psub")
-            pattern_response = await self._send_request(
+            pattern_response = await self._subscribe_request(
+                stream,
                 MessageType.SUBSCRIBE_PATTERNS,
                 IpcPatternSubscribeRequest(
                     correlation_id=pattern_correlation_id,
@@ -543,6 +545,25 @@ class BaseClient:
         logger.info("subscribed to message types primitive=%s", self.name)
 
         return stream
+
+    async def _subscribe_request(
+        self,
+        stream: MessageStream,
+        msg_type: MessageType,
+        payload: dict[str, Any],
+        correlation_id: str,
+    ) -> IpcResponse:
+        """
+        Send one request of a subscribe.
+
+        When the request raises, the caller never receives the stream, so it is
+        closed here, which also unregisters it.
+        """
+        try:
+            return await self._send_request(msg_type, payload, correlation_id)
+        except BaseException:
+            stream.close()
+            raise
 
     async def _unsubscribe(self, message_types: list[str]) -> None:
         """
@@ -1240,7 +1261,11 @@ class BaseClient:
 
         self._message_stream.push(message)
 
-    def _on_stream_close(self) -> None:
-        """Callback when stream closes."""
-        if self._message_stream is not None:
+    def _on_stream_close(self, stream: MessageStream) -> None:
+        """
+        Forget a stream that closed, while it is still the registered one.
+
+        A later subscribe may have replaced it by now, and that stream stays.
+        """
+        if self._message_stream is stream:
             self._message_stream = None
