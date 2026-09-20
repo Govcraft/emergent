@@ -469,6 +469,8 @@ export class BaseClient {
   #pendingSubscriptionsRequests: Map<string, PendingPubSubRequest<string[]>> =
     new Map();
   #messageStream: MessageStream | null = null;
+  #connectionLost = false;
+  #onConnectionLost: (() => void) | null = null;
   #subscribedTypes: Set<string> = new Set();
   #timeoutMs: number;
   /** Settles when the last queued frame is out, whether or not it failed. */
@@ -1187,10 +1189,34 @@ export class BaseClient {
         }
       })
       .then(() => {
-        // The engine is gone, so nothing in flight can be answered. After
-        // close() there is nothing left to fail.
-        if (!this.disposed) this.#failEverythingPending();
+        // After close() there is nothing left to settle.
+        if (!this.disposed) this.#engineClosedTheConnection();
       });
+  }
+
+  /**
+   * Settle a connection that ended without `close()` being called.
+   *
+   * The engine is gone, so nothing in flight can be answered. Whoever asked to
+   * be told is told after that, once.
+   */
+  #engineClosedTheConnection(): void {
+    this.#failEverythingPending();
+    this.#connectionLost = true;
+    this.#onConnectionLost?.();
+  }
+
+  /**
+   * Call `callback` when the engine closes the connection.
+   *
+   * A connection that is already lost calls it at once. `close()` never calls
+   * it. There is one callback, and a second call replaces the first.
+   *
+   * @internal
+   */
+  whenConnectionLost(callback: () => void): void {
+    this.#onConnectionLost = callback;
+    if (this.#connectionLost) callback();
   }
 
   async #runReadLoop(): Promise<void> {
