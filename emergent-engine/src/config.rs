@@ -125,6 +125,16 @@ pub struct EngineConfig {
     /// `docs/configuration.md` for what it does and does not protect against.
     #[serde(default)]
     pub enforce_declarations: EnforcementMode,
+
+    /// Host names the HTTP API answers to, beyond an IP literal and
+    /// `localhost`.
+    ///
+    /// The API has no authentication, so it answers only to names it knows to
+    /// be its own; anything else gets a 421. An IP literal and `localhost` are
+    /// always its own, so this list is for a reverse proxy that forwards its
+    /// own public name. See `docs/configuration.md`.
+    #[serde(default)]
+    pub api_allowed_hosts: Vec<String>,
 }
 
 fn default_engine_name() -> String {
@@ -182,6 +192,7 @@ impl Default for EngineConfig {
             shutdown_drain_ms: default_shutdown_drain_ms(),
             shutdown_grace_ms: default_shutdown_grace_ms(),
             enforce_declarations: EnforcementMode::default(),
+            api_allowed_hosts: Vec::new(),
         }
     }
 }
@@ -894,8 +905,34 @@ impl EmergentConfig {
         self.validate_unique_names()?;
         self.validate_restart_policies()?;
         self.validate_subscription_topics()?;
+        self.validate_allowed_hosts()?;
         self.validate_paths()?;
         Ok(())
+    }
+
+    /// Check that every `[engine].api_allowed_hosts` entry is a host name.
+    ///
+    /// The decision is [`crate::api_host::parse_allowed_hosts`]; this only
+    /// turns its message into a [`ConfigError`], so a typo is a load error
+    /// naming the value rather than a name that is listed and never matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ValidationError`] naming the first bad value.
+    pub fn validate_allowed_hosts(&self) -> Result<(), ConfigError> {
+        crate::api_host::parse_allowed_hosts(&self.engine.api_allowed_hosts)
+            .map(|_| ())
+            .map_err(ConfigError::ValidationError)
+    }
+
+    /// The `api_allowed_hosts` list in the spelling a browser sends.
+    ///
+    /// Validation has already run by the time the API starts, so a value that
+    /// cannot be parsed here cannot exist; an empty list is the right answer
+    /// for it either way, since it only ever widens what is answered.
+    #[must_use]
+    pub fn allowed_api_hosts(&self) -> Vec<String> {
+        crate::api_host::parse_allowed_hosts(&self.engine.api_allowed_hosts).unwrap_or_default()
     }
 
     /// Resolve event store paths to XDG data directory if set to "auto" (pure function).
@@ -1131,6 +1168,56 @@ enforce_declarations = "paranoid"
         };
         let message = err.to_string();
         assert!(message.contains("enforce_declarations"), "{message}");
+    }
+
+    #[test]
+    fn api_allowed_hosts_defaults_to_empty_and_keeps_what_it_is_given()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = EmergentConfig::parse(
+            r#"
+[engine]
+name = "test"
+"#,
+        )?;
+        assert!(config.engine.api_allowed_hosts.is_empty());
+        assert!(config.validate_allowed_hosts().is_ok());
+        assert!(config.allowed_api_hosts().is_empty());
+
+        let config = EmergentConfig::parse(
+            r#"
+[engine]
+name = "test"
+api_allowed_hosts = ["App.Example.", "viewer.internal"]
+"#,
+        )?;
+        assert!(config.validate_allowed_hosts().is_ok());
+        // Stored the way a browser sends it, so that it can match.
+        assert_eq!(
+            config.allowed_api_hosts(),
+            vec!["app.example".to_owned(), "viewer.internal".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_api_allowed_host_that_is_not_a_host_name_is_a_load_error() {
+        // A value with a scheme, a port or a wildcard would be listed and
+        // never match anything, so it fails the load rather than sit there
+        // looking like it works.
+        for value in ["https://app.example", "app.example:8080", "*.app.example"] {
+            let Err(err) = EmergentConfig::parse(&format!(
+                r#"
+[engine]
+name = "test"
+api_allowed_hosts = ["{value}"]
+"#
+            )) else {
+                panic!("{value} is not a host name");
+            };
+            let message = err.to_string();
+            assert!(message.contains(value), "{message}");
+            assert!(message.contains("api_allowed_hosts"), "{message}");
+        }
     }
 
     #[test]
