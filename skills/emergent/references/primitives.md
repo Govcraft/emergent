@@ -616,7 +616,8 @@ subscribes = ["monitor.metric"]
 ```
 
 **Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`),
-`--allow-origin <ORIGIN>` (repeatable, none by default).
+`--allow-origin <ORIGIN>` (repeatable, none by default),
+`--allow-host <NAME>` (repeatable, none by default).
 **Endpoints:** `GET /events`, and `GET /health` returning `{ok, clients}`.
 
 After primitives 0.11.0 the sink listens on loopback only. A browser on another
@@ -635,6 +636,20 @@ header binds browsers only; `curl` and other primitives read the stream either
 way. On 0.11.0 and earlier every response carried
 `Access-Control-Allow-Origin: *`, so any page open in a local browser could
 read every event.
+
+After primitives 0.11.0 the sink also looks at the host each request names and
+answers `421 Misdirected Request` unless it is an IP address, `localhost`, the
+name given to `--host`, or a name listed with `--allow-host`, once per name; the
+port is not compared. That is what stops DNS rebinding, where a page on
+`attacker.example` re-resolves its own name to 127.0.0.1 and becomes same-origin
+with the sink: the browser still sends `Host: attacker.example`. A sink reached
+by IP or as `localhost` needs nothing, which covers a published container port
+and an SSH forward. A sink reached under a name does: `--allow-host
+myhost.local`, or the public name of a reverse proxy that forwards it. A value
+is a bare host name: a scheme, a port, a path or a `*` prints one line and exits
+1. `--allow-host` names the host the stream is asked for under,
+`--allow-origin` names the origin of the page reading it, and a page behind a
+proxy may need both. On 0.11.0 and earlier the `Host` was never checked.
 
 ```toml
 args = ["--port", "8081", "--allow-origin", "http://localhost:3000"]
@@ -658,14 +673,17 @@ args = ["--port", "8009"]
 subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
 ```
 
-**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`). Open `/`
-in a browser. The loopback default, `--host 0.0.0.0` for remote browsers, and
+**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`),
+`--allow-host <NAME>` (repeatable, none by default). Open `/` in a browser. The loopback default, `--host 0.0.0.0` for remote browsers, and
 the strict flag parsing are the same as for sse-sink above, with the same
 version boundary. After primitives 0.11.0 the viewer sends no
 `Access-Control-Allow-Origin` header at all and has no flag to add one: its
 page and its API share an origin, so only its own page reads them. A dashboard
 on another origin should read the engine through an sse-sink with
-`--allow-origin` instead.
+`--allow-origin` instead. It also answers `421` to a request that names a host
+other than an IP address, `localhost`, the `--host` name or a name listed with
+`--allow-host`, exactly as sse-sink does and for the same reason; behind a
+reverse proxy that forwards its public name, list that name.
 
 | Route | Returns |
 |---|---|
