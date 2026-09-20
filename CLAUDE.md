@@ -176,24 +176,30 @@ Retention: after engine 0.10.10 `retention_days` is enforced by a prune at start
 
 ## Release Process
 
-Two repos must be released in order. The Rust SDK must be published to crates.io before primitives can build against it.
+Two repos are released, in this order: the SDKs, then emergent-primitives, then the engine. The primitives build against the published Rust SDK, and the engine's marketplace reads its catalog from the primitives release, so each step needs the one before it.
 
-### Step 1: Release emergent (engine + SDKs)
+### Step 1: Release emergent (SDKs, then engine)
 
 ```bash
-# 1. Bump workspace version in Cargo.toml and emergent-engine/Cargo.toml
-# 2. Update example deps to match (examples/*/Cargo.toml)
-# 3. Bump Python SDK version in sdks/py/pyproject.toml
-# 4. Bump TypeScript SDK version in sdks/ts/deno.json and sdks/ts/package.json
+# 1. SDK version: bump the workspace version in Cargo.toml (emergent-client
+#    inherits it), sdks/py/pyproject.toml, sdks/ts/deno.json and
+#    sdks/ts/package.json. The Go SDK has no version file; its tag is its version.
+# 2. Engine version: bump emergent-engine/Cargo.toml. It is separate from the
+#    SDK version.
+# 3. Update example deps to match (examples/*/Cargo.toml)
 
-cargo check && cargo clippy --all-targets && cargo nextest run
+cargo fmt --all --check && cargo clippy --workspace --all-targets && cargo nextest run --workspace
 
-# 5. Publish Rust SDK to crates.io (must happen before primitives build)
-cd sdks/rust && cargo publish
+# 4. Commit and push
+git add -A && git commit -S -m "chore: bump SDKs to A.B.C and engine to X.Y.Z"
+git push
 
-# 6. Commit, push, tag
-git add -A && git commit -S -m "chore: bump to X.Y.Z"
-git push && git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+# 5. Tag the SDKs. Each tag publishes one SDK (table below).
+for sdk in rust py ts go; do git tag -s "sdks/$sdk/vA.B.C" -m "sdks/$sdk/vA.B.C"; done
+git push origin sdks/rust/vA.B.C sdks/py/vA.B.C sdks/ts/vA.B.C sdks/go/vA.B.C
+
+# 6. Release emergent-primitives (Step 2), then tag the engine
+git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 ```
 
 The `vX.Y.Z` tag triggers the release workflow. It first runs `ci.yml` (the Rust, Python, TypeScript and Go gates) as its quality gate; the engine builds for Linux and macOS, the GitHub release, the `emergent-engine` crates.io publish and the AUR update all wait for it.
