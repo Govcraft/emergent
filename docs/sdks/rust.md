@@ -218,6 +218,13 @@ let topics: &[&str] = &["timer.tick", "sensor.reading"];
 let stream = handler.subscribe(topics).await?;
 ```
 
+A Handler or Sink has one message stream, so pass every topic to one `subscribe`
+call. A second call returns `SubscriptionFailed`. After emergent-client 0.13.1
+it is refused before anything is sent, so the first stream and
+`subscribed_types()` stay as they were. On 0.13.1 and earlier the engine was
+asked first, so the refused topics started arriving on the first stream. To read
+two sets of topics apart from each other, connect two clients.
+
 ## EmergentSink
 
 Sinks subscribe to messages for output.

@@ -469,6 +469,8 @@ export class BaseClient {
   #pendingSubscriptionsRequests: Map<string, PendingPubSubRequest<string[]>> =
     new Map();
   #messageStream: MessageStream | null = null;
+  #connectionLost = false;
+  #onConnectionLost: (() => void) | null = null;
   #subscribedTypes: Set<string> = new Set();
   #timeoutMs: number;
   /** Settles when the last queued frame is out, whether or not it failed. */
@@ -580,14 +582,20 @@ export class BaseClient {
       }
     });
 
+    const replaced = this.#messageStream;
     this.#messageStream = stream;
+
+    // A client feeds one stream. Nothing would ever end the earlier one once
+    // it is unregistered, so it ends here and its consumer stops.
+    replaced?.close();
 
     // Add system.shutdown to subscriptions (SDK handles it internally)
     const allTypes = exact.includes("system.shutdown")
       ? exact
       : [...exact, "system.shutdown"];
 
-    const response = await this.#sendRequest<IpcSubscribeRequest>(
+    const response = await this.#subscribeRequest<IpcSubscribeRequest>(
+      stream,
       MSG_TYPE_SUBSCRIBE,
       {
         correlation_id: correlationId,
@@ -613,9 +621,10 @@ export class BaseClient {
       // separate index for them. A connection matching a message through both
       // indexes still receives one copy.
       const patternCorrelationId = generateCorrelationId("psub");
-      const patternResponse = await this.#sendRequest<
+      const patternResponse = await this.#subscribeRequest<
         IpcPatternSubscribeRequest
       >(
+        stream,
         MSG_TYPE_SUBSCRIBE_PATTERNS,
         {
           correlation_id: patternCorrelationId,
@@ -1113,6 +1122,26 @@ export class BaseClient {
     return written;
   }
 
+  /**
+   * Send one request of a subscribe.
+   *
+   * When the request throws, the caller never receives the stream, so it is
+   * closed here, which also unregisters it.
+   */
+  async #subscribeRequest<T>(
+    stream: MessageStream,
+    msgType: number,
+    payload: T,
+    correlationId: string,
+  ): Promise<IpcResponse> {
+    try {
+      return await this.#sendRequest(msgType, payload, correlationId);
+    } catch (err) {
+      stream.close();
+      throw err;
+    }
+  }
+
   #sendRequest<T>(
     msgType: number,
     payload: T,
@@ -1165,10 +1194,34 @@ export class BaseClient {
         }
       })
       .then(() => {
-        // The engine is gone, so nothing in flight can be answered. After
-        // close() there is nothing left to fail.
-        if (!this.disposed) this.#failEverythingPending();
+        // After close() there is nothing left to settle.
+        if (!this.disposed) this.#engineClosedTheConnection();
       });
+  }
+
+  /**
+   * Settle a connection that ended without `close()` being called.
+   *
+   * The engine is gone, so nothing in flight can be answered. Whoever asked to
+   * be told is told after that, once.
+   */
+  #engineClosedTheConnection(): void {
+    this.#failEverythingPending();
+    this.#connectionLost = true;
+    this.#onConnectionLost?.();
+  }
+
+  /**
+   * Call `callback` when the engine closes the connection.
+   *
+   * A connection that is already lost calls it at once. `close()` never calls
+   * it. There is one callback, and a second call replaces the first.
+   *
+   * @internal
+   */
+  whenConnectionLost(callback: () => void): void {
+    this.#onConnectionLost = callback;
+    if (this.#connectionLost) callback();
   }
 
   async #runReadLoop(): Promise<void> {
@@ -1190,6 +1243,15 @@ export class BaseClient {
     } finally {
       this.#readLoopRunning = false;
     }
+  }
+
+  /**
+   * The stream pushed messages are delivered to, or null when there is none.
+   *
+   * @internal
+   */
+  protected get registeredStream(): MessageStream | null {
+    return this.#messageStream;
   }
 
   /**

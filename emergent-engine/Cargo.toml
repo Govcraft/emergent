@@ -52,6 +52,7 @@ tempfile = "3.23.0"
 axum = "0.8.8"
 which = "8.0.2"
 async-trait = "0.1.92"
+url = "2.5.8"
 
 [dev-dependencies]
 semver = "1.0.28"

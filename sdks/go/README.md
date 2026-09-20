@@ -167,6 +167,15 @@ msg := stream.Next()     // blocks, returns nil on close
 msg := stream.TryNext()  // non-blocking, returns nil if empty
 ```
 
+A client has one live stream, so call `Subscribe` once with every topic. After
+SDK release 0.13.1 a second `Subscribe` on the same client closes the earlier
+stream, so a range over its channel stops, and returns a new one. The engine
+keeps the earlier subscriptions, so the new stream receives the earlier topics
+as well as the new ones. The earlier stream closes when the second call starts,
+even if that call then fails. On 0.13.1 and earlier the earlier stream was left
+open and unfed, and nothing ever closed it, not even `Close()`. To read two sets
+of topics apart from each other, connect two clients.
+
 ### Typed payloads
 
 `PayloadAs` unmarshals the payload into any Go struct via JSON:
@@ -202,7 +211,7 @@ signal-handling boilerplate. Each helper connects, sets up SIGTERM/SIGINT
 handlers, runs your callback, and disconnects on completion:
 
 ```go
-// Source -- ctx is cancelled on SIGTERM/SIGINT
+// Source -- ctx is cancelled on SIGTERM/SIGINT, or when the engine leaves
 emergent.RunSource("my_timer", func(ctx context.Context, source *emergent.EmergentSource) error {
     ticker := time.NewTicker(3 * time.Second)
     defer ticker.Stop()
@@ -236,6 +245,15 @@ emergent.RunSink("my_sink", []string{"timer.tick"}, func(msg *emergent.EmergentM
 
 The name argument falls back to the `EMERGENT_NAME` environment variable when
 set to an empty string.
+
+`RunSource` cancels `ctx` on SIGTERM, on SIGINT, and, after SDK release 0.13.1,
+when the engine closes the connection. A Source subscribes to nothing, so no
+stream ends to tell it the engine is gone, and a lost connection is the only
+notice an engine that was killed ever gives. On 0.13.1 and earlier only the two
+signals cancelled it, so a Source that ignored its publish errors kept running
+against a dead socket unless the engine had spawned it on Linux, where the
+kernel signals the child when its parent dies. `RunHandler` and `RunSink` end
+with their message stream, which a lost connection closes.
 
 ## Error Handling
 

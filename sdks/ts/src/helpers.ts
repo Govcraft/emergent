@@ -142,12 +142,14 @@ function resolveName(name: string | undefined, defaultName: string): string {
  * - Resolves the name from the provided option, `EMERGENT_NAME` env var, or default
  * - Connects to the Emergent engine
  * - Sets up SIGTERM/SIGINT signal handling for graceful shutdown
+ * - Aborts the same signal when the engine closes the connection
  * - Calls your function with the connected source and an AbortSignal
  * - Gracefully disconnects after your function completes
  *
  * Your function receives:
  * - `source: EmergentSource` - The connected source for publishing messages
- * - `shutdown: AbortSignal` - An abort signal that fires when shutdown is requested
+ * - `shutdown: AbortSignal` - An abort signal that fires when shutdown is requested,
+ *   or when the engine closes the connection
  *
  * @param name - Optional name for this source. Falls back to `EMERGENT_NAME` env var,
  *   then to "source".
@@ -206,6 +208,10 @@ export async function runSource(
 
   Deno.addSignalListener("SIGTERM", signalHandler);
   Deno.addSignalListener("SIGINT", signalHandler);
+
+  // A Source has no subscription stream to end, so a lost connection is the
+  // only notice an engine that was killed ever gives it.
+  source.whenConnectionLost(signalHandler);
 
   try {
     await runFn(source, abortController.signal);

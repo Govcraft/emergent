@@ -307,6 +307,22 @@ async fn push_to_message_stream(
     debug!(primitive.name = %name, "push bridge stopped");
 }
 
+/// Refuse a second `subscribe` before anything is sent.
+///
+/// A client hands its push channel to its first stream, so a second stream has
+/// nothing to read from. Asking the engine first and refusing afterwards left
+/// the refused topics subscribed on the engine, and they arrived on the first
+/// stream while the caller held an error (Govcraft/emergent#86).
+fn ensure_first_subscribe(has_stream: bool) -> Result<()> {
+    if has_stream {
+        return Err(ClientError::SubscriptionFailed(
+            "this client already has a message stream: pass every topic to one subscribe call, or connect another client"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Subscribe on an `IpcClient` and return a `MessageStream`.
 ///
 /// Shared implementation used by both Handler and Sink.
@@ -879,6 +895,8 @@ pub struct EmergentHandler {
     client: Arc<IpcClient>,
     /// Currently subscribed message types.
     subscribed_types: Vec<String>,
+    /// Whether `subscribe` has handed out this client's one message stream.
+    has_stream: bool,
     /// Claims the engine's reply to every fire-and-forget publish.
     watcher: PublishWatcher,
 }
@@ -921,6 +939,7 @@ impl EmergentHandler {
             name: name.to_string(),
             client,
             subscribed_types: Vec::new(),
+            has_stream: false,
             watcher,
         }
     }
@@ -944,14 +963,21 @@ impl EmergentHandler {
     /// let stream = handler.subscribe(topics).await?;
     /// ```
     ///
+    /// A client has one message stream, so call this once with every topic. A
+    /// second call is refused before anything is sent to the engine, and the
+    /// first stream and its subscriptions stay as they were.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the subscription fails.
+    /// Returns an error if the subscription fails, or if this client already
+    /// has a message stream.
     pub async fn subscribe(&mut self, types: impl IntoSubscription) -> Result<MessageStream> {
+        ensure_first_subscribe(self.has_stream)?;
         let topics = types.into_topics();
         let (stream, user_subs) =
             subscribe_and_stream(&self.client, topics, &self.name, "handler").await?;
         self.subscribed_types = user_subs;
+        self.has_stream = true;
         Ok(stream)
     }
 
@@ -1392,6 +1418,8 @@ pub struct EmergentSink {
     client: Arc<IpcClient>,
     /// Currently subscribed message types.
     subscribed_types: Vec<String>,
+    /// Whether `subscribe` has handed out this client's one message stream.
+    has_stream: bool,
 }
 
 impl EmergentSink {
@@ -1409,6 +1437,7 @@ impl EmergentSink {
             name: name.to_string(),
             client: Arc::new(client),
             subscribed_types: Vec::new(),
+            has_stream: false,
         })
     }
 
@@ -1428,6 +1457,7 @@ impl EmergentSink {
             name: name.to_string(),
             client: Arc::new(client),
             subscribed_types: Vec::new(),
+            has_stream: false,
         })
     }
 
@@ -1502,14 +1532,21 @@ impl EmergentSink {
     /// let stream = sink.subscribe(topics).await?;
     /// ```
     ///
+    /// A client has one message stream, so call this once with every topic. A
+    /// second call is refused before anything is sent to the engine, and the
+    /// first stream and its subscriptions stay as they were.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the subscription fails.
+    /// Returns an error if the subscription fails, or if this client already
+    /// has a message stream.
     pub async fn subscribe(&mut self, types: impl IntoSubscription) -> Result<MessageStream> {
+        ensure_first_subscribe(self.has_stream)?;
         let topics = types.into_topics();
         let (stream, user_subs) =
             subscribe_and_stream(&self.client, topics, &self.name, "sink").await?;
         self.subscribed_types = user_subs;
+        self.has_stream = true;
         Ok(stream)
     }
 
@@ -1600,6 +1637,15 @@ impl EmergentSink {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_the_first_subscribe_is_let_through() {
+        assert!(ensure_first_subscribe(false).is_ok());
+        assert!(matches!(
+            ensure_first_subscribe(true),
+            Err(ClientError::SubscriptionFailed(_))
+        ));
+    }
 
     /// The same table runs in the Go, Python and TypeScript SDKs.
     #[test]

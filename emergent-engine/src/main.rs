@@ -97,6 +97,7 @@ enum Command {
     Update(emergent_engine::update::UpdateArgs),
 }
 
+use emergent_engine::api_host::{describe_allowed_hosts, guard_host};
 use emergent_engine::config::EmergentConfig;
 use emergent_engine::declarations::{RejectionReport, rejection_event_type};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
@@ -908,31 +909,45 @@ async fn main() -> Result<()> {
     let api_port = config.engine.api_port;
     if config.engine.api_enabled() {
         let pm_for_http = process_manager.clone();
+        let allowed_hosts = Arc::new(config.allowed_api_hosts());
+        let described = Arc::clone(&allowed_hosts);
         tokio::spawn(async move {
-            let app = Router::new().route(
-                "/api/topology",
-                get(move || {
-                    let pm = pm_for_http.clone();
-                    async move {
-                        // Same pure mapping the pub/sub answer uses, so the two
-                        // transports always report the same topology.
-                        let payload =
-                            build_topology_payload(std::process::id(), pm.list_all().await);
+            let app = Router::new()
+                .route(
+                    "/api/topology",
+                    get(move || {
+                        let pm = pm_for_http.clone();
+                        async move {
+                            // Same pure mapping the pub/sub answer uses, so the two
+                            // transports always report the same topology.
+                            let payload =
+                                build_topology_payload(std::process::id(), pm.list_all().await);
 
-                        info!(
-                            "HTTP /api/topology: {} primitive(s)",
-                            payload.primitives.len()
-                        );
+                            info!(
+                                "HTTP /api/topology: {} primitive(s)",
+                                payload.primitives.len()
+                            );
 
-                        Json(payload)
-                    }
-                }),
-            );
+                            Json(payload)
+                        }
+                    }),
+                )
+                // The API has no authentication, so it answers only to host
+                // names it knows to be its own. Without this a page on any
+                // domain can rebind that domain to 127.0.0.1 and read the
+                // whole topology from the browser.
+                .layer(axum::middleware::from_fn(move |request, next| {
+                    guard_host(Arc::clone(&allowed_hosts), request, next)
+                }));
 
             let bind_addr = format!("127.0.0.1:{api_port}");
             match TcpListener::bind(&bind_addr).await {
                 Ok(listener) => {
                     info!("HTTP API server listening on http://{}", bind_addr);
+                    info!(
+                        "HTTP API answers to: {}",
+                        describe_allowed_hosts(&described)
+                    );
                     if let Err(e) = axum::serve(listener, app).await {
                         error!("HTTP API server error: {}", e);
                     }

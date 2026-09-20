@@ -9,7 +9,8 @@ import (
 )
 
 // SourceRunFunc is the callback signature for RunSource.
-// The context is cancelled when SIGTERM/SIGINT is received.
+// The context is cancelled when SIGTERM/SIGINT is received, or when the engine
+// closes the connection.
 type SourceRunFunc func(ctx context.Context, source *EmergentSource) error
 
 // HandlerProcessFunc is the callback signature for RunHandler.
@@ -22,7 +23,9 @@ type SinkConsumeFunc func(msg *EmergentMessage) error
 
 // RunSource connects as a Source, sets up signal handling, and runs the user function.
 //
-// The function receives a context that is cancelled on SIGTERM/SIGINT.
+// The function receives a context that is cancelled on SIGTERM/SIGINT, and
+// when the engine closes the connection: a Source subscribes to nothing, so no
+// stream ends to tell it the engine is gone.
 // On return, the source is automatically disconnected.
 //
 // Example:
@@ -52,6 +55,16 @@ func RunSource(name string, fn SourceRunFunc) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	// A Source has no subscription stream to end, so a lost connection is
+	// the only notice an engine that was killed ever gives it.
+	go func() {
+		select {
+		case <-source.lost:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	if err := fn(ctx, source); err != nil {
 		return &HelperError{Msg: fmt.Sprintf("user function error: %v", err)}

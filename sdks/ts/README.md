@@ -207,6 +207,15 @@ using stream = await sink.subscribe(["timer.tick"]);
 The stream also ends when the connection to the engine is lost, so the loop
 stops and the code after it runs. See [Error Handling](#error-handling).
 
+A client has one live stream, so call `subscribe` once with every topic. After
+SDK release 0.13.1 a second `subscribe` on the same client ends the earlier
+stream, so a `for await` over it stops, and returns a new one. The engine keeps
+the earlier subscriptions, so the new stream receives the earlier topics as well
+as the new ones. The earlier stream ends when the second call starts, even if
+that call then fails. On 0.13.1 and earlier the earlier stream was left open and
+unfed, and nothing ever ended it, not even `close()`. To read two sets of topics
+apart from each other, connect two clients.
+
 ## Resource Cleanup
 
 All primitives implement `Disposable` and `AsyncDisposable`. Use `using` or
@@ -262,6 +271,15 @@ await runSink("my_sink", ["timer.tick"], async (msg) => {
 
 The name argument is optional. When omitted, the helper reads from the
 `EMERGENT_NAME` environment variable.
+
+`runSource` aborts `shutdown` on SIGTERM, on SIGINT, and, after SDK release
+0.13.1, when the engine closes the connection. A Source subscribes to nothing,
+so no stream ends to tell it the engine is gone, and a lost connection is the
+only notice an engine that was killed ever gives. On 0.13.1 and earlier only the
+two signals aborted it, so a Source that caught its publish errors kept running
+against a dead socket unless the engine had spawned it on Linux, where the
+kernel signals the child when its parent dies. `runHandler` and `runSink` end
+with their message stream, which a lost connection closes.
 
 ## Error Handling
 
