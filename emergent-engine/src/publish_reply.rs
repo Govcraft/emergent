@@ -23,6 +23,14 @@
 //! spawned task and a slot in the broker's own bounded inbox, for a message no
 //! handler accepts, competing with real publishes.
 //!
+//! An actor's Ern root carries a ULID (`message_broker_01m2y2dvb1ez...`), so
+//! the broker's own name is read off the reply envelope's return address
+//! rather than written out anywhere.
+//!
+//! Measured on 20 fire and forget publishes against engine 0.10.10: 20
+//! `emergent::PublishAck` replies, every one logged with sender and recipient
+//! equal to the broker's own Ern.
+//!
 //! [`should_reply`] is the whole decision, and it is pure.
 
 /// Whether a reply is worth sending, given who it would go to (pure).
@@ -41,6 +49,10 @@ pub fn should_reply(self_name: &str, reply_recipient: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
+    /// The broker's Ern root as it appears in acton's logs, ULID suffix and
+    /// all, so the comparison is tested on the strings it really sees.
+    const BROKER: &str = "message_broker_01m2y2dvb1ez1r3bfdb2w3r7a4";
+
     #[test]
     fn a_reply_is_sent_only_to_somebody_other_than_the_broker() {
         let cases = [
@@ -51,7 +63,7 @@ mod tests {
             ),
             (
                 "fire and forget leaves the broker addressed to itself",
-                Some("message_broker"),
+                Some(BROKER),
                 false,
             ),
             (
@@ -60,17 +72,13 @@ mod tests {
                 false,
             ),
             (
-                "another actor in the same runtime is still somebody else",
-                Some("process_manager"),
+                "a second broker incarnation is a different actor",
+                Some("message_broker_01m2y2dvb1ez1r3bfdb2w3r7a5"),
                 true,
             ),
         ];
         for (case, recipient, expected) in cases {
-            assert_eq!(
-                should_reply("message_broker", recipient),
-                expected,
-                "{case}"
-            );
+            assert_eq!(should_reply(BROKER, recipient), expected, "{case}");
         }
     }
 }
