@@ -19,16 +19,19 @@
 //!
 //! Enforcement needs a name. A [`ConnectionIdentity::Primitive`] name came from
 //! the engine and the kernel, so a message on that connection claiming a
-//! different `source` is a violation in its own right. A
-//! [`ConnectionIdentity::Unmanaged`] connection has no such name, so the only
-//! name available is the `source` the client wrote itself, and enforcement
-//! falls back to it: mistakes are caught, lies are not. While
-//! [`crate::ipc_identity::StubResolver`] is installed that is every connection.
-//! See [`effective_name`], where the choice is made and tested.
+//! different `source` is a violation in its own right, and a subscribe frame,
+//! which carries no `source` at all, can still be judged.
 //!
-//! A subscribe frame carries no `source`, so there is nothing to fall back to
-//! and subscribe enforcement is dormant until a resolver names connections.
-//! The engine says so at startup rather than refusing every handler and sink.
+//! A [`ConnectionIdentity::Unmanaged`] connection has no such name. Where the
+//! engine can resolve process ancestry it has no need of one either: a
+//! primitive it spawned is never unmanaged, so a name an unmanaged connection
+//! writes for itself is not evidence and is ignored. What is left to such a
+//! connection is the protocol topics every client may use, which is what keeps
+//! the CLI and a topology query working under strict. Where ancestry cannot be
+//! resolved, a primitive behind a launcher arrives unmanaged through no fault
+//! of its own, so the `source` it writes is taken as its name and enforcement
+//! falls back to catching mistakes rather than lies. [`UnmanagedNames`] is that
+//! choice and [`effective_name`] is where it is applied.
 
 use std::sync::Arc;
 
@@ -86,6 +89,19 @@ pub const fn policy_is_needed(mode: EnforcementMode, has_observer: bool) -> bool
     mode.is_enforcing() || has_observer
 }
 
+/// Whether the name an unmanaged connection writes for itself counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UnmanagedNames {
+    /// The engine can name the primitives it spawned, so a primitive is never
+    /// unmanaged and a name an unmanaged connection claims proves nothing.
+    #[default]
+    Ignored,
+    /// The engine cannot resolve process ancestry on this platform, so a
+    /// primitive launched through a wrapper arrives unmanaged. Its `source` is
+    /// then the only name there is: enough to catch a mistake, not a lie.
+    Claimed,
+}
+
 /// The name to hold a connection to, and whether the engine vouches for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EffectiveName<'a> {
@@ -99,12 +115,15 @@ pub struct EffectiveName<'a> {
 ///
 /// A managed connection is checked against the name the engine gave it, and the
 /// `source` the client wrote is then a claim that has to match. An unmanaged
-/// connection has no engine-given name, so the claim is all there is; it is
-/// used, and it is not trusted. An empty `source` is not a claim.
+/// connection has no engine-given name: under [`UnmanagedNames::Ignored`] it
+/// has no name at all, which leaves it the protocol topics and nothing else;
+/// under [`UnmanagedNames::Claimed`] the claim is used, and it is still not
+/// trusted. An empty `source` is not a claim either way.
 #[must_use]
 pub fn effective_name<'a>(
     identity: &'a ConnectionIdentity,
     claimed_source: Option<&'a str>,
+    unmanaged: UnmanagedNames,
 ) -> EffectiveName<'a> {
     match identity {
         ConnectionIdentity::Primitive { name } => EffectiveName {
@@ -112,9 +131,47 @@ pub fn effective_name<'a>(
             trusted: true,
         },
         ConnectionIdentity::Unmanaged { .. } => EffectiveName {
-            name: claimed_source,
+            name: match unmanaged {
+                UnmanagedNames::Ignored => None,
+                UnmanagedNames::Claimed => claimed_source,
+            },
             trusted: false,
         },
+    }
+}
+
+/// Hands every observation to each of several observers in turn.
+///
+/// The engine has two: startup readiness watches subscribes, and the
+/// connection registry watches admissions so a dead primitive's connections
+/// can be closed. Both inherit the trait's contract: no blocking, no awaiting.
+pub struct Observers(Vec<Arc<dyn PolicyObserver>>);
+
+impl Observers {
+    /// Fan out to these observers, in order.
+    #[must_use]
+    pub fn new(observers: Vec<Arc<dyn PolicyObserver>>) -> Self {
+        Self(observers)
+    }
+}
+
+impl PolicyObserver for Observers {
+    fn on_admitted(&self, identity: &ConnectionIdentity, connection_id: usize) {
+        for observer in &self.0 {
+            observer.on_admitted(identity, connection_id);
+        }
+    }
+
+    fn on_subscribed(&self, identity: &ConnectionIdentity, topics: &[String]) {
+        for observer in &self.0 {
+            observer.on_subscribed(identity, topics);
+        }
+    }
+
+    fn on_violation(&self, identity: &ConnectionIdentity, reason: &str) {
+        for observer in &self.0 {
+            observer.on_violation(identity, reason);
+        }
     }
 }
 
@@ -129,6 +186,8 @@ pub struct EnginePolicy {
     /// subscription manager it would need does not exist until the listener has
     /// started, so the policy hands the report over and returns.
     rejections: Option<tokio::sync::mpsc::UnboundedSender<RejectionReport>>,
+    /// Whether an unmanaged connection may be held to the name it claims.
+    unmanaged_names: UnmanagedNames,
 }
 
 // A policy's own state is fixed once it is built: the declaration table, the
@@ -150,7 +209,19 @@ impl EnginePolicy {
             resolver,
             observer: observer.unwrap_or_else(|| Arc::new(NoObserver)),
             rejections: None,
+            unmanaged_names: UnmanagedNames::default(),
         }
+    }
+
+    /// Say what an unmanaged connection's own `source` is worth here.
+    ///
+    /// Startup passes [`UnmanagedNames::Claimed`] only on a platform where the
+    /// engine cannot resolve process ancestry, because there a primitive
+    /// behind a launcher arrives unmanaged through no fault of its own.
+    #[must_use]
+    pub const fn naming_unmanaged(mut self, unmanaged: UnmanagedNames) -> Self {
+        self.unmanaged_names = unmanaged;
+        self
     }
 
     /// Send every refusal to this channel, to be reported as an event.
@@ -235,7 +306,7 @@ impl EnginePolicy {
             return Ok(());
         };
         let claimed = Self::claimed_source(envelope);
-        let effective = effective_name(identity, claimed);
+        let effective = effective_name(identity, claimed, self.unmanaged_names);
 
         // A name the engine established is one the message may not contradict.
         // On an unmanaged connection the claim IS the name, so there is
@@ -278,28 +349,24 @@ impl EnginePolicy {
         identity: &ConnectionIdentity,
         topics: &[String],
     ) -> Result<(), IpcAccessDenied> {
-        // A subscribe frame carries no `source`, so unlike a publish there is
-        // no claim to fall back to. While the stub resolver is installed every
-        // connection lands here, which is why subscribe enforcement is dormant
-        // and says so at startup. Refusing instead would kill every handler
-        // and sink the moment strict mode was turned on, for want of an
-        // identity the engine has not learned how to establish yet.
-        let effective = effective_name(identity, None);
-        let Some(name) = effective.name else {
-            debug!(
-                identity = %identity,
-                topics = topics.len(),
-                "Subscription not checked: the connection has no name to check it against"
-            );
-            self.observer.on_subscribed(identity, topics);
-            return Ok(());
-        };
+        // A subscribe frame carries no `source`, so a connection the engine
+        // could not name has nothing to be checked against. That is not a hole
+        // to wave through: the declaration table answers `None` with the
+        // protocol topics and nothing else, which is exactly what a CLI query
+        // needs and all an impostor gets.
+        let effective = effective_name(identity, None, self.unmanaged_names);
         for topic in topics {
             let checked = self
                 .declarations
-                .check(Some(name), Operation::Subscribe, topic);
+                .check(effective.name, Operation::Subscribe, topic);
             if checked.verdict.is_violation() {
-                self.record(identity, checked, Some(name), Operation::Subscribe, topic)?;
+                self.record(
+                    identity,
+                    checked,
+                    effective.name,
+                    Operation::Subscribe,
+                    topic,
+                )?;
             }
         }
         self.observer.on_subscribed(identity, topics);
@@ -362,9 +429,26 @@ impl IpcSecurityPolicy for EnginePolicy {
 mod tests {
     use super::*;
     use crate::declarations::Declarations;
-    use crate::ipc_identity::StubResolver;
+    use crate::ipc_identity::unmanaged_from;
     use crate::primitives::PrimitiveKind;
+    use acton_reactive::ipc::PeerCredentials;
     use std::sync::Mutex;
+
+    /// Stands in for a resolver in the tests that only need the policy built.
+    ///
+    /// `admit` is exercised by the live proof, not here: `PeerCredentials` has
+    /// no public constructor, so there is nothing to hand it.
+    struct NoResolver;
+
+    #[async_trait::async_trait]
+    impl crate::ipc_identity::IdentityResolver for NoResolver {
+        async fn resolve(
+            &self,
+            _peer: Option<PeerCredentials>,
+        ) -> Result<ConnectionIdentity, IpcAccessDenied> {
+            Ok(unmanaged_from(None, 0))
+        }
+    }
 
     fn managed(name: &str) -> ConnectionIdentity {
         ConnectionIdentity::Primitive {
@@ -373,10 +457,7 @@ mod tests {
     }
 
     fn unmanaged() -> ConnectionIdentity {
-        ConnectionIdentity::Unmanaged {
-            pid: Some(4242),
-            uid: 1000,
-        }
+        unmanaged_from(Some(4242), 1000)
     }
 
     /// Records every violation the policy reported.
@@ -426,7 +507,7 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let policy = EnginePolicy::new(
             declarations(mode),
-            Arc::new(StubResolver),
+            Arc::new(NoResolver),
             Some(recorder.clone()),
         );
         (policy, recorder)
@@ -449,28 +530,51 @@ mod tests {
     #[test]
     fn a_managed_connection_is_held_to_the_name_the_engine_gave_it() {
         let identity = managed("timer");
+        for unmanaged in [UnmanagedNames::Ignored, UnmanagedNames::Claimed] {
+            assert_eq!(
+                effective_name(&identity, Some("console"), unmanaged),
+                EffectiveName {
+                    name: Some("timer"),
+                    trusted: true
+                },
+                "a claim does not override the engine's own answer"
+            );
+            assert_eq!(
+                effective_name(&identity, None, unmanaged),
+                EffectiveName {
+                    name: Some("timer"),
+                    trusted: true
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn an_unmanaged_connection_is_nobody_while_the_engine_can_name_its_own() {
+        // A primitive the engine spawned is never unmanaged, so a name on an
+        // unmanaged connection is not evidence of anything.
+        let identity = unmanaged();
         assert_eq!(
-            effective_name(&identity, Some("console")),
+            effective_name(&identity, Some("timer"), UnmanagedNames::Ignored),
             EffectiveName {
-                name: Some("timer"),
-                trusted: true
-            },
-            "a claim does not override the engine's own answer"
+                name: None,
+                trusted: false
+            }
         );
         assert_eq!(
-            effective_name(&identity, None),
+            effective_name(&identity, None, UnmanagedNames::Ignored),
             EffectiveName {
-                name: Some("timer"),
-                trusted: true
+                name: None,
+                trusted: false
             }
         );
     }
 
     #[test]
-    fn an_unmanaged_connection_falls_back_to_the_name_it_claims() {
+    fn an_unmanaged_connection_falls_back_to_its_claim_where_ancestry_is_unreadable() {
         let identity = unmanaged();
         assert_eq!(
-            effective_name(&identity, Some("timer")),
+            effective_name(&identity, Some("timer"), UnmanagedNames::Claimed),
             EffectiveName {
                 name: Some("timer"),
                 trusted: false
@@ -478,7 +582,7 @@ mod tests {
             "the claim is used, and it is not trusted"
         );
         assert_eq!(
-            effective_name(&identity, None),
+            effective_name(&identity, None, UnmanagedNames::Claimed),
             EffectiveName {
                 name: None,
                 trusted: false
@@ -516,14 +620,12 @@ mod tests {
             EnforcementMode::Strict,
         ] {
             let (policy, recorder) = policy(mode);
-            for identity in [managed("timer"), unmanaged()] {
-                assert!(
-                    policy
-                        .authorize_request(&identity, &publish("timer", "timer.tick"))
-                        .is_ok(),
-                    "mode {mode}, identity {identity}"
-                );
-            }
+            assert!(
+                policy
+                    .authorize_request(&managed("timer"), &publish("timer", "timer.tick"))
+                    .is_ok(),
+                "mode {mode}"
+            );
             assert!(recorder.seen().is_empty(), "mode {mode}");
         }
     }
@@ -545,11 +647,11 @@ mod tests {
     }
 
     #[test]
-    fn an_undeclared_publish_is_caught_on_an_unmanaged_connection_too() {
-        // The fallback is what makes enforcement useful before #24 lands: a
-        // primitive naming itself honestly still cannot publish what it never
-        // declared.
+    fn an_undeclared_publish_is_caught_on_a_connection_named_by_its_claim() {
+        // Where ancestry cannot be read, a primitive naming itself honestly
+        // still cannot publish what it never declared.
         let (policy, _) = policy(EnforcementMode::Strict);
+        let policy = policy.naming_unmanaged(UnmanagedNames::Claimed);
         let denied = denial(
             policy.authorize_request(&unmanaged(), &publish("timer", "timer.undeclared")),
             "an undeclared publish is refused whatever the connection",
@@ -571,21 +673,22 @@ mod tests {
     }
 
     #[test]
-    fn an_unmanaged_publish_can_still_claim_any_name_it_likes() {
-        // The documented gap that #24 closes, stated as a test so that it
-        // fails the day a real resolver starts naming connections.
+    fn an_unmanaged_publish_may_not_borrow_a_configured_primitives_name() {
+        // The gap #24 closes. A process the engine did not spawn publishing
+        // exactly what `timer` declared, as `timer`, is refused: the engine
+        // spawned timer itself and would have named the connection.
         let (policy, _) = policy(EnforcementMode::Strict);
-        assert!(
-            policy
-                .authorize_request(&unmanaged(), &publish("timer", "timer.tick"))
-                .is_ok(),
-            "an unmanaged connection publishing as 'timer' is accepted today"
+        let denied = denial(
+            policy.authorize_request(&unmanaged(), &publish("timer", "timer.tick")),
+            "an outside process may not publish as 'timer'",
         );
+        assert!(denied.contains("could not tie"), "{denied}");
     }
 
     #[test]
     fn a_publish_claiming_a_primitive_that_is_not_configured_is_refused() {
         let (policy, _) = policy(EnforcementMode::Strict);
+        let policy = policy.naming_unmanaged(UnmanagedNames::Claimed);
         let denied = denial(
             policy.authorize_request(&unmanaged(), &publish("intruder", "anything.at.all")),
             "an unconfigured name is refused",
@@ -669,24 +772,41 @@ mod tests {
     }
 
     #[test]
-    fn an_unmanaged_connection_has_its_subscriptions_let_through_unchecked() {
-        // The documented consequence of the stub resolver, stated as a test so
-        // that it fails the day #24 starts naming connections and subscribe
-        // enforcement turns on by itself.
+    fn an_unmanaged_connection_may_subscribe_to_protocol_topics_and_nothing_else() {
+        // A subscribe frame carries no name, so before #24 this could not be
+        // judged at all. Now an unmanaged connection is one the engine did not
+        // spawn, and it gets what a CLI needs and no more.
         let (policy, recorder) = policy(EnforcementMode::Strict);
         assert!(
             policy
-                .authorize_subscribe(&unmanaged(), &["secrets.all".to_owned()])
+                .authorize_subscribe(&unmanaged(), &["system.response.topology".to_owned()])
                 .is_ok(),
-            "there is no name on a subscribe frame to check the topic against"
+            "a topology query still works under strict"
         );
-        assert!(recorder.seen().is_empty());
+        let denied = denial(
+            policy.authorize_subscribe(&unmanaged(), &["timer.tick".to_owned()]),
+            "an outside process may not subscribe to a topology topic",
+        );
+        assert!(denied.contains("could not tie"), "{denied}");
+        assert_eq!(recorder.seen().len(), 1);
     }
 
     #[test]
-    fn a_subscription_the_engine_could_not_check_still_reaches_the_observer() {
-        // Issue #66 uses on_subscribed as its readiness signal, so it has to
-        // fire whether or not the topics could be judged.
+    fn a_primitive_may_not_subscribe_to_a_topic_it_did_not_declare() {
+        let (policy, _) = policy(EnforcementMode::Strict);
+        let denied = denial(
+            policy.authorize_subscribe(&managed("console"), &["secrets.all".to_owned()]),
+            "an undeclared topic is refused to a primitive the engine named",
+        );
+        assert!(
+            denied.contains("not in its declared subscribes list"),
+            "{denied}"
+        );
+    }
+
+    #[test]
+    fn an_authorized_subscription_reaches_the_observer() {
+        // Issue #66 uses on_subscribed as its readiness signal.
         #[derive(Default)]
         struct Ready(Mutex<Vec<String>>);
         impl PolicyObserver for Ready {
@@ -700,12 +820,12 @@ mod tests {
         let ready = Arc::new(Ready::default());
         let policy = EnginePolicy::new(
             declarations(EnforcementMode::Strict),
-            Arc::new(StubResolver),
+            Arc::new(NoResolver),
             Some(ready.clone()),
         );
         assert!(
             policy
-                .authorize_subscribe(&unmanaged(), &["timer.tick".to_owned()])
+                .authorize_subscribe(&managed("console"), &["timer.tick".to_owned()])
                 .is_ok()
         );
         assert_eq!(
@@ -723,7 +843,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let policy = EnginePolicy::new(
             declarations(EnforcementMode::Strict),
-            Arc::new(StubResolver),
+            Arc::new(NoResolver),
             None,
         )
         .reporting_to(tx);
@@ -731,7 +851,7 @@ mod tests {
         // Named: reported, so a sink on system.error.* sees it.
         assert!(
             policy
-                .authorize_request(&unmanaged(), &publish("timer", "timer.undeclared"))
+                .authorize_request(&managed("timer"), &publish("timer", "timer.undeclared"))
                 .is_err()
         );
         match rx.try_recv() {

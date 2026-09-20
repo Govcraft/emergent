@@ -101,8 +101,12 @@ use emergent_engine::api_host::{describe_allowed_hosts, guard_host};
 use emergent_engine::config::EmergentConfig;
 use emergent_engine::declarations::{RejectionReport, rejection_event_type};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
-use emergent_engine::ipc_identity::StubResolver;
-use emergent_engine::ipc_policy::{EnginePolicy, PolicyObserver, policy_is_needed};
+use emergent_engine::ipc_identity::{
+    AncestryResolver, ConnectionRegistry, SpawnedChildren, ancestry_available,
+};
+use emergent_engine::ipc_policy::{
+    EnginePolicy, Observers, PolicyObserver, UnmanagedNames, policy_is_needed,
+};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::{ProcessManager, ShutdownTimings, StartupReadiness};
@@ -571,8 +575,15 @@ async fn main() -> Result<()> {
     // Enforce [event_store].retention_days: prune now, then once a day
     start_retention(&event_store, &config);
 
-    // Initialize process manager
-    let process_manager = ProcessManager::new(socket_path.clone(), config.engine.api_port);
+    // Initialize process manager.
+    //
+    // The connection registry has to exist first: the policy that feeds it is
+    // an argument to starting the listener, and the process manager is what
+    // tells it a child has died. It gets the listener to revoke through once
+    // that listener exists.
+    let connections = Arc::new(ConnectionRegistry::new());
+    let process_manager = ProcessManager::new(socket_path.clone(), config.engine.api_port)
+        .observing_child_exits(connections.clone());
 
     // Create IPC configuration with our socket path
     let ipc_config = create_ipc_config(&socket_path, config.engine.max_connections);
@@ -611,13 +622,30 @@ async fn main() -> Result<()> {
             declarations.mode(),
             declarations.len()
         );
-        // The stub resolver below names nobody, so a publish is checked
-        // against the source the client writes itself and a subscribe cannot
-        // be checked at all. Saying it here is the difference between an
-        // operator who knows what the mode is worth and one who does not.
-        warn!(
-            "Declarations are checked against self-reported names: \
-             publishes are held to the source on the message, subscribes are not checked"
+    }
+
+    // Admission names a connection by walking the peer's process ancestry to a
+    // child the engine spawned. Where that cannot be read, a primitive behind
+    // a launcher arrives unnamed through no fault of its own, so enforcement
+    // falls back to the source the client writes and the operator is told the
+    // mode is worth less there than it says.
+    let unmanaged_names = if ancestry_available() {
+        UnmanagedNames::Ignored
+    } else {
+        if declarations.mode().is_enforcing() {
+            warn!(
+                "This platform does not report process ancestry, so a primitive launched \
+                 through a wrapper such as `uv` cannot be named: its publishes are checked \
+                 against the source it writes itself and it may not subscribe to anything \
+                 beyond the engine protocol"
+            );
+        }
+        UnmanagedNames::Claimed
+    };
+    if config.engine.authenticate_connections.is_enforcing() {
+        info!(
+            "Connection authentication: {}",
+            config.engine.authenticate_connections
         );
     }
 
@@ -629,25 +657,28 @@ async fn main() -> Result<()> {
 
     // Start the IPC listener first to get the subscription manager.
     //
-    // The resolver is the stub one: until issue #24 lands, every peer is
-    // Unmanaged and enforcement falls back to the `source` a client writes
-    // itself. Swapping the stub for a real resolver is the whole of that
-    // change here.
-    // Startup readiness observes the subscribes the policy authorizes, which is
-    // the only way the engine learns that a tier is listening. Registering an
-    // observer is itself enough to install the policy, so this works with
-    // enforcement off.
+    // Two observers watch what the policy decides: startup readiness needs the
+    // subscribes it authorizes, which is the only way the engine learns a tier
+    // is listening, and the connection registry needs the admissions, so that
+    // a primitive's connections can be closed when its child exits.
+    // Registering an observer is itself enough to install the policy, so this
+    // works with enforcement off.
     let (startup_observer, startup_signals) = StartupObserver::channel();
-    let startup_observer: Arc<dyn PolicyObserver> = Arc::new(startup_observer);
+    let observers: Arc<dyn PolicyObserver> = Arc::new(Observers::new(vec![
+        Arc::new(startup_observer),
+        connections.clone(),
+    ]));
+    let children: Arc<dyn SpawnedChildren> = Arc::new(process_manager.clone());
 
     let listener_handle = if policy_is_needed(declarations.mode(), true) {
+        let resolver = Arc::new(AncestryResolver::new(
+            children,
+            config.engine.authenticate_connections,
+        ));
         let policy = Arc::new(
-            EnginePolicy::new(
-                declarations.clone(),
-                Arc::new(StubResolver),
-                Some(startup_observer),
-            )
-            .reporting_to(rejections_tx),
+            EnginePolicy::new(declarations.clone(), resolver, Some(observers))
+                .naming_unmanaged(unmanaged_names)
+                .reporting_to(rejections_tx),
         );
         runtime
             .start_ipc_listener_with_policy(ipc_config, policy)
@@ -656,6 +687,8 @@ async fn main() -> Result<()> {
         runtime.start_ipc_listener_with_config(ipc_config).await
     }
     .context("Failed to start IPC listener")?;
+    let listener_handle = Arc::new(listener_handle);
+    connections.install_revoker(listener_handle.clone());
 
     // Get subscription manager for message routing to IPC clients
     let subscription_manager = listener_handle.subscription_manager();
