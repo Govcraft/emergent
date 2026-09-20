@@ -263,6 +263,13 @@ After SDK release 0.13.1 the three wrapping errors have an `Err` field and an
 and earlier the cause was flattened into `Msg`, so `errors.As` could not find a
 `TimeoutError` behind a subscribe, publish or discover.
 
+`ConnectionError` keeps its cause the same way after 0.13.1: `Err` holds the
+`net` error from a refused dial or a failed write, so
+`errors.Is(err, syscall.ECONNREFUSED)` and `errors.As(err, &opErr)` with a
+`*net.OpError` work, through a `SubscriptionError` wrapped around it too. `Err`
+is nil where nothing sits underneath, as in "not connected" and "connection
+closed". On 0.13.1 and earlier `ConnectionError` had only `Msg`.
+
 ### Error Types
 
 | Error | Description |

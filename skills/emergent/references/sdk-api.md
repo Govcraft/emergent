@@ -434,7 +434,10 @@ timeout, a lost connection, a cancelled context. After SDK release 0.13.1 they
 carry it in an `Err` field with `Unwrap`, so `errors.As(err, &timeoutErr)` and
 `errors.Is(err, context.Canceled)` work, and `Err` is nil for a rejection. On
 0.13.1 and earlier the cause was flattened into `Msg` and could not be reached
-(Govcraft/emergent#73).
+(Govcraft/emergent#73). `*ConnectionError` has the same `Err` and `Unwrap`, set
+for a refused dial and a failed write and nil for "not connected" and
+"connection closed", so `errors.Is(err, syscall.ECONNREFUSED)` works
+(Govcraft/emergent#78).
 
 A socket that refuses a write is not a rejection either. After SDK release
 0.13.1 a failed TypeScript `publish()` throws a `PublishError` whose `cause` is

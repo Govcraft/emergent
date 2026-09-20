@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -259,4 +262,156 @@ func TestOperationErrorsWithoutACause(t *testing.T) {
 			}
 		})
 	}
+}
+
+// refusedSocket is the path of a socket file nothing listens on any more.
+func refusedSocket(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "r.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	// Keep the file when the listener closes, so the dial finds a socket and
+	// is refused instead of finding nothing.
+	listener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	return path
+}
+
+// A ConnectionError keeps the error underneath it at every site that has one.
+func TestConnectionErrorKeepsItsCause(t *testing.T) {
+	t.Run("dial refused", func(t *testing.T) {
+		client, _ := unitClient(t)
+		path := refusedSocket(t)
+		err := client.connect(&ConnectOptions{SocketPath: path})
+
+		var connErr *ConnectionError
+		if !errors.As(err, &connErr) {
+			t.Fatalf("error = %v (%T), want a ConnectionError", err, err)
+		}
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			t.Errorf("errors.Is(%v, ECONNREFUSED) = false", err)
+		}
+		var opErr *net.OpError
+		if !errors.As(err, &opErr) {
+			t.Errorf("errors.As(%v, *net.OpError) = false", err)
+		}
+		want := "connection failed: failed to connect to " + path + ": "
+		if !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("Error() = %q, want the prefix %q", err.Error(), want)
+		}
+	})
+
+	queries := []struct {
+		name string
+		run  func(ctx context.Context, client *baseClient) error
+	}{
+		{"topology query", func(ctx context.Context, client *baseClient) error {
+			_, err := client.getTopologyInternal(ctx)
+			return err
+		}},
+		{"subscriptions query", func(ctx context.Context, client *baseClient) error {
+			_, err := client.getMySubscriptionsInternal(ctx)
+			return err
+		}},
+	}
+	for _, query := range queries {
+		t.Run(query.name+"/response subscription times out", func(t *testing.T) {
+			client := causeClient(t, nil)
+			err := query.run(context.Background(), client)
+
+			var connErr *ConnectionError
+			if !errors.As(err, &connErr) {
+				t.Fatalf("error = %v (%T), want a ConnectionError", err, err)
+			}
+			var timeoutErr *TimeoutError
+			if !errors.As(err, &timeoutErr) {
+				t.Errorf("errors.As(%v, *TimeoutError) = false", err)
+			}
+			want := "connection failed: failed to subscribe to response type: timeout after 50ms: request timed out"
+			if err.Error() != want {
+				t.Errorf("Error() = %q, want %q", err.Error(), want)
+			}
+		})
+
+		t.Run(query.name+"/send fails", func(t *testing.T) {
+			client := causeClient(t, nil)
+			_ = client.conn.Close()
+			err := query.run(context.Background(), client)
+
+			if !errors.Is(err, io.ErrClosedPipe) {
+				t.Errorf("errors.Is(%v, io.ErrClosedPipe) = false", err)
+			}
+		})
+	}
+
+	// The failed send sits two levels down: the operation's error wraps a
+	// ConnectionError, which wraps the write error.
+	t.Run("send fails under a subscribe", func(t *testing.T) {
+		client := causeClient(t, nil)
+		_ = client.conn.Close()
+		_, err := client.subscribeInternal(context.Background(), []string{"go78.event"})
+
+		var connErr *ConnectionError
+		if !errors.As(err, &connErr) {
+			t.Fatalf("error = %v (%T), want a ConnectionError underneath", err, err)
+		}
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("errors.Is(%v, io.ErrClosedPipe) = false", err)
+		}
+		want := "connection failed: failed to send: io: read/write on closed pipe"
+		if connErr.Error() != want {
+			t.Errorf("ConnectionError.Error() = %q, want %q", connErr.Error(), want)
+		}
+	})
+}
+
+// Sites with no error underneath leave the cause nil.
+func TestConnectionErrorWithoutACause(t *testing.T) {
+	t.Run("not connected", func(t *testing.T) {
+		client, _ := unitClient(t)
+		_, err := client.discoverInternal(context.Background())
+
+		var connErr *ConnectionError
+		if !errors.As(err, &connErr) {
+			t.Fatalf("error = %v (%T), want a ConnectionError", err, err)
+		}
+		if cause := errors.Unwrap(connErr); cause != nil {
+			t.Errorf("Unwrap() = %v, want nil", cause)
+		}
+	})
+
+	t.Run("connection closed while waiting", func(t *testing.T) {
+		client := causeClient(t, nil)
+		client.timeout = time.Minute
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			client.close()
+		}()
+		_, err := client.discoverInternal(context.Background())
+
+		var connErr *ConnectionError
+		if !errors.As(err, &connErr) {
+			t.Fatalf("error = %v (%T), want a ConnectionError", err, err)
+		}
+		if cause := errors.Unwrap(connErr); cause != nil {
+			t.Errorf("Unwrap() = %v, want nil", cause)
+		}
+		if connErr.Error() != "connection failed: connection closed" {
+			t.Errorf("Error() = %q", connErr.Error())
+		}
+	})
+
+	t.Run("a literal", func(t *testing.T) {
+		err := &ConnectionError{Msg: "denied"}
+		if err.Error() != "connection failed: denied" {
+			t.Errorf("Error() = %q", err.Error())
+		}
+		if cause := errors.Unwrap(err); cause != nil {
+			t.Errorf("Unwrap() = %v, want nil", cause)
+		}
+	})
 }
