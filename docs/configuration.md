@@ -85,6 +85,7 @@ max_connections = 1024         # Concurrent IPC connections the engine accepts
 shutdown_drain_ms = 500        # Voluntary-exit window per shutdown phase
 shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
 startup_ready_timeout_ms = 5000 # Deadline for one startup tier to reach the engine
+enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
 ```
 
 | Option | Default | Description |
@@ -112,6 +113,7 @@ name and from a subscribed connection whose peer pid is the primitive's child.
 Either is enough. A primitive that neither publishes nor defers its topics to
 the config, and whose process is not the one that connects (a wrapper such as
 `uv run` that forks), can still be missed and will cost its tier the deadline.
+| `enforce_declarations` | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it. `"off"`, `"warn"` or `"strict"`. |
 
 **Shutdown timing:** both windows are deadlines, not sleeps. A phase moves on the
 moment every one of its primitives has exited, so a topology of well-behaved
@@ -148,6 +150,114 @@ and its new connection, and transient clients such as a CLI query or the
 topology viewer, which reach `system.request.topology` over the same socket. The
 check runs against the limit that actually took effect, so it catches a ceiling
 set in `ipc.toml` as readily as one set in `emergent.toml`.
+
+**Declaration enforcement:** a primitive's `publishes` and `subscribes` lists
+describe the topology, and up to engine 0.10.10 they were advisory. The broker
+stored and forwarded whatever a client sent and the IPC listener applied
+whatever subscription a client asked for, so a topic the code used but the TOML
+never declared worked anyway, and the declaration quietly stopped describing the
+system. After 0.10.10, `[engine].enforce_declarations` decides whether the lists
+bind:
+
+| Value | Effect |
+|-------|--------|
+| `"off"` (default) | Nothing is checked. Exactly the 0.10.10 behavior, and the engine does not install a security policy at all. |
+| `"warn"` | An operation outside the declarations logs at WARN, naming the primitive, the operation and the message type. It still goes through. |
+| `"strict"` | The same log line, and the publish is refused: it is neither stored nor forwarded, `publish_ack` fails with an `ACCESS_DENIED` error carrying the engine's explanation, and the engine emits `system.error.<name>` describing the rejection. Subscriptions are checked in neither mode yet, for the reason under "Which name a check is made against" below. |
+
+The default is `"off"` because turning enforcement on can stop messages a
+working topology depends on. The shipped example configurations are clean under
+`"strict"`, but a topology whose declarations were written before enforcement
+existed usually is not. The `exec` handler is the common case: configured the
+way its documented example is written, declaring only its `--publish-as` topic,
+it violates on every failure because its `--error-as` topic (default
+`exec.error`) is undeclared. Run `"warn"` first, read the log, add the topics it
+names to `publishes` or `subscribes`, then move to `"strict"`.
+
+Matching follows the same rule as subscriptions everywhere else: a declared
+entry is either an exact message type or a prefix ending in a single trailing
+`*`, so `publishes = ["metrics.*"]` permits `metrics.cpu`.
+
+Some topics are protocol rather than topology, and are always allowed on the
+operation they belong to, for every client:
+
+| Topic | Operation |
+|-------|-----------|
+| `system.request.subscriptions` | publish |
+| `system.request.topology` | publish |
+| `system.response.subscriptions` | subscribe |
+| `system.response.topology` | subscribe |
+| `system.shutdown` | subscribe |
+
+Every SDK publishes the requests and subscribes to the responses on your
+primitive's behalf, before your code runs, and `system.shutdown` is how a
+primitive learns to stop. Holding a primitive to its TOML on those would refuse
+every primitive at startup. The engine's own `system.*` lifecycle events are
+produced by the engine, not by a primitive, and are never checked.
+
+**Which name a check is made against.** A message carries a `source` field, and
+that is the name the engine checks it under. The client writes that field
+itself, so a check catches every honest mistake, which is what a drifted
+declaration is, and catches no lie at all. The engine says so at startup
+whenever enforcement is on:
+
+```
+WARN Declarations are checked against self-reported names: publishes are held
+     to the source on the message, subscribes are not checked
+```
+
+Three consequences follow, and all three are worth knowing before you rely on
+`"strict"`:
+
+- A client can publish under any configured primitive's name, and the engine
+  will hold it to that primitive's declarations rather than refuse it.
+- A refusal is attributed to the name on the message, so `system.error.<name>`
+  can name a primitive that did nothing wrong. The WARN line beside it carries
+  the peer pid and `identity.trusted=false`, which is the tell.
+- A subscribe frame carries no `source` at all, so there is no name to check a
+  subscription under and subscriptions go through unchecked. Refusing them
+  instead would stop every handler and sink at startup.
+
+Binding a connection to the primitive that opened it, which closes all three, is
+tracked separately (Govcraft/emergent#24). Enforcement is written against that
+binding already: when it lands, the checks above start using the engine's own
+answer instead of the client's, and subscriptions start being checked, without
+a configuration change.
+
+**What enforcement is for.** It keeps the TOML an accurate description of the
+system: a topic the code uses but the declaration never mentioned is named in a
+log line, and in `"strict"` it stops working, which is what makes anyone fix it.
+It is not an authentication boundary and does not try to be one. A client the
+engine did not spawn is admitted, and under `"strict"` it is held to the same
+declarations as anything else claiming that name; claiming no name at all leaves
+it only the protocol questions, which is enough for a CLI or a topology viewer.
+
+Treat access to the Unix socket as the outer trust boundary. Enforcement is what
+keeps a topology honest inside it.
+
+**The rejection a client sees.** In `"strict"` mode the refusal carries the
+engine's own sentence:
+
+```
+publish_ack ERR   'proof' tried to publish 'proof.undeclared', which is not in its declared publishes list
+```
+
+A subscribe request, once it is checked, is applied all or nothing, so a batch
+containing one undeclared topic is refused whole and the denial names that
+topic.
+
+The same sentence is in the engine log and in the `system.error.<name>` payload:
+
+```json
+{"primitive":"proof","operation":"publish","message_type":"proof.undeclared",
+ "reason":"'proof' tried to publish 'proof.undeclared', which is not in its declared publishes list",
+ "mode":"strict"}
+```
+
+A sink already subscribed to `system.error.*` sees rejections without
+subscribing to anything new. A rejection on a message that named no source has
+no primitive to attribute an event to, so it stays in the log, where the peer
+pid is.
 
 **Publish rate limit:** the same acton-reactive layer also rate limits each IPC
 connection to 100 messages per second with a burst of 50, and there is no

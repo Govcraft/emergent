@@ -117,6 +117,50 @@ subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ti
 | `max_connections` | Integer | unset | After 0.10.10. Maximum concurrent IPC connections. Unset keeps what acton-reactive resolves, from `$XDG_CONFIG_HOME/acton/ipc.toml` or its own default. Setting it overrides both |
 | `shutdown_drain_ms` | Integer | `500` | After 0.10.10. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
 | `shutdown_grace_ms` | Integer | `2000` | After 0.10.10. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
+| `enforce_declarations` | String | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it: `"off"`, `"warn"` or `"strict"` |
+
+A primitive's `publishes` and `subscribes` lists were advisory up to engine
+0.10.10: the broker stored and forwarded whatever a client sent, and the IPC
+listener applied whatever subscription a client asked for. After 0.10.10,
+`enforce_declarations` decides whether they bind. `"warn"` logs an operation
+outside the declarations at WARN, naming the primitive, the operation and the
+message type, and lets it through. `"strict"` also refuses it: a publish is
+neither stored nor forwarded and `publish_ack` fails, a subscribe is not
+applied, the client gets an `ACCESS_DENIED` error carrying the engine's own
+sentence, and the engine emits `system.error.<name>` with the same reason.
+Matching uses the same rule as subscriptions, an exact type or a single trailing
+`*`. A subscribe batch is applied all or nothing, so one undeclared topic
+refuses the batch and the denial names it.
+
+Protocol topics are always allowed, on the operation they belong to: publishing
+`system.request.subscriptions` or `system.request.topology`, and subscribing to
+`system.response.subscriptions`, `system.response.topology` or
+`system.shutdown`. Every SDK does all five on the primitive's behalf before its
+code runs, so enforcing declarations over them would refuse every primitive at
+startup. The engine's own `system.*` lifecycle events never go through the
+check.
+
+The default is `"off"` because enforcement can stop messages a working topology
+depends on. The shipped example configs are clean under `"strict"`, but an
+`exec` handler configured the way its documented example is written violates on
+every failure, because its `--error-as` topic (default `exec.error`) is not in
+`publishes`. Run `"warn"`, fix what it names, then go `"strict"`.
+
+Be precise about the guarantee. The name a check is made under is the `source`
+field on the message, which the client writes itself, so a check catches every
+honest mistake and no lie. The engine says so at startup whenever enforcement is
+on. Three things follow: a client can publish under any configured primitive's
+name and be held to that primitive's declarations rather than refused; a refusal
+is attributed to the name on the message, so `system.error.<name>` can name a
+primitive that did nothing wrong, with the peer pid and `identity.trusted=false`
+on the WARN line beside it as the tell; and a subscribe frame carries no
+`source`, so subscriptions are not checked at all, because refusing them for
+want of a name would stop every handler and sink at startup. Binding a
+connection to the primitive that opened it closes all three and is tracked
+separately (Govcraft/emergent#24); enforcement is already written against that
+binding, so it starts using it with no configuration change. Access to the Unix
+socket is the outer trust boundary, and enforcement is what keeps a topology
+honest inside it.
 
 Every enabled primitive holds one IPC connection for the life of its process,
 so the connection ceiling is a hard cap on topology size. On engine 0.10.10 and

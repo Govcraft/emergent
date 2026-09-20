@@ -434,13 +434,21 @@ timeout, a lost connection, a cancelled context. After SDK release 0.13.1 they
 carry it in an `Err` field with `Unwrap`, so `errors.As(err, &timeoutErr)` and
 `errors.Is(err, context.Canceled)` work, and `Err` is nil for a rejection. On
 0.13.1 and earlier the cause was flattened into `Msg` and could not be reached
-(Govcraft/emergent#73).
+(Govcraft/emergent#73). `*ConnectionError` has the same `Err` and `Unwrap`, set
+for a refused dial and a failed write and nil for "not connected" and
+"connection closed", so `errors.Is(err, syscall.ECONNREFUSED)` works
+(Govcraft/emergent#78).
 
 A socket that refuses a write is not a rejection either. After SDK release
 0.13.1 a failed TypeScript `publish()` throws a `PublishError` whose `cause` is
 the `Deno.errors.*` error, where 0.13.1 and earlier threw that error itself
-(Govcraft/emergent#75). Go reports it as a `*PublishError` wrapping the `net`
-error.
+(Govcraft/emergent#75). Python follows the same contract after 0.13.1: a refused
+`publish()` or `publish_ack()` raises `PublishError`, a refused `subscribe()`,
+`discover()` or other request raises `ConnectionError`, and the built-in
+`ConnectionResetError` or `BrokenPipeError` is its `__cause__`. On 0.13.1 and
+earlier Python raised the built-in error itself, which no `except
+EmergentError` catches (Govcraft/emergent#77). Go reports it as a
+`*PublishError` wrapping the `net` error.
 
 Rust's `ClientError` also has `IoError`, `IpcError`, `ProtocolError` and
 `EngineError`. The SDK returns none of them. The first two have `From`

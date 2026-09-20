@@ -12,12 +12,18 @@ type EmergentError interface {
 }
 
 // ConnectionError indicates a failure to connect to the engine.
+//
+// Err is the error underneath, such as the net error from a refused dial or a
+// failed write, so errors.As and errors.Is reach it. It is nil when there is
+// none, as in "not connected" and "connection closed".
 type ConnectionError struct {
 	Msg string
+	Err error
 }
 
 func (e *ConnectionError) Error() string { return fmt.Sprintf("connection failed: %s", e.Msg) }
 func (e *ConnectionError) Code() string  { return "CONNECTION_FAILED" }
+func (e *ConnectionError) Unwrap() error { return e.Err }
 
 // SocketNotFoundError indicates the engine socket file was not found.
 type SocketNotFoundError struct {

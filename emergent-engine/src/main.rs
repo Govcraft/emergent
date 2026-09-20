@@ -7,7 +7,7 @@
 //! - Manages Source, Handler, and Sink processes via actors
 //! - Handles graceful shutdown
 
-use acton_reactive::ipc::{IpcConfig, IpcPushNotification};
+use acton_reactive::ipc::{IpcConfig, IpcPushNotification, SubscriptionManager};
 use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get};
@@ -98,7 +98,10 @@ enum Command {
 }
 
 use emergent_engine::config::EmergentConfig;
+use emergent_engine::declarations::{RejectionReport, rejection_event_type};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
+use emergent_engine::ipc_identity::StubResolver;
+use emergent_engine::ipc_policy::{EnginePolicy, policy_is_needed};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::{ProcessManager, ShutdownTimings, StartupReadiness};
@@ -196,6 +199,45 @@ impl EventStoreWrapper {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Store and forward the `system.error.<name>` event a strict rejection owes.
+///
+/// Dispatched straight to the subscription manager rather than broadcast
+/// through the broker, because the broker is what just refused a message:
+/// sending the report back through it would put the report on the path being
+/// reported on. The event is the engine's own, with the engine as its source,
+/// so the publish check never sees it and a rejection cannot cascade.
+fn report_rejection(
+    event_store: &EventStoreWrapper,
+    sub_mgr: &SubscriptionManager,
+    report: &RejectionReport,
+) {
+    let event_type = rejection_event_type(&report.primitive);
+    let message = match EmergentMessage::try_new(&event_type) {
+        Ok(message) => message
+            .with_source("emergent-engine")
+            .with_payload(serde_json::to_value(report).unwrap_or_default()),
+        Err(e) => {
+            warn!(
+                primitive = %report.primitive,
+                error = %e,
+                "Rejection could not be reported: the primitive name does not form a message type"
+            );
+            return;
+        }
+    };
+
+    if let Err(e) = event_store.store(&message) {
+        error!("Failed to store rejection event: {}", e);
+    }
+
+    let notification = IpcPushNotification::new(
+        message.message_type.to_string(),
+        Some(message.source.to_string()),
+        serde_json::to_value(&message).unwrap_or_default(),
+    );
+    sub_mgr.forward_to_subscribers(&notification);
+}
 
 /// Initialize the event stores based on configuration.
 fn init_event_stores(config: &EmergentConfig) -> Result<EventStoreWrapper> {
@@ -542,14 +584,68 @@ async fn main() -> Result<()> {
     registry.register::<IpcSystemEvent>("SystemEvent");
     info!("Registered {} IPC message type(s)", registry.len());
 
-    // Start the IPC listener first to get the subscription manager
-    let listener_handle = runtime
-        .start_ipc_listener_with_config(ipc_config)
-        .await
-        .context("Failed to start IPC listener")?;
+    // Build the declaration table before the listener, because the security
+    // policy that enforces it has to be installed as the listener starts.
+    let declarations = Arc::new(config.declaration_table());
+    if declarations.mode().is_enforcing() {
+        info!(
+            "Declaration enforcement: {} ({} primitive(s) declared)",
+            declarations.mode(),
+            declarations.len()
+        );
+        // The stub resolver below names nobody, so a publish is checked
+        // against the source the client writes itself and a subscribe cannot
+        // be checked at all. Saying it here is the difference between an
+        // operator who knows what the mode is worth and one who does not.
+        warn!(
+            "Declarations are checked against self-reported names: \
+             publishes are held to the source on the message, subscribes are not checked"
+        );
+    }
+
+    // Rejections are reported from a task of their own. `authorize` runs on
+    // acton's connection task and must not block, and the subscription manager
+    // it would need does not exist until the listener below has started, so the
+    // policy only hands the report over and returns.
+    let (rejections_tx, mut rejections_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Start the IPC listener first to get the subscription manager.
+    //
+    // The resolver is the stub one: until issue #24 lands, every peer is
+    // Unmanaged and enforcement falls back to the `source` a client writes
+    // itself. Swapping the stub for a real resolver is the whole of that
+    // change here.
+    let listener_handle = if policy_is_needed(declarations.mode(), false) {
+        let policy = Arc::new(
+            EnginePolicy::new(declarations.clone(), Arc::new(StubResolver), None)
+                .reporting_to(rejections_tx),
+        );
+        runtime
+            .start_ipc_listener_with_policy(ipc_config, policy)
+            .await
+    } else {
+        runtime.start_ipc_listener_with_config(ipc_config).await
+    }
+    .context("Failed to start IPC listener")?;
 
     // Get subscription manager for message routing to IPC clients
     let subscription_manager = listener_handle.subscription_manager();
+
+    // Drain the rejection reports the policy produced into the event store and
+    // out to subscribers. The task ends when the policy is dropped.
+    {
+        let event_store_for_rejections = event_store.clone();
+        let sub_mgr_for_rejections = subscription_manager.clone();
+        tokio::spawn(async move {
+            while let Some(report) = rejections_rx.recv().await {
+                report_rejection(
+                    &event_store_for_rejections,
+                    &sub_mgr_for_rejections,
+                    &report,
+                );
+            }
+        });
+    }
 
     // Create the message broker actor that:
     // 1. Logs events to the event store
@@ -567,15 +663,13 @@ async fn main() -> Result<()> {
     let sub_mgr_for_emergent = sub_mgr_clone.clone();
     let pm_for_subscriptions = process_manager.clone();
     let pm_for_topology = process_manager.clone();
-    let pm_for_contact = process_manager.clone();
     broker_actor.mutate_on::<IpcEmergentMessage>(move |actor, envelope| {
         let msg = envelope.message();
         actor.model.message_count += 1;
 
-        // Every message names the primitive it came from, which is the only
-        // readiness signal startup can attribute to a name. See
-        // emergent_engine::readiness.
-        pm_for_contact.note_primitive_contact(msg.inner.source.as_str());
+        // A publish that broke its declarations never reaches here: the
+        // security policy refuses the IPC request before acton routes it, so a
+        // strict rejection leaves no trace in the store or the subscribers.
 
         // Log to event store
         if let Err(e) = event_store_for_emergent.store(&msg.inner) {

@@ -926,11 +926,11 @@ export class BaseClient {
       timestampMs: Date.now(),
       payload: { name: this.name },
     };
-    const requestMessage = new EmergentMessage(requestData);
-    await this.publishInternal(requestMessage);
-
-    // Wait for response
-    const result = await resultPromise;
+    const result = await this.#publishQuery(
+      this.#pendingSubscriptionsRequests,
+      new EmergentMessage(requestData),
+      resultPromise,
+    );
     this.#logger.info("received configured subscriptions", { types: result });
     return result;
   }
@@ -993,11 +993,11 @@ export class BaseClient {
       timestampMs: Date.now(),
       payload: {},
     };
-    const requestMessage = new EmergentMessage(requestData);
-    await this.publishInternal(requestMessage);
-
-    // Wait for response
-    const result = await resultPromise;
+    const result = await this.#publishQuery(
+      this.#pendingTopologyRequests,
+      new EmergentMessage(requestData),
+      resultPromise,
+    );
     this.#logger.debug("received topology", {
       primitiveCount: result.primitives.length,
     });
@@ -1296,6 +1296,26 @@ export class BaseClient {
         this.#logger.warn("dropping malformed response frame");
         break;
     }
+  }
+
+  /**
+   * Publish a pub/sub query's request and wait for its answer.
+   *
+   * A refused publish takes the pending entry and its timer with it. Left
+   * armed, the timer would reject a promise nobody holds.
+   */
+  async #publishQuery<T>(
+    requests: Map<string, PendingPubSubRequest<T>>,
+    request: EmergentMessage,
+    answer: Promise<T>,
+  ): Promise<T> {
+    try {
+      await this.publishInternal(request);
+    } catch (error) {
+      this.#takePending(requests, request.correlationId);
+      throw error;
+    }
+    return await answer;
   }
 
   /** Remove and return the pub/sub request waiting on a correlation id. */

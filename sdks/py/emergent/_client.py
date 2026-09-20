@@ -14,7 +14,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -34,6 +34,8 @@ from .errors import (
     ConnectionError,
     DiscoveryError,
     DisposedError,
+    EmergentError,
+    PublishError,
     SocketNotFoundError,
     SubscriptionError,
     TimeoutError,
@@ -246,6 +248,19 @@ def discovery_info_from_response(response: IpcResponse) -> DiscoveryInfo:
     )
 
 
+def write_failure(cause: OSError, publishing: str | None) -> EmergentError:
+    """Name a socket write the operating system refused.
+
+    ``publishing`` is the message type when the write carried a publish, and
+    ``None`` for every other request. A refused publish is a ``PublishError``
+    and a refused request a ``ConnectionError``. The caller raises the result
+    ``from cause``, so the OS error stays reachable as ``__cause__``.
+    """
+    if publishing is not None:
+        return PublishError(f"Failed to publish: {cause}", message_type=publishing)
+    return ConnectionError(f"Failed to send: {cause}")
+
+
 def parse_unwrap_flag(value: str | None) -> bool:
     """Decide whether ``EMERGENT_UNWRAP_STDOUT`` switches stdout unwrapping on.
 
@@ -315,6 +330,24 @@ class PendingSubscriptionsRequest:
 
     future: asyncio.Future[list[str]]
     timer: asyncio.TimerHandle | None = None
+
+
+class TimedPending(Protocol):
+    """A pending entry that may hold the timer for its timeout."""
+
+    timer: asyncio.TimerHandle | None
+
+
+def discard_pending[P: TimedPending](pending: dict[str, P], correlation_id: str) -> None:
+    """
+    Remove a pending entry and cancel its timer.
+
+    For the caller that gives up on a request, whatever the reason. An entry
+    already settled or timed out is gone, and that is not an error.
+    """
+    entry = pending.pop(correlation_id, None)
+    if entry is not None and entry.timer is not None:
+        entry.timer.cancel()
 
 
 @dataclass
@@ -610,9 +643,9 @@ class BaseClient:
         try:
             self._writer.write(frame)  # type: ignore[union-attr]
             await self._writer.drain()  # type: ignore[union-attr]
-        except Exception as e:
+        except OSError as e:
             logger.error("failed to publish message primitive=%s error=%s", self.name, e)
-            raise
+            raise write_failure(e, wire_dict.get("message_type", "")) from e
 
         logger.debug(
             "published message primitive=%s message_type=%s message_id=%s",
@@ -657,11 +690,10 @@ class BaseClient:
             MessageType.REQUEST,
             envelope.model_dump(),
             correlation_id,
+            publishing=wire_dict.get("message_type", ""),
         )
 
         if not response.success:
-            from .errors import PublishError
-
             raise PublishError(
                 response.error or "Broker returned error",
                 message_type=wire_dict.get("message_type", ""),
@@ -776,10 +808,12 @@ class BaseClient:
             timestamp_ms=int(time.time() * 1000),
             payload={"name": self.name},
         )
-        await self._publish(request)
-
-        # Wait for response
-        result = await future
+        try:
+            await self._publish(request)
+            result = await future
+        finally:
+            # Settled, timed out, refused or cancelled: nothing stays behind.
+            discard_pending(self._pending_subscriptions_requests, correlation_id)
         logger.info(
             "received configured subscriptions primitive=%s types=%s",
             self.name,
@@ -847,10 +881,12 @@ class BaseClient:
             timestamp_ms=int(time.time() * 1000),
             payload={},
         )
-        await self._publish(request)
-
-        # Wait for response
-        result = await future
+        try:
+            await self._publish(request)
+            result = await future
+        finally:
+            # Settled, timed out, refused or cancelled: nothing stays behind.
+            discard_pending(self._pending_topology_requests, correlation_id)
         logger.debug(
             "received topology primitive=%s primitive_count=%d",
             self.name,
@@ -941,6 +977,7 @@ class BaseClient:
         msg_type: MessageType,
         payload: dict[str, Any],
         correlation_id: str,
+        publishing: str | None = None,
     ) -> IpcResponse:
         """
         Send a request and wait for response with timeout.
@@ -949,13 +986,15 @@ class BaseClient:
             msg_type: The message type
             payload: The payload to send
             correlation_id: The correlation ID for response matching
+            publishing: The message type when the request carries a publish
 
         Returns:
             The response from the server
 
         Raises:
             TimeoutError: If the request times out
-            ConnectionError: If sending fails
+            ConnectionError: If the socket refuses the write
+            PublishError: If the socket refuses the write and ``publishing`` is set
         """
         loop = asyncio.get_event_loop()
         future: asyncio.Future[IpcResponse] = loop.create_future()
@@ -970,8 +1009,12 @@ class BaseClient:
 
         try:
             frame = encode_frame(msg_type, payload, self.format)
-            self._writer.write(frame)  # type: ignore[union-attr]
-            await self._writer.drain()  # type: ignore[union-attr]
+            try:
+                self._writer.write(frame)  # type: ignore[union-attr]
+                await self._writer.drain()  # type: ignore[union-attr]
+            except OSError as e:
+                logger.error("failed to send request primitive=%s error=%s", self.name, e)
+                raise write_failure(e, publishing) from e
             return await future
         except Exception:
             self._pending_requests.pop(correlation_id, None)

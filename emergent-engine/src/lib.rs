@@ -21,8 +21,11 @@
 //! ```
 
 pub mod config;
+pub mod declarations;
 pub mod event_store;
 pub mod init;
+pub mod ipc_identity;
+pub mod ipc_policy;
 pub mod lifecycle;
 pub mod marketplace;
 pub mod messages;
@@ -38,6 +41,11 @@ pub mod topology;
 pub mod update;
 
 pub use config::EmergentConfig;
+pub use declarations::{
+    DeclarationTable, Declarations, Enforcement, EnforcementMode, Operation, Verdict,
+};
+pub use ipc_identity::{ConnectionIdentity, IdentityResolver, StubResolver};
+pub use ipc_policy::{EnginePolicy, PolicyObserver, policy_is_needed};
 pub use lifecycle::{LifecycleEvent, PrimitiveStatus, next_status};
 pub use messages::EmergentMessage;
 pub use primitive_actor::{
