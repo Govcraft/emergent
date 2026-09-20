@@ -2,6 +2,12 @@
 
 Install with `emergent marketplace install <name>...` (accepts multiple names;
 so does `remove`). Everything lands in `~/.local/share/emergent/primitives/bin/`.
+After engine 0.10.10 the catalog is fetched over HTTPS from the
+emergent-primitives release and cached, so `list` and `info` answer offline and
+git is not needed; `--version X.Y.Z` installs from that release, reading its
+manifest and its checksums. On 0.10.10 and earlier the engine cloned the
+emergent-registry repository with git, and a pinned install asked the old
+release for a filename only the current one has.
 
 These primitives exist so that most topologies need no custom code at all. Before
 writing a primitive with an SDK, check whether a composition of these expresses
