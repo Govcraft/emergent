@@ -19,6 +19,10 @@ func ConnectSink(name string, opts *ConnectOptions) (*EmergentSink, error) {
 
 // Subscribe subscribes to the given message types and returns a MessageStream.
 // The SDK automatically subscribes to system.shutdown and handles it internally.
+//
+// A client has one live stream, so pass every topic to one call. A second call
+// closes the earlier stream and returns a new one. The engine keeps the earlier
+// subscriptions, so the new stream receives the earlier topics too.
 func (s *EmergentSink) Subscribe(ctx context.Context, messageTypes []string) (*MessageStream, error) {
 	return s.subscribeInternal(ctx, messageTypes)
 }

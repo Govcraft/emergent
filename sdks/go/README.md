@@ -167,6 +167,15 @@ msg := stream.Next()     // blocks, returns nil on close
 msg := stream.TryNext()  // non-blocking, returns nil if empty
 ```
 
+A client has one live stream, so call `Subscribe` once with every topic. After
+SDK release 0.13.1 a second `Subscribe` on the same client closes the earlier
+stream, so a range over its channel stops, and returns a new one. The engine
+keeps the earlier subscriptions, so the new stream receives the earlier topics
+as well as the new ones. The earlier stream closes when the second call starts,
+even if that call then fails. On 0.13.1 and earlier the earlier stream was left
+open and unfed, and nothing ever closed it, not even `Close()`. To read two sets
+of topics apart from each other, connect two clients.
+
 ### Typed payloads
 
 `PayloadAs` unmarshals the payload into any Go struct via JSON:
