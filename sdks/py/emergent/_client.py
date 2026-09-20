@@ -14,7 +14,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
@@ -58,6 +58,9 @@ from .types import (
     TopologyState,
     WireMessage,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger("emergent")
 
@@ -390,6 +393,8 @@ class BaseClient:
     _subscribed_types: set[str] = field(default_factory=set, init=False, repr=False)
     _read_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _disposed: bool = field(default=False, init=False, repr=False)
+    _connection_lost: bool = field(default=False, init=False, repr=False)
+    _on_connection_lost: Callable[[], None] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Read env-based configuration once at construction time."""
@@ -976,6 +981,29 @@ class BaseClient:
                     pending.future.set_exception(ConnectionError("Connection closed"))
             pending_map.clear()
 
+    def _engine_closed_the_connection(self) -> None:
+        """
+        Settle a connection that ended without ``close()`` being called.
+
+        The engine is gone, so nothing in flight can be answered. Whoever asked
+        to be told is told after that, once.
+        """
+        self._fail_everything_pending()
+        self._connection_lost = True
+        if self._on_connection_lost is not None:
+            self._on_connection_lost()
+
+    def _when_connection_lost(self, callback: Callable[[], None]) -> None:
+        """
+        Call ``callback`` when the engine closes the connection.
+
+        A connection that is already lost calls it at once. ``close()`` never
+        calls it. There is one callback, and a second call replaces the first.
+        """
+        self._on_connection_lost = callback
+        if self._connection_lost:
+            callback()
+
     async def disconnect(self) -> None:
         """
         Async close with graceful cleanup.
@@ -1059,8 +1087,7 @@ class BaseClient:
         except Exception as e:
             logger.error("read loop error primitive=%s error=%s", self.name, e)
 
-        # The engine is gone, so nothing in flight can be answered.
-        self._fail_everything_pending()
+        self._engine_closed_the_connection()
 
     def _process_frames(self) -> None:
         """Process complete frames from read buffer."""

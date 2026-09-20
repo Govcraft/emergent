@@ -108,12 +108,14 @@ async def run_source(
     - Resolves the name from the provided option, `EMERGENT_NAME` env var, or default
     - Connects to the Emergent engine
     - Sets up SIGTERM/SIGINT signal handling for graceful shutdown
+    - Sets the same shutdown event when the engine closes the connection
     - Calls your function with the connected source and a shutdown event
     - Gracefully disconnects after your function completes
 
     Your function receives:
     - `source: EmergentSource` - The connected source for publishing messages
-    - `shutdown_event: asyncio.Event` - An event that is set when shutdown is requested
+    - `shutdown_event: asyncio.Event` - An event that is set when shutdown is requested,
+      or when the engine closes the connection
 
     Args:
         name: Optional name for this source. Falls back to `EMERGENT_NAME` env var,
@@ -159,6 +161,10 @@ async def run_source(
     # Register signal handlers
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, signal_handler)
+
+    # A Source has no subscription stream to end, so a lost connection is
+    # the only notice an engine that was killed ever gives it.
+    source._when_connection_lost(shutdown_event.set)
 
     try:
         await run_fn(source, shutdown_event)
