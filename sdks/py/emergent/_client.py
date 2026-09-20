@@ -914,11 +914,6 @@ class BaseClient:
             self._read_task.cancel()
             self._read_task = None
 
-        # Close message stream
-        if self._message_stream is not None:
-            self._message_stream.close()
-            self._message_stream = None
-
         # Close connection
         if self._writer is not None:
             with contextlib.suppress(Exception):
@@ -926,35 +921,39 @@ class BaseClient:
             self._writer = None
             self._reader = None
 
-        # Cancel pending requests
-        for pending in self._pending_requests.values():
-            if pending.timer is not None:
-                pending.timer.cancel()
-            if not pending.future.done():
-                pending.future.set_exception(ConnectionError("Connection closed"))
-        self._pending_requests.clear()
-
-        # Cancel pending topology requests
-        for topology_pending in self._pending_topology_requests.values():
-            if topology_pending.timer is not None:
-                topology_pending.timer.cancel()
-            if not topology_pending.future.done():
-                topology_pending.future.set_exception(ConnectionError("Connection closed"))
-        self._pending_topology_requests.clear()
-
-        # Cancel pending subscriptions requests
-        for subscriptions_pending in self._pending_subscriptions_requests.values():
-            if subscriptions_pending.timer is not None:
-                subscriptions_pending.timer.cancel()
-            if not subscriptions_pending.future.done():
-                subscriptions_pending.future.set_exception(ConnectionError("Connection closed"))
-        self._pending_subscriptions_requests.clear()
+        self._fail_everything_pending()
 
         self._subscribed_types.clear()
 
         logger.info("disconnected from engine primitive=%s", self.name)
 
         self._disposed = True
+
+    def _fail_everything_pending(self) -> None:
+        """
+        End the message stream and fail every request still in flight.
+
+        For a connection that is gone, whether the caller closed it or the
+        engine did. Nothing pending can be answered any more, so each request
+        and query fails with a ConnectionError now and does not wait out its
+        timer, and an ``async for`` over the stream stops.
+        """
+        if self._message_stream is not None:
+            self._message_stream.close()
+            self._message_stream = None
+
+        in_flight: list[dict[str, Any]] = [
+            self._pending_requests,
+            self._pending_topology_requests,
+            self._pending_subscriptions_requests,
+        ]
+        for pending_map in in_flight:
+            for pending in pending_map.values():
+                if pending.timer is not None:
+                    pending.timer.cancel()
+                if not pending.future.done():
+                    pending.future.set_exception(ConnectionError("Connection closed"))
+            pending_map.clear()
 
     async def disconnect(self) -> None:
         """
@@ -1034,11 +1033,13 @@ class BaseClient:
                 self._read_buffer.extend(data)
                 self._process_frames()
         except asyncio.CancelledError:
-            pass
+            # close() cancelled the loop and settles everything itself.
+            return
         except Exception as e:
             logger.error("read loop error primitive=%s error=%s", self.name, e)
-            if self._message_stream is not None:
-                self._message_stream.close_with_error()
+
+        # The engine is gone, so nothing in flight can be answered.
+        self._fail_everything_pending()
 
     def _process_frames(self) -> None:
         """Process complete frames from read buffer."""
