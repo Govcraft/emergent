@@ -531,7 +531,7 @@ uses `write_all`.
 
 ```toml
 [dependencies]
-emergent-client = "0.13"  # Use latest version from crates.io
+emergent-client = "0.14"  # Use latest version from crates.io
 tokio = { version = "1", features = ["full", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

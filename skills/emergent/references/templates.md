@@ -359,7 +359,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-emergent-client = "0.13"  # Use latest from crates.io
+emergent-client = "0.14"  # Use latest from crates.io
 tokio = { version = "1", features = ["full", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
