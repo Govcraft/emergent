@@ -14,7 +14,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -330,6 +330,24 @@ class PendingSubscriptionsRequest:
 
     future: asyncio.Future[list[str]]
     timer: asyncio.TimerHandle | None = None
+
+
+class TimedPending(Protocol):
+    """A pending entry that may hold the timer for its timeout."""
+
+    timer: asyncio.TimerHandle | None
+
+
+def discard_pending[P: TimedPending](pending: dict[str, P], correlation_id: str) -> None:
+    """
+    Remove a pending entry and cancel its timer.
+
+    For the caller that gives up on a request, whatever the reason. An entry
+    already settled or timed out is gone, and that is not an error.
+    """
+    entry = pending.pop(correlation_id, None)
+    if entry is not None and entry.timer is not None:
+        entry.timer.cancel()
 
 
 @dataclass
@@ -790,10 +808,12 @@ class BaseClient:
             timestamp_ms=int(time.time() * 1000),
             payload={"name": self.name},
         )
-        await self._publish(request)
-
-        # Wait for response
-        result = await future
+        try:
+            await self._publish(request)
+            result = await future
+        finally:
+            # Settled, timed out, refused or cancelled: nothing stays behind.
+            discard_pending(self._pending_subscriptions_requests, correlation_id)
         logger.info(
             "received configured subscriptions primitive=%s types=%s",
             self.name,
@@ -861,10 +881,12 @@ class BaseClient:
             timestamp_ms=int(time.time() * 1000),
             payload={},
         )
-        await self._publish(request)
-
-        # Wait for response
-        result = await future
+        try:
+            await self._publish(request)
+            result = await future
+        finally:
+            # Settled, timed out, refused or cancelled: nothing stays behind.
+            discard_pending(self._pending_topology_requests, correlation_id)
         logger.debug(
             "received topology primitive=%s primitive_count=%d",
             self.name,
