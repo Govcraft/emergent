@@ -111,15 +111,30 @@ a short prefix scan for the topic, off a table built once from config.
 `ipc_identity.rs` holds `ConnectionIdentity` and the resolver `admit` asks who a
 peer is.
 
-The resolver that ships today names nobody: every connection is `Unmanaged`, so
-the name a check is made under is the `source` the client wrote, and the engine
-warns at startup that this is so. That catches every honest mistake and no lie,
-it lets a refusal be attributed to a primitive that did nothing wrong, and it
-leaves subscriptions unchecked, because a subscribe frame carries no `source` at
-all and refusing on that basis would stop every handler and sink at startup.
-Resolving a peer to the primitive that spawned it, which closes all three, is
-Govcraft/emergent#24; the split is what lets it land as a replacement of
-`ipc_identity.rs` alone.
+The resolver names a connection from process ancestry (Govcraft/emergent#24).
+acton reports the peer's pid at admission; the resolver walks it upward,
+bounded at 16 generations, until it reaches a process the engine spawned, and
+the primitive that child belongs to is the connection's identity for its whole
+life. A primitive launched directly matches on its own pid; one behind a forking
+wrapper such as `uv run` or `sh -c` matches a step or two up. Because the name
+comes from the connection rather than the frame, subscriptions are checked too,
+a publish whose `source` names a different primitive is itself a violation, and
+a connection the engine could not tie to a primitive gets the protocol topics
+and nothing else. A pid is a primitive only while the engine holds that child as
+live, so a recycled pid cannot inherit a dead primitive's name, and when a child
+exits every connection admitted under its name is revoked through
+`IpcListenerHandle::revoke_connection`, which is what ends a descendant that
+outlived its wrapper. The walk reads `/proc`; where that is unavailable a
+connection the engine cannot name falls back to the `source` on the message and
+the engine says so at startup.
+
+`[engine].authenticate_connections` (`"off"`, `"warn"`, `"strict"`, default
+`"off"`) governs only the peer the engine did not spawn. Resolution itself runs
+in every mode, because enforcement and startup readiness both need the name.
+`"strict"` admits a same-uid peer, since the CLI, the topology viewer and a
+hand-run primitive look exactly like an impostor at admission and refusing them
+would buy nothing, and refuses another uid, which the `0660` socket would
+otherwise let in.
 
 **That one connection is also rate limited: 100 messages per second, burst 50.**
 acton-reactive applies a token bucket per connection, with those defaults, so

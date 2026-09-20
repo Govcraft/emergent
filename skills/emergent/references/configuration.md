@@ -118,6 +118,7 @@ subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ti
 | `shutdown_drain_ms` | Integer | `500` | After 0.10.10. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
 | `shutdown_grace_ms` | Integer | `2000` | After 0.10.10. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
 | `enforce_declarations` | String | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it: `"off"`, `"warn"` or `"strict"` |
+| `authenticate_connections` | String | `"off"` | After 0.10.10. What becomes of an IPC connection from a process the engine did not spawn: `"off"` admits it, `"warn"` admits it with a WARN, `"strict"` admits it only if it runs as the same user |
 
 A primitive's `publishes` and `subscribes` lists were advisory up to engine
 0.10.10: the broker stored and forwarded whatever a client sent, and the IPC
@@ -146,21 +147,36 @@ depends on. The shipped example configs are clean under `"strict"`, but an
 every failure, because its `--error-as` topic (default `exec.error`) is not in
 `publishes`. Run `"warn"`, fix what it names, then go `"strict"`.
 
-Be precise about the guarantee. The name a check is made under is the `source`
-field on the message, which the client writes itself, so a check catches every
-honest mistake and no lie. The engine says so at startup whenever enforcement is
-on. Three things follow: a client can publish under any configured primitive's
-name and be held to that primitive's declarations rather than refused; a refusal
-is attributed to the name on the message, so `system.error.<name>` can name a
-primitive that did nothing wrong, with the peer pid and `identity.trusted=false`
-on the WARN line beside it as the tell; and a subscribe frame carries no
-`source`, so subscriptions are not checked at all, because refusing them for
-want of a name would stop every handler and sink at startup. Binding a
-connection to the primitive that opened it closes all three and is tracked
-separately (Govcraft/emergent#24); enforcement is already written against that
-binding, so it starts using it with no configuration change. Access to the Unix
-socket is the outer trust boundary, and enforcement is what keeps a topology
-honest inside it.
+Be precise about the guarantee. The name a check is made under is the engine's
+own answer, not the client's. At admission the engine walks the peer's pid up
+its process ancestry until it reaches a live child of its own, so a primitive
+behind `uv run` or `sh -c` is still named by the child the engine spawned, and
+that name holds for the connection's whole life. Three things follow: a publish
+whose `source` names a different primitive than its connection is itself a
+violation, logged in `"warn"` and refused in `"strict"`, and it is attributed to
+the primitive that really sent it; a connection the engine could not tie to a
+primitive may use the protocol topics and nothing else, so it cannot borrow a
+configured name; and subscriptions are checked, because the name comes from the
+connection rather than the frame. On engine 0.10.10 and earlier none of this
+held, and the engine warned at startup that it was checking self-reported names.
+The walk reads `/proc`; where that is unavailable a connection the engine cannot
+name falls back to the `source` on the message, and the engine says so at
+startup instead.
+
+When a child exits, every connection admitted under its name is revoked and its
+socket closed. That is usually a no-op, since a primitive takes its own
+connection down with it, and it matters for the forking wrapper: `sh` or `uv`
+exiting while the process it forked keeps a connection the engine admitted under
+a name it now considers stopped.
+
+`authenticate_connections` decides only what becomes of a peer the engine did
+not spawn; resolution runs in every mode, because enforcement and startup
+readiness both need the name. `"strict"` still admits a same-uid peer, because an
+`emergent` CLI query, the topology viewer and a hand-run primitive are
+indistinguishable from an impostor at admission and refusing them would break all
+three while buying nothing. It refuses another uid, which the `0660` socket would
+otherwise let reach the engine. Access to the Unix socket is the outer trust
+boundary, and enforcement is what keeps a topology honest inside it.
 
 Every enabled primitive holds one IPC connection for the life of its process,
 so the connection ceiling is a hard cap on topology size. On engine 0.10.10 and
