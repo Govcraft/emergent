@@ -107,6 +107,7 @@ so a slow-starting subscriber missed the first events (Govcraft/emergent#66).
 - `lifecycle.rs`: pure state machine mapping a lifecycle event to a primitive's next state, pid and error
 - `readiness.rs` — pure decision for "is this startup tier ready, and who is still missing", plus the policy observer that feeds it
 - `declarations.rs` — pure decisions for declaration enforcement: modes, verdicts, the per-primitive topic table
+- `api_host.rs`: pure decisions for which host the HTTP API answers to, plus the one axum middleware that applies them
 - `ipc_policy.rs`: the `IpcSecurityPolicy` that holds each connection to those decisions
 - `ipc_identity.rs`: `ConnectionIdentity` and the resolver admission asks who a peer is; the resolver that ships names nobody (issue #24)
 - `event_store/` — JSON append-only logs + SQLite structured storage
@@ -159,13 +160,14 @@ and by the SDKs. Overlapping topics deliver one copy per message. Engine
 ### HTTP API
 
 - Axum-based server on configurable port (default: 8891, set `api_port = 0` to disable)
+- After 0.10.10 it answers only to host names that are its own: an IP literal, `localhost`, or a name in `[engine].api_allowed_hosts`; anything else gets `421 Misdirected Request`
 - `GET /api/topology` — returns all primitives with state, publishes, subscribes, PID
 
 ### Configuration
 
 TOML-based configuration in `config/emergent.toml`:
 
-- `[engine]` — `name`, `socket_path` ("auto" for XDG default), `api_port`, `max_connections`
+- `[engine]` — `name`, `socket_path` ("auto" for XDG default), `api_port`, `api_allowed_hosts`, `max_connections`
 - `[event_store]` — `json_log_dir`, `sqlite_path`, `retention_days` (paths support "auto" for XDG data dir)
 - `[[sources]]` — `name`, `path`, `args`, `enabled`, `publishes`, `env`
 - `[[handlers]]` / `[[sinks]]` — `name`, `path`, `args`, `enabled`, `subscribes`, `publishes`, `env`, `unwrap_stdout`
@@ -175,6 +177,8 @@ Path resolution: tilde expansion (`~/bin/app`), bare command lookup via PATH (`p
 Unknown keys: after engine 0.10.10 every config table denies unknown fields, so a typo is a load error that names the key and its table. On 0.10.10 and earlier it was ignored.
 
 Declaration enforcement: `[engine].enforce_declarations` is `"off"`, `"warn"` or `"strict"`, default `"off"`. After engine 0.10.10 it decides whether a primitive's `publishes` list binds it. `"warn"` logs a publish outside the declarations at WARN with the primitive, operation and message type; `"strict"` also refuses it, so the message is neither stored nor forwarded, the client gets an `ACCESS_DENIED` error carrying the engine's sentence, and the engine emits `system.error.<name>` with the reason. Matching is the same exact-or-trailing-wildcard rule as subscriptions. Protocol topics are always allowed on the operation they belong to: publishing `system.request.subscriptions` and `system.request.topology`, subscribing to `system.response.subscriptions`, `system.response.topology` and `system.shutdown`, all of which the SDKs do for you before your code runs. The engine's own `system.*` events arrive as `IpcSystemEvent` and never pass the check. On 0.10.10 and earlier the lists were advisory and nothing was checked. Enforcement runs in an `IpcSecurityPolicy` (acton-reactive 9.4.0), installed only when the mode is `warn` or `strict`, in `emergent-engine/src/ipc_policy.rs`; the decisions are pure functions in `emergent-engine/src/declarations.rs` and the lookup table is built once from config. The name a check is made under comes from the `source` field on the message, which the client writes itself, and the engine warns at startup that this is so: it catches every honest mistake and no lie, a refusal can be attributed to a primitive that did nothing wrong, and subscriptions are not checked at all because a subscribe frame carries no `source` and refusing on that basis would stop every handler and sink at startup. Resolving a connection to the primitive that opened it closes all three and is issue #24, which replaces `emergent-engine/src/ipc_identity.rs` and nothing else.
+
+HTTP API host guard: the API has no authentication and binding `127.0.0.1` does not keep a browser out, because a page can re-resolve its own name to `127.0.0.1` and the browser then treats the API as that page's own origin. Up to engine 0.10.10 `curl -H 'Host: attacker.example' http://127.0.0.1:8891/api/topology` returned every primitive's name, kind, state, pid and topics. After 0.10.10 the API answers only when every host the request names is an IP literal, `localhost`, or a name in `[engine].api_allowed_hosts`, and returns `421 Misdirected Request` with a body naming that key otherwise. The port is never compared, so a port forward or a container opened as `localhost` is unaffected. Every `Host` header is checked rather than the first, and the request URI's authority as well, because hyper keeps a duplicate `Host` and an absolute-form request line intact, and `axum::serve` speaks HTTP/2 over cleartext where there is no `Host` header at all. A request naming no host is refused. The decisions are pure functions in `emergent-engine/src/api_host.rs`, whose table mirrors `primitives/sse-sink/host_test.ts` in emergent-primitives row for row so the two implementations cannot drift; `api_allowed_hosts` entries are validated at load, since a value with a scheme, port, path or `*` would be listed and never match.
 
 Connection limit: every enabled primitive holds one IPC connection for the life of its process. The ceiling comes from acton-reactive, resolved from `$XDG_CONFIG_HOME/acton/ipc.toml` (`[limits] max_connections`) or its own default; `[engine].max_connections` overrides both, and leaving the key out keeps whatever acton resolved. After engine 0.10.10 the engine refuses to start when that limit cannot cover every enabled primitive plus `RESERVED_IPC_CONNECTIONS` (4: one for a restart overlap, three for CLI and topology-viewer queries), with an error naming both numbers. On 0.10.10 and earlier there was no check, so an oversized topology started with some primitives silently dropped at the accept semaphore while `/api/topology` still reported them running. The decision lives in `emergent-engine/src/config.rs` as `check_connection_capacity`, a pure function.
 

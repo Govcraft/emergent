@@ -20,6 +20,7 @@
 //!    └─────────┘      └───────────┘      └────────┘
 //! ```
 
+pub mod api_host;
 pub mod config;
 pub mod declarations;
 pub mod event_store;
