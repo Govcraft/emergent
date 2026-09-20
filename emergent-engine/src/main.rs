@@ -699,6 +699,7 @@ async fn main() -> Result<()> {
         if msg.inner.message_type.as_str() == "system.request.subscriptions" {
             let pm = pm_for_subscriptions.clone();
             let inner = msg.inner.clone();
+            let reply_envelope = envelope.reply_envelope();
 
             return Reply::pending(async move {
                 // Extract the name from the payload
@@ -734,6 +735,11 @@ async fn main() -> Result<()> {
                     serde_json::to_value(&response).unwrap_or_default(),
                 );
                 sub_mgr.forward_to_subscribers(&notification);
+
+                // A request is a publish like any other, so it gets the same
+                // acknowledgement. Without it a client that used publish_ack is
+                // told its request failed although the engine just served it.
+                let _ = reply_envelope.reply(PublishAck);
             });
         }
 
@@ -744,6 +750,7 @@ async fn main() -> Result<()> {
         if msg.inner.message_type.as_str() == "system.request.topology" {
             let pm = pm_for_topology.clone();
             let inner = msg.inner.clone();
+            let reply_envelope = envelope.reply_envelope();
 
             return Reply::pending(async move {
                 let payload = build_topology_payload(std::process::id(), pm.list_all().await);
@@ -765,6 +772,11 @@ async fn main() -> Result<()> {
                     serde_json::to_value(&response).unwrap_or_default(),
                 );
                 sub_mgr.forward_to_subscribers(&notification);
+
+                // A request is a publish like any other, so it gets the same
+                // acknowledgement. Without it a client that used publish_ack is
+                // told its request failed although the engine just served it.
+                let _ = reply_envelope.reply(PublishAck);
             });
         }
 
