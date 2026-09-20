@@ -402,7 +402,7 @@ a primitive by hand or wonder where its logs went.
 | `EMERGENT_SOCKET` | all four SDKs | Engine socket path. Rust falls back to the XDG default path when it is unset; Python, TypeScript, and Go fail to connect with an error naming the variable |
 | `EMERGENT_NAME` | the `run_*` helpers in all four SDKs | The primitive's name when the helper is given none (`None`, `undefined`, `""`). The low-level `connect(name)` does not read it |
 | `EMERGENT_LOG` | all four SDKs | `stderr` sends SDK logs to stderr. Otherwise they go to `~/.local/share/emergent/<name>/primitive.log`, which is why a managed primitive looks silent. Any other value is a log level (Rust takes a full tracing filter such as `emergent_client=trace`); TypeScript and Go also accept `off` |
-| `EMERGENT_UNWRAP_STDOUT` | all four SDKs | `true` replaces an exec-source `{command, stdout, exit_code}` payload with its parsed `stdout` before your code sees it. The engine sets it to `true` only when the config has `unwrap_stdout = true`. By hand: all four SDKs take `true` or `1` and treat anything else, including `false`, as off. Python and TypeScript trim the value and ignore case; Rust and Go compare it exactly. On SDK release 0.13.1 and earlier TypeScript needed exactly `true` and Python treated any non-empty value (including `false`) as on |
+| `EMERGENT_UNWRAP_STDOUT` | all four SDKs | `true` replaces an exec-source `{command, stdout, exit_code}` payload with its parsed `stdout` before your code sees it. The engine sets it to `true` only when the config has `unwrap_stdout = true`. By hand: all four SDKs trim the value, ignore letter case, take `true` or `1`, and treat anything else, including `false`, as off. On SDK release 0.13.1 and earlier the SDKs disagreed: Rust and Go needed exactly `true` or `1` (so `TRUE` was off), TypeScript needed exactly `true`, and Python treated any non-empty value (including `false`) as on (Govcraft/emergent#75) |
 
 **Signals differ by SDK.** The Rust `run_*` helpers trap SIGTERM only, so
 Ctrl-C on a hand-run Rust primitive kills it without the graceful disconnect.
@@ -429,6 +429,19 @@ rejection was a plain `ConnectionError` with the code `CONNECTION_FAILED`
 for the specific class first. Python's `PublishError` is not a
 `ConnectionError`.
 
+In Go the same three types also wrap a failure that is not a rejection: a
+timeout, a lost connection, a cancelled context. After SDK release 0.13.1 they
+carry it in an `Err` field with `Unwrap`, so `errors.As(err, &timeoutErr)` and
+`errors.Is(err, context.Canceled)` work, and `Err` is nil for a rejection. On
+0.13.1 and earlier the cause was flattened into `Msg` and could not be reached
+(Govcraft/emergent#73).
+
+A socket that refuses a write is not a rejection either. After SDK release
+0.13.1 a failed TypeScript `publish()` throws a `PublishError` whose `cause` is
+the `Deno.errors.*` error, where 0.13.1 and earlier threw that error itself
+(Govcraft/emergent#75). Go reports it as a `*PublishError` wrapping the `net`
+error.
+
 Rust's `ClientError` also has `IoError`, `IpcError`, `ProtocolError` and
 `EngineError`. The SDK returns none of them. The first two have `From`
 conversions for your own `?`.
@@ -445,6 +458,11 @@ behind the bad one, and passed a message with wrong-typed fields to the
 subscriber with an empty `ID`. A header that cannot be trusted (an oversized
 length, a wrong protocol version) still drops the buffer, because nothing says
 where the next frame starts.
+
+An envelope field an SDK does not know is not malformed. All four SDKs ignore
+it and deliver the message. Python is the late one: on SDK release 0.13.1 and
+earlier its wire model forbade unknown fields, so a message with one was
+refused (Govcraft/emergent#74).
 
 ### A socket that takes only part of a frame
 

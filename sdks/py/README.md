@@ -329,6 +329,11 @@ After SDK release 0.13.1 it is logged and skipped, and the subscription stays
 open. On 0.13.1 and earlier one such frame ended the read loop and closed the
 stream.
 
+A message whose envelope carries a field this SDK does not know is delivered
+with that field ignored, after SDK release 0.13.1. On 0.13.1 and earlier the
+wire model forbade unknown fields, so one new envelope field from the engine
+would have stopped every Python subscriber from receiving messages.
+
 ## Message Shape
 
 Every message flowing through Emergent follows the same envelope:

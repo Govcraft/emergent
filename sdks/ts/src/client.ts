@@ -59,9 +59,9 @@ import { createLogger, type Logger } from "./logger.ts";
 /**
  * Decide whether `EMERGENT_UNWRAP_STDOUT` switches stdout unwrapping on.
  *
- * Only `"true"` and `"1"` enable it, matching the Rust, Go, and Python SDKs.
- * Anything else, including `"false"`, `"0"`, and an unset variable, leaves it
- * off.
+ * Surrounding whitespace and letter case are ignored, and only `"true"` and
+ * `"1"` enable it, the same rule as the Rust, Go and Python SDKs. Anything
+ * else, including `"false"`, `"0"`, and an unset variable, leaves it off.
  */
 export function parseUnwrapFlag(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
@@ -760,7 +760,11 @@ export class BaseClient {
         messageId: message.id,
         error: errorMsg,
       });
-      throw err;
+      throw new PublishError(
+        `Failed to publish: ${errorMsg}`,
+        message.messageType,
+        { cause: err },
+      );
     }
   }
 
@@ -1129,6 +1133,8 @@ export class BaseClient {
         reject(
           new ConnectionError(
             `Failed to send: ${errorMsg}`,
+            "CONNECTION_FAILED",
+            { cause: err },
           ),
         );
       });

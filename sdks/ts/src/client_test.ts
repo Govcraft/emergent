@@ -3,8 +3,11 @@ import { BaseClient, extractShutdownKind, parseUnwrapFlag } from "./client.ts";
 import { MessageStream } from "./stream.ts";
 import type { PrimitiveKind } from "./types.ts";
 
+// The same table runs in the Rust, Go and Python SDKs.
 Deno.test("parseUnwrapFlag enables unwrapping for true and 1", () => {
-  for (const value of ["true", "1", "TRUE", "True", " true "]) {
+  for (
+    const value of ["true", "1", "TRUE", "True", " true ", " 1 ", "\ttrue\n"]
+  ) {
     assertEquals(
       parseUnwrapFlag(value),
       true,
@@ -14,7 +17,21 @@ Deno.test("parseUnwrapFlag enables unwrapping for true and 1", () => {
 });
 
 Deno.test("parseUnwrapFlag leaves unwrapping off for everything else", () => {
-  for (const value of [undefined, "", "false", "0", "no", "off", "yes", "2"]) {
+  const off = [
+    undefined,
+    "",
+    " ",
+    "false",
+    "0",
+    "no",
+    "off",
+    "yes",
+    "on",
+    "2",
+    "11",
+    "truee",
+  ];
+  for (const value of off) {
     assertEquals(
       parseUnwrapFlag(value),
       false,
