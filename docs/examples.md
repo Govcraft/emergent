@@ -86,6 +86,42 @@ emergent --config ./config/examples/basic-pipeline.toml
 
 ---
 
+### jev-triage
+
+Reads one message from disk, asks [TypeSafe System One](https://docs.typesafe.ai) (Jev) three typed questions about it, and routes the verdict into a confidence band. The thresholds are `jq` selectors in the TOML file.
+
+```
+exec-source (cat message.txt) ──> jev-handler ──> route-confident ──> exec-sink
+                                       │      ├─> route-uncertain ──> exec-sink
+                                       │      └─> route-review    ──> exec-sink
+                                       └─ mail.judge-failed ────────> exec-sink
+```
+
+```bash
+emergent marketplace install exec-source jev-handler exec-handler exec-sink
+export TYPESAFE_API_KEY="..."   # from https://console.typesafe.ai
+
+emergent --config ./config/examples/jev-triage/emergent.toml
+```
+
+Each run makes one API call and prints one verdict, shaped like this with your own numbers:
+
+```json
+{
+  "band": "confident",
+  "kind": "phish",
+  "confidence": 0.97,
+  "lure": 0.95,
+  "pressure": 2.0
+}
+```
+
+Edit `config/examples/jev-triage/message.txt` and run it again to watch the answers move, or lower the `0.9` threshold in `emergent.toml` and watch the same verdict land in a different band. If the call fails, the failure sink prints `error.kind`, for example `transport` when the API cannot be reached or `billing` when the organization is out of credit.
+
+**What this demonstrates:** Judgment as a pipeline step. The handler publishes calibrated answers and makes no decision; the policy is topology. See the [jev-handler guide](primitives/jev-handler.md).
+
+---
+
 ### ouroboros-loop
 
 A self-seeding infinite loop. An exec-sink subscribes to both `system.started.webhook` (to seed the first iteration) and `loop.iteration` (to keep it going), curling back to the http-source on each pass. The counter increments every cycle.
@@ -268,4 +304,5 @@ For production deployments, see [Configuration > Secrets](configuration.md#secre
 
 - [Getting Started](getting-started.md) -- Install, run your first pipeline, extend it
 - [Concepts](concepts.md) -- Architecture, message flow, event sourcing
+- [jev-handler](primitives/jev-handler.md) -- Typed questions, calibrated answers, routing on confidence
 - [Configuration](configuration.md) -- All configuration options
