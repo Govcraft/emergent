@@ -199,6 +199,9 @@ async with await sink.subscribe(["timer.tick"]) as stream:
         print(msg.payload)
 ```
 
+The stream also ends when the connection to the engine is lost, so the loop
+stops and the code after it runs. See [Error Handling](#error-handling).
+
 ### Typed payloads with Pydantic
 
 `payload_as` validates dict payloads against Pydantic models automatically:
@@ -333,6 +336,15 @@ error itself (`ConnectionResetError`, `BrokenPipeError`), which is not an
 `EmergentError`, so an `except EmergentError` never saw it. The built-in
 `ConnectionError` and the SDK's share a name and nothing else: code that caught
 `OSError` for these calls should now catch the SDK class and read `__cause__`.
+
+When the engine closes the connection, every call still waiting for an answer
+(`publish_ack()`, `discover()`, `subscribe()`, `get_topology()`,
+`get_my_subscriptions()`) raises `ConnectionError("Connection closed")` at once,
+and the message stream ends, so an `async for` over it stops. That holds after
+SDK release 0.13.1. On 0.13.1 and earlier each call waited out its own timeout,
+30 seconds by default, and then raised `TimeoutError`. The stream ended only
+when the read failed: when the engine closed the connection cleanly it never
+ended, so an `async for` consumer waited until the process was stopped.
 
 A frame the engine sends with a malformed body is never raised to the caller.
 After SDK release 0.13.1 it is logged and skipped, and the subscription stays
