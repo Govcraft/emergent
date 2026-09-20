@@ -68,6 +68,15 @@ jobs:
       - run: deno lint
       - run: deno check mod.ts
       - run: deno test --allow-env --allow-read --allow-net
+      # The examples import the published SDK. The root package.json would put
+      # them in manual node_modules mode too, which examples/deno.json turns off.
+      - name: Type-check the TypeScript examples
+        working-directory: .
+        run: >-
+          deno check --config examples/deno.json
+          examples/sinks/console_color/main.ts
+          examples/sinks/topology-viewer/main.ts
+          examples/sources/topology-api/main.ts
 
   go:
     name: Go SDK
