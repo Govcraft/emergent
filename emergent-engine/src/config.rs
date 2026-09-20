@@ -6,6 +6,7 @@
 //! - Sources, Handlers, and Sinks to manage
 
 use crate::declarations::{DeclarationTable, Declarations, EnforcementMode};
+use crate::ipc_identity::AuthenticationMode;
 use crate::primitives::PrimitiveKind;
 use crate::supervision::{
     RestartLimits, RestartPolicy, default_restart_backoff_ms, default_restart_max_backoff_ms,
@@ -135,6 +136,19 @@ pub struct EngineConfig {
     /// `docs/configuration.md` for what it does and does not protect against.
     #[serde(default)]
     pub enforce_declarations: EnforcementMode,
+
+    /// What the engine does about a connection from a process it did not spawn.
+    ///
+    /// The engine always works out who a peer is: declaration enforcement and
+    /// startup readiness both need a name it can trust. This only decides
+    /// whether a peer it could not tie to a primitive is let in at all.
+    /// `"off"` (the default) admits it, as every engine up to 0.10.10 did.
+    /// `"warn"` admits it and says so. `"strict"` refuses a peer from another
+    /// user id, and still admits a same-user one, because the `emergent` CLI
+    /// and a primitive run by hand are indistinguishable from an impostor at
+    /// admission; see `docs/configuration.md`.
+    #[serde(default)]
+    pub authenticate_connections: AuthenticationMode,
 }
 
 fn default_engine_name() -> String {
@@ -206,6 +220,7 @@ impl Default for EngineConfig {
             shutdown_grace_ms: default_shutdown_grace_ms(),
             startup_ready_timeout_ms: default_startup_ready_timeout_ms(),
             enforce_declarations: EnforcementMode::default(),
+            authenticate_connections: AuthenticationMode::default(),
         }
     }
 }

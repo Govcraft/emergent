@@ -44,8 +44,14 @@ pub use config::EmergentConfig;
 pub use declarations::{
     DeclarationTable, Declarations, Enforcement, EnforcementMode, Operation, Verdict,
 };
-pub use ipc_identity::{ConnectionIdentity, IdentityResolver, StubResolver};
-pub use ipc_policy::{EnginePolicy, PolicyObserver, policy_is_needed};
+pub use ipc_identity::{
+    AdmissionDecision, AncestryResolver, AuthenticationMode, ChildExitObserver, ConnectionIdentity,
+    ConnectionRegistry, ConnectionRevoker, IdentityResolver, Resolution, SpawnedChildren,
+    admission_for, ancestry_available, proc_parent_of, resolve_ancestry,
+};
+pub use ipc_policy::{
+    EnginePolicy, Observers, PolicyObserver, UnmanagedNames, effective_name, policy_is_needed,
+};
 pub use lifecycle::{LifecycleEvent, PrimitiveStatus, next_status};
 pub use messages::EmergentMessage;
 pub use primitive_actor::{
