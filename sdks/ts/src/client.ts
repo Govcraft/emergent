@@ -760,7 +760,11 @@ export class BaseClient {
         messageId: message.id,
         error: errorMsg,
       });
-      throw err;
+      throw new PublishError(
+        `Failed to publish: ${errorMsg}`,
+        message.messageType,
+        { cause: err },
+      );
     }
   }
 
@@ -1129,6 +1133,8 @@ export class BaseClient {
         reject(
           new ConnectionError(
             `Failed to send: ${errorMsg}`,
+            "CONNECTION_FAILED",
+            { cause: err },
           ),
         );
       });

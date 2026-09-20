@@ -288,17 +288,17 @@ try {
 
 ### Error Types
 
-| Error                 | Code                  | Extra Fields   | Thrown when                                                                              |
-| --------------------- | --------------------- | -------------- | ---------------------------------------------------------------------------------------- |
-| `ConnectionError`     | `CONNECTION_FAILED`   |                | The socket cannot be reached, a request cannot be sent, or the client closes             |
-| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socketPath`   | No socket file exists at the path                                                        |
-| `TimeoutError`        | `TIMEOUT`             | `timeoutMs`    | The engine does not answer a request in time                                             |
-| `ProtocolError`       | `PROTOCOL_ERROR`      |                | A frame cannot be encoded, or a discovery reply is malformed                             |
-| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `messageTypes` | The engine rejects a subscription, including the one a topology query makes              |
-| `PublishError`        | `PUBLISH_FAILED`      | `messageType`  | The broker rejects an acknowledged publish (`publishAck`, `publishAll`, `publishStream`) |
-| `DiscoveryError`      | `DISCOVERY_FAILED`    |                | The engine rejects `discover()`                                                          |
-| `DisposedError`       | `DISPOSED`            |                | A closed client is used                                                                  |
-| `ValidationError`     | `VALIDATION_ERROR`    | `field`        | A message or a subscription topic is not valid                                           |
+| Error                 | Code                  | Extra Fields   | Thrown when                                                                     |
+| --------------------- | --------------------- | -------------- | ------------------------------------------------------------------------------- |
+| `ConnectionError`     | `CONNECTION_FAILED`   |                | The socket cannot be reached, a request cannot be sent, or the client closes    |
+| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socketPath`   | No socket file exists at the path                                               |
+| `TimeoutError`        | `TIMEOUT`             | `timeoutMs`    | The engine does not answer a request in time                                    |
+| `ProtocolError`       | `PROTOCOL_ERROR`      |                | A frame cannot be encoded, or a discovery reply is malformed                    |
+| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `messageTypes` | The engine rejects a subscription, including the one a topology query makes     |
+| `PublishError`        | `PUBLISH_FAILED`      | `messageType`  | The broker rejects an acknowledged publish, or the socket refuses a `publish()` |
+| `DiscoveryError`      | `DISCOVERY_FAILED`    |                | The engine rejects `discover()`                                                 |
+| `DisposedError`       | `DISPOSED`            |                | A closed client is used                                                         |
+| `ValidationError`     | `VALIDATION_ERROR`    | `field`        | A message or a subscription topic is not valid                                  |
 
 `SubscriptionError`, `PublishError` and `DiscoveryError` extend
 `ConnectionError`. On SDK release 0.13.1 and earlier they were exported and
@@ -307,6 +307,13 @@ code `CONNECTION_FAILED`. A handler that catches `ConnectionError` still catches
 them, so test for the specific class first. A handler that compares `code`
 against `CONNECTION_FAILED` for one of these rejections now sees the code in the
 table.
+
+When the socket refuses a write, the error keeps the socket's own error as
+`cause`. After SDK release 0.13.1 a failed `publish()` throws a `PublishError`
+whose `cause` is the `Deno.errors.*` error. On 0.13.1 and earlier `publish()`
+threw that `Deno.errors.*` error itself, which is not an `EmergentError`, so a
+handler written against the classes above never saw it. Code that tested for
+`Deno.errors.BrokenPipe` on `publish()` should now test `err.cause`.
 
 A frame the engine sends with a malformed body is never thrown to the caller.
 After SDK release 0.13.1 it is logged and skipped, and the subscription stays
