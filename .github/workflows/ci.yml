@@ -61,6 +61,9 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      # package.json puts Deno in manual node_modules mode, so a fresh checkout
+      # resolves no npm import until this runs.
+      - run: deno install --frozen
       - run: deno fmt --check
       - run: deno lint
       - run: deno check mod.ts
