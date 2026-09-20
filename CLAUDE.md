@@ -224,9 +224,15 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets && cargo nexte
 git add -A && git commit -S -m "chore: bump SDKs to A.B.C and engine to X.Y.Z"
 git push
 
-# 5. Tag the SDKs. Each tag publishes one SDK (table below).
-for sdk in rust py ts go; do git tag -s "sdks/$sdk/vA.B.C" -m "sdks/$sdk/vA.B.C"; done
-git push origin sdks/rust/vA.B.C sdks/py/vA.B.C sdks/ts/vA.B.C sdks/go/vA.B.C
+# 5. Tag the SDKs. Each tag publishes one SDK (table below). Push the tags one
+#    at a time: GitHub creates no push event when more than three tags arrive
+#    in one push, so pushing all four together publishes nothing. If that
+#    happens, start each workflow at its tag instead:
+#    gh workflow run workflow-crates-io.yml --ref sdks/rust/vA.B.C
+for sdk in rust py ts go; do
+  git tag -s "sdks/$sdk/vA.B.C" -m "sdks/$sdk/vA.B.C"
+  git push origin "sdks/$sdk/vA.B.C"
+done
 
 # 6. Release emergent-primitives (Step 2), then tag the engine
 git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
