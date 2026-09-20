@@ -1063,8 +1063,9 @@ subscribes = ["http.request"]
 publishes = ["issue.found"]
 ```
 
-`--host` defaults to `0.0.0.0`. An injection endpoint is an actuator, so bind it
-to loopback. The payload is `{method, path, query, headers, body, remote_addr}`
+`--host` defaults to `127.0.0.1` from primitives 0.12.0 (`0.0.0.0` on 0.11.0 and
+earlier, so name it there). An injection endpoint is an actuator, so keep it on
+loopback. The payload is `{method, path, query, headers, body, remote_addr}`
 (`query` from primitives 0.12.0); the
 handler above unwraps `.body` into whatever type you want to simulate.
 

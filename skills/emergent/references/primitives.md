@@ -247,8 +247,9 @@ args = ["--port", "8080"]
 publishes = ["http.request"]
 ```
 
-**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (0.0.0.0; bind
-`127.0.0.1` unless the caller is remote), `--path <PATH>` (`/`),
+**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1` from
+primitives 0.12.0, `0.0.0.0` on 0.11.0 and earlier; pass `0.0.0.0` only when the
+caller is remote), `--path <PATH>` (`/`),
 `--secret <SECRET>` for signature validation. Each reads an environment
 variable: `HTTP_SOURCE_PORT`, `HTTP_SOURCE_HOST`, `HTTP_SOURCE_PATH`,
 `HTTP_SOURCE_SECRET`. Prefer the variable for the secret so it stays out of
