@@ -34,6 +34,8 @@ from .errors import (
     ConnectionError,
     DiscoveryError,
     DisposedError,
+    EmergentError,
+    PublishError,
     SocketNotFoundError,
     SubscriptionError,
     TimeoutError,
@@ -244,6 +246,19 @@ def discovery_info_from_response(response: IpcResponse) -> DiscoveryInfo:
         message_types=tuple(body.message_types or ()),
         primitives=tuple(PrimitiveInfo(name=actor.name) for actor in body.actors or ()),
     )
+
+
+def write_failure(cause: OSError, publishing: str | None) -> EmergentError:
+    """Name a socket write the operating system refused.
+
+    ``publishing`` is the message type when the write carried a publish, and
+    ``None`` for every other request. A refused publish is a ``PublishError``
+    and a refused request a ``ConnectionError``. The caller raises the result
+    ``from cause``, so the OS error stays reachable as ``__cause__``.
+    """
+    if publishing is not None:
+        return PublishError(f"Failed to publish: {cause}", message_type=publishing)
+    return ConnectionError(f"Failed to send: {cause}")
 
 
 def parse_unwrap_flag(value: str | None) -> bool:
@@ -610,9 +625,9 @@ class BaseClient:
         try:
             self._writer.write(frame)  # type: ignore[union-attr]
             await self._writer.drain()  # type: ignore[union-attr]
-        except Exception as e:
+        except OSError as e:
             logger.error("failed to publish message primitive=%s error=%s", self.name, e)
-            raise
+            raise write_failure(e, wire_dict.get("message_type", "")) from e
 
         logger.debug(
             "published message primitive=%s message_type=%s message_id=%s",
@@ -657,11 +672,10 @@ class BaseClient:
             MessageType.REQUEST,
             envelope.model_dump(),
             correlation_id,
+            publishing=wire_dict.get("message_type", ""),
         )
 
         if not response.success:
-            from .errors import PublishError
-
             raise PublishError(
                 response.error or "Broker returned error",
                 message_type=wire_dict.get("message_type", ""),
@@ -941,6 +955,7 @@ class BaseClient:
         msg_type: MessageType,
         payload: dict[str, Any],
         correlation_id: str,
+        publishing: str | None = None,
     ) -> IpcResponse:
         """
         Send a request and wait for response with timeout.
@@ -949,13 +964,15 @@ class BaseClient:
             msg_type: The message type
             payload: The payload to send
             correlation_id: The correlation ID for response matching
+            publishing: The message type when the request carries a publish
 
         Returns:
             The response from the server
 
         Raises:
             TimeoutError: If the request times out
-            ConnectionError: If sending fails
+            ConnectionError: If the socket refuses the write
+            PublishError: If the socket refuses the write and ``publishing`` is set
         """
         loop = asyncio.get_event_loop()
         future: asyncio.Future[IpcResponse] = loop.create_future()
@@ -970,8 +987,12 @@ class BaseClient:
 
         try:
             frame = encode_frame(msg_type, payload, self.format)
-            self._writer.write(frame)  # type: ignore[union-attr]
-            await self._writer.drain()  # type: ignore[union-attr]
+            try:
+                self._writer.write(frame)  # type: ignore[union-attr]
+                await self._writer.drain()  # type: ignore[union-attr]
+            except OSError as e:
+                logger.error("failed to send request primitive=%s error=%s", self.name, e)
+                raise write_failure(e, publishing) from e
             return await future
         except Exception:
             self._pending_requests.pop(correlation_id, None)
