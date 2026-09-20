@@ -37,12 +37,24 @@ fn files_under(dir: &Path, matches: &dyn Fn(&str) -> bool) -> Vec<PathBuf> {
     found
 }
 
+/// TOML files that ship under `config/` and are not engine configurations:
+/// package manifests, and the questions file an example hands to `jev-handler`.
+const NOT_ENGINE_CONFIGS: [&str; 3] = ["Cargo.toml", "pyproject.toml", "questions.toml"];
+
 /// Returns whether a file name is an engine configuration rather than a manifest.
 fn is_engine_config(name: &str) -> bool {
-    if name == "Cargo.toml" || name == "pyproject.toml" {
+    if NOT_ENGINE_CONFIGS.contains(&name) {
         return false;
     }
     name.ends_with(".toml") || name.ends_with(".toml.example")
+}
+
+#[test]
+fn a_jev_questions_file_is_not_an_engine_config() {
+    assert!(!is_engine_config("questions.toml"));
+    assert!(!is_engine_config("Cargo.toml"));
+    assert!(is_engine_config("emergent.toml"));
+    assert!(is_engine_config("emergent.toml.example"));
 }
 
 /// Extract fenced ```toml blocks that look like whole engine configurations.
