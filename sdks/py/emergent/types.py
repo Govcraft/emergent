@@ -291,10 +291,12 @@ class WireMessage(BaseModel):
     """
     Wire format message (snake_case for JSON serialization).
 
-    This matches the format expected by the Rust server.
+    This matches the format expected by the Rust server. A field this SDK does
+    not know is ignored, so an engine that adds one to the envelope does not
+    silence subscribers built against an older SDK.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: str
     message_type: str

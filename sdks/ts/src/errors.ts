@@ -12,8 +12,11 @@ export class EmergentError extends Error {
   /** Error code for programmatic handling */
   readonly code: string;
 
-  constructor(message: string, code = "UNKNOWN") {
-    super(message);
+  /**
+   * @param options - Pass `{ cause }` to keep the error underneath
+   */
+  constructor(message: string, code = "UNKNOWN", options?: ErrorOptions) {
+    super(message, options);
     this.name = "EmergentError";
     this.code = code;
     // Maintain proper stack trace in V8
@@ -32,8 +35,16 @@ export class EmergentError extends Error {
  * - Permission denied
  */
 export class ConnectionError extends EmergentError {
-  constructor(message: string) {
-    super(message, "CONNECTION_FAILED");
+  /**
+   * @param code - Set by the subclasses that name a more specific failure
+   * @param options - Pass `{ cause }` to keep the error underneath
+   */
+  constructor(
+    message: string,
+    code = "CONNECTION_FAILED",
+    options?: ErrorOptions,
+  ) {
+    super(message, code, options);
     this.name = "ConnectionError";
   }
 }
@@ -80,9 +91,12 @@ export class ProtocolError extends EmergentError {
 }
 
 /**
- * Error thrown when subscription fails.
+ * Error thrown when the engine rejects a subscription.
+ *
+ * A `ConnectionError`, which is what these failures threw through SDK 0.13.1,
+ * so a handler that catches `ConnectionError` still sees them.
  */
-export class SubscriptionError extends EmergentError {
+export class SubscriptionError extends ConnectionError {
   /** The message types that failed to subscribe */
   readonly messageTypes: string[];
 
@@ -94,23 +108,31 @@ export class SubscriptionError extends EmergentError {
 }
 
 /**
- * Error thrown when publishing fails.
+ * Error thrown when the broker rejects an acknowledged publish, or when the
+ * socket refuses a fire-and-forget one. In the second case `cause` holds the
+ * socket's own error.
+ *
+ * A `ConnectionError`, which is what a rejection threw through SDK 0.13.1,
+ * so a handler that catches `ConnectionError` still sees it.
  */
-export class PublishError extends EmergentError {
+export class PublishError extends ConnectionError {
   /** The message type that failed to publish */
   readonly messageType: string;
 
-  constructor(message: string, messageType = "") {
-    super(message, "PUBLISH_FAILED");
+  constructor(message: string, messageType = "", options?: ErrorOptions) {
+    super(message, "PUBLISH_FAILED", options);
     this.name = "PublishError";
     this.messageType = messageType;
   }
 }
 
 /**
- * Error thrown when discovery fails.
+ * Error thrown when the engine rejects a discovery request.
+ *
+ * A `ConnectionError`, which is what this failure threw through SDK 0.13.1,
+ * so a handler that catches `ConnectionError` still sees it.
  */
-export class DiscoveryError extends EmergentError {
+export class DiscoveryError extends ConnectionError {
   constructor(message: string) {
     super(message, "DISCOVERY_FAILED");
     this.name = "DiscoveryError";

@@ -303,17 +303,36 @@ except ConnectionError as e:
 
 ### Error Types
 
-| Error                 | Code                  | Extra Fields     |
-| --------------------- | --------------------- | ---------------- |
-| `ConnectionError`     | `CONNECTION_FAILED`   |                  |
-| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socket_path`    |
-| `TimeoutError`        | `TIMEOUT`             | `timeout`        |
-| `ProtocolError`       | `PROTOCOL_ERROR`      |                  |
-| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `message_types`  |
-| `PublishError`        | `PUBLISH_FAILED`      | `message_type`   |
-| `DiscoveryError`      | `DISCOVERY_FAILED`    |                  |
-| `DisposedError`       | `DISPOSED`            |                  |
-| `ValidationError`     | `VALIDATION_ERROR`    | `field`          |
+| Error                 | Code                  | Extra Fields     | Raised when                                                                  |
+| --------------------- | --------------------- | ---------------- | ---------------------------------------------------------------------------- |
+| `ConnectionError`     | `CONNECTION_FAILED`   |                  | The socket cannot be reached, a request cannot be sent, or the client closes |
+| `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `socket_path`    | No socket file exists at the path                                            |
+| `TimeoutError`        | `TIMEOUT`             | `timeout`        | The engine does not answer a request in time                                 |
+| `ProtocolError`       | `PROTOCOL_ERROR`      |                  | A frame cannot be encoded or decoded                                         |
+| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `message_types`  | The engine rejects a subscription, including the one a topology query makes  |
+| `PublishError`        | `PUBLISH_FAILED`      | `message_type`   | The broker rejects an acknowledged publish                                   |
+| `DiscoveryError`      | `DISCOVERY_FAILED`    |                  | The engine rejects `discover()`, or its reply is malformed                   |
+| `DisposedError`       | `DISPOSED`            |                  | A closed client is used                                                      |
+| `StreamError`         | `STREAM_ERROR`        |                  | `stream_offer` or `stream_consume` times out or loses its stream             |
+| `ValidationError`     | `VALIDATION_ERROR`    | `field`          | A message or a subscription topic is not valid                               |
+
+`SubscriptionError` and `DiscoveryError` extend `ConnectionError`. On SDK
+release 0.13.1 and earlier they were exported and never raised: each of those failures raised a
+plain `ConnectionError` with the code `CONNECTION_FAILED`. An
+`except ConnectionError` still catches them, so put the specific class first.
+Code that compares `code` against `CONNECTION_FAILED` for one of these
+failures now sees the code in the table. `PublishError` extends
+`EmergentError` directly, as it always has.
+
+A frame the engine sends with a malformed body is never raised to the caller.
+After SDK release 0.13.1 it is logged and skipped, and the subscription stays
+open. On 0.13.1 and earlier one such frame ended the read loop and closed the
+stream.
+
+A message whose envelope carries a field this SDK does not know is delivered
+with that field ignored, after SDK release 0.13.1. On 0.13.1 and earlier the
+wire model forbade unknown fields, so one new envelope field from the engine
+would have stopped every Python subscriber from receiving messages.
 
 ## Message Shape
 

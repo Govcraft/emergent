@@ -77,14 +77,22 @@ type baseClient struct {
 	readDone   chan struct{}
 }
 
+// parseUnwrapFlag decides whether EMERGENT_UNWRAP_STDOUT switches stdout
+// unwrapping on. Surrounding whitespace and letter case are ignored, and only
+// "true" and "1" enable it, the same rule as the Rust, Python and TypeScript
+// SDKs. Anything else, an unset variable included, leaves it off.
+func parseUnwrapFlag(value string) bool {
+	normalized := strings.TrimSpace(value)
+	return strings.EqualFold(normalized, "true") || normalized == "1"
+}
+
 func newBaseClient(name string, kind PrimitiveKind, opts *ConnectOptions) *baseClient {
 	timeout := defaultTimeout
 	if opts != nil && opts.Timeout > 0 {
 		timeout = opts.Timeout
 	}
 
-	envUnwrap := os.Getenv("EMERGENT_UNWRAP_STDOUT")
-	autoUnwrap := envUnwrap == "true" || envUnwrap == "1"
+	autoUnwrap := parseUnwrapFlag(os.Getenv("EMERGENT_UNWRAP_STDOUT"))
 
 	return &baseClient{
 		name:                        name,
@@ -212,7 +220,7 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 	}, correlationID)
 	if err != nil {
 		stream.Close()
-		return nil, &SubscriptionError{Msg: err.Error(), MessageTypes: messageTypes}
+		return nil, &SubscriptionError{Msg: err.Error(), MessageTypes: messageTypes, Err: err}
 	}
 	if !resp.Success {
 		stream.Close()
@@ -235,7 +243,7 @@ func (c *baseClient) subscribeInternal(ctx context.Context, messageTypes []strin
 		}, patternCorrelationID)
 		if patternErr != nil {
 			stream.Close()
-			return nil, &SubscriptionError{Msg: patternErr.Error(), MessageTypes: patterns}
+			return nil, &SubscriptionError{Msg: patternErr.Error(), MessageTypes: patterns, Err: patternErr}
 		}
 		if !patternResp.Success {
 			stream.Close()
@@ -375,12 +383,12 @@ func (c *baseClient) publishInternal(message *EmergentMessage) error {
 
 	frame, err := EncodeFrame(MsgTypeRequest, envelope, c.format)
 	if err != nil {
-		return &PublishError{Msg: fmt.Sprintf("encode error: %v", err), MessageType: string(message.MessageType)}
+		return &PublishError{Msg: fmt.Sprintf("encode error: %v", err), MessageType: string(message.MessageType), Err: err}
 	}
 
 	if err = c.writeFrame(conn, frame); err != nil {
 		c.logger.Error("failed to publish message", "message_type", message.MessageType, "error", err)
-		return &PublishError{Msg: err.Error(), MessageType: string(message.MessageType)}
+		return &PublishError{Msg: err.Error(), MessageType: string(message.MessageType), Err: err}
 	}
 
 	c.logger.Debug("published message", "message_type", message.MessageType, "id", message.ID)
@@ -414,7 +422,7 @@ func (c *baseClient) publishInternalAck(ctx context.Context, message *EmergentMe
 	resp, err := c.sendRequest(ctx, MsgTypeRequest, envelope, correlationID)
 	if err != nil {
 		c.logger.Error("publish_ack failed", "message_type", message.MessageType, "error", err)
-		return &PublishError{Msg: fmt.Sprintf("publish_ack failed: %v", err), MessageType: string(message.MessageType)}
+		return &PublishError{Msg: fmt.Sprintf("publish_ack failed: %v", err), MessageType: string(message.MessageType), Err: err}
 	}
 	if !resp.Success {
 		errMsg := resp.Error
@@ -450,7 +458,7 @@ func (c *baseClient) discoverInternal(ctx context.Context) (*DiscoveryInfo, erro
 		IncludeMessageTypes: true,
 	}, correlationID)
 	if err != nil {
-		return nil, &DiscoveryError{Msg: err.Error()}
+		return nil, &DiscoveryError{Msg: err.Error(), Err: err}
 	}
 	if !resp.Success {
 		errMsg := resp.Error
@@ -838,19 +846,24 @@ func (c *baseClient) dispatchFrames() *MessageStream {
 
 	var detached *MessageStream
 	for len(c.readBuffer) >= HeaderSize {
-		frame, err := TryDecodeFrame(c.readBuffer)
-		if err != nil {
-			c.logger.Error("protocol error while processing frame", "error", err)
+		step := nextFrame(c.readBuffer)
+		switch step.kind {
+		case frameIncomplete:
+			return detached // Not enough data
+		case frameBadFraming:
+			// Nothing says where the next frame starts, so drop what is buffered.
+			c.logger.Error("protocol error while processing frame", "error", step.reason)
 			c.readBuffer = c.readBuffer[:0] // Reset buffer
 			return detached
-		}
-		if frame == nil {
-			return detached // Not enough data
-		}
-
-		c.readBuffer = c.readBuffer[frame.BytesConsumed:]
-		if stream := c.handleFrame(frame.MsgType, frame.Payload); stream != nil {
-			detached = stream
+		case frameBadBody:
+			c.logger.Warn("skipping frame with malformed body",
+				"msg_type", fmt.Sprintf("0x%02x", step.msgType), "error", step.reason)
+			c.readBuffer = c.readBuffer[step.bytesConsumed:]
+		case frameDecoded:
+			c.readBuffer = c.readBuffer[step.frame.BytesConsumed:]
+			if stream := c.handleFrame(step.frame.MsgType, step.frame.Payload); stream != nil {
+				detached = stream
+			}
 		}
 	}
 	return detached
@@ -957,19 +970,51 @@ func (c *baseClient) handlePush(payload any) *MessageStream {
 	}
 
 	// Forward to message stream
-	if c.messageStream != nil {
-		wirePayload, ok := payloadMap["payload"].(map[string]any)
-		if ok {
-			msg := MessageFromWire(wirePayload)
-			// Auto-unwrap exec-source stdout payloads when configured
-			if c.unwrapStdout && !strings.HasPrefix(string(msg.MessageType), "system.") {
-				msg.UnwrapStdout()
-			}
-			c.logger.Debug("received message", "message_type", msg.MessageType, "source", msg.Source)
-			c.messageStream.push(msg)
+	if c.messageStream == nil {
+		return nil
+	}
+	wirePayload, ok := wireMessageFromPush(payloadMap["payload"])
+	if !ok {
+		c.logger.Warn("dropping push with a malformed message", "message_type", messageType)
+		return nil
+	}
+
+	msg := MessageFromWire(wirePayload)
+	// Auto-unwrap exec-source stdout payloads when configured
+	if c.unwrapStdout && !strings.HasPrefix(string(msg.MessageType), "system.") {
+		msg.UnwrapStdout()
+	}
+	c.logger.Debug("received message", "message_type", msg.MessageType, "source", msg.Source)
+	c.messageStream.push(msg)
+	return nil
+}
+
+// wireMessageFromPush reads the Emergent message a push notification carries
+// as its payload. The id, message_type and source must be strings and
+// timestamp_ms a number. correlation_id and causation_id must be strings when
+// present, and a nil there reads as absent. It reports false for anything
+// else, so a message of the wrong shape never reaches the subscriber.
+func wireMessageFromPush(payload any) (map[string]any, bool) {
+	wire, ok := payload.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	for _, field := range []string{"id", "message_type", "source"} {
+		if _, isString := wire[field].(string); !isString {
+			return nil, false
 		}
 	}
-	return nil
+	if _, isNumber := wireUint64(wire["timestamp_ms"]); !isNumber {
+		return nil, false
+	}
+	for _, field := range []string{"correlation_id", "causation_id"} {
+		if value := wire[field]; value != nil {
+			if _, isString := value.(string); !isString {
+				return nil, false
+			}
+		}
+	}
+	return wire, true
 }
 
 // handleShutdown acts on a system.shutdown broadcast. Must be called with c.mu

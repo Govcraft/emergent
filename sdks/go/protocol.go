@@ -90,27 +90,57 @@ func EncodeFrame(msgType byte, payload any, format byte) ([]byte, error) {
 	return frame, nil
 }
 
-// TryDecodeFrame tries to decode a frame from a buffer.
-// Returns nil if the buffer does not contain a complete frame.
-func TryDecodeFrame(buffer []byte) (*DecodedFrame, error) {
+// frameStepKind says what the front of a read buffer holds.
+type frameStepKind int
+
+const (
+	// frameIncomplete: not a whole frame yet, so wait for more bytes.
+	frameIncomplete frameStepKind = iota
+	// frameDecoded: a decoded frame.
+	frameDecoded
+	// frameBadBody: a whole frame whose body does not decode. Its length is
+	// known, so the reader drops bytesConsumed bytes and carries on.
+	frameBadBody
+	// frameBadFraming: a header that cannot be trusted, so the reader cannot
+	// tell where the next frame starts.
+	frameBadFraming
+)
+
+// frameStep is the result of reading the front of a read buffer.
+type frameStep struct {
+	kind frameStepKind
+	// frame is set for frameDecoded.
+	frame *DecodedFrame
+	// msgType and bytesConsumed are set for frameBadBody.
+	msgType       byte
+	bytesConsumed int
+	// reason is set for frameBadBody and frameBadFraming.
+	reason string
+}
+
+// nextFrame reads the frame at the front of a buffer. A body that does not
+// decode is told apart from a header that cannot be trusted, because only the
+// first leaves the reader able to find the next frame.
+func nextFrame(buffer []byte) frameStep {
 	if len(buffer) < HeaderSize {
-		return nil, nil // Not enough data for header
+		return frameStep{kind: frameIncomplete} // Not enough data for header
 	}
 
 	payloadLen := binary.BigEndian.Uint32(buffer[0:4])
 	if int(payloadLen) > MaxFrameSize {
-		return nil, &ProtocolError{Msg: fmt.Sprintf("frame too large: %d bytes", payloadLen)}
+		return frameStep{kind: frameBadFraming, reason: fmt.Sprintf("frame too large: %d bytes", payloadLen)}
 	}
 
 	totalLen := HeaderSize + int(payloadLen)
 	if len(buffer) < totalLen {
-		return nil, nil // Not enough data for full frame
+		return frameStep{kind: frameIncomplete} // Not enough data for full frame
 	}
 
 	version := buffer[4]
 	if version != ProtocolVersion {
-		return nil, &ProtocolError{
-			Msg: fmt.Sprintf("unsupported protocol version: %d (expected %d)", version, ProtocolVersion),
+		return frameStep{
+			kind:   frameBadFraming,
+			reason: fmt.Sprintf("unsupported protocol version: %d (expected %d)", version, ProtocolVersion),
 		}
 	}
 
@@ -121,7 +151,14 @@ func TryDecodeFrame(buffer []byte) (*DecodedFrame, error) {
 	// A heartbeat is a bare header. Its body is empty, which neither format
 	// can decode, so it is returned with a nil payload.
 	if payloadLen == 0 {
-		return &DecodedFrame{MsgType: msgType, Format: format, BytesConsumed: totalLen}, nil
+		return frameStep{
+			kind:  frameDecoded,
+			frame: &DecodedFrame{MsgType: msgType, Format: format, BytesConsumed: totalLen},
+		}
+	}
+
+	badBody := func(reason string) frameStep {
+		return frameStep{kind: frameBadBody, msgType: msgType, bytesConsumed: totalLen, reason: reason}
 	}
 
 	var payload any
@@ -133,16 +170,33 @@ func TryDecodeFrame(buffer []byte) (*DecodedFrame, error) {
 	case FormatJSON:
 		err = json.Unmarshal(payloadBytes, &payload)
 	default:
-		return nil, &ProtocolError{Msg: fmt.Sprintf("unknown format: %d", format)}
+		return badBody(fmt.Sprintf("unknown format: %d", format))
 	}
 	if err != nil {
-		return nil, &ProtocolError{Msg: fmt.Sprintf("deserialization error: %v", err)}
+		return badBody(fmt.Sprintf("deserialization error: %v", err))
 	}
 
-	return &DecodedFrame{
-		MsgType:       msgType,
-		Format:        format,
-		Payload:       payload,
-		BytesConsumed: totalLen,
-	}, nil
+	return frameStep{
+		kind: frameDecoded,
+		frame: &DecodedFrame{
+			MsgType:       msgType,
+			Format:        format,
+			Payload:       payload,
+			BytesConsumed: totalLen,
+		},
+	}
+}
+
+// TryDecodeFrame tries to decode a frame from a buffer.
+// Returns nil if the buffer does not contain a complete frame.
+func TryDecodeFrame(buffer []byte) (*DecodedFrame, error) {
+	step := nextFrame(buffer)
+	switch step.kind {
+	case frameDecoded:
+		return step.frame, nil
+	case frameBadBody, frameBadFraming:
+		return nil, &ProtocolError{Msg: step.reason}
+	default:
+		return nil, nil
+	}
 }

@@ -85,6 +85,12 @@ emergent marketplace install http-source websocket-handler sse-sink topology-vie
 
 Installed primitives are placed in `~/.local/share/emergent/primitives/bin/`.
 
+The catalog comes from the emergent-primitives release over HTTPS, so nothing
+needs git installed. Pass `--version` to install an older release: the engine
+reads that release's manifest and verifies the download against that release's
+checksums. The catalog is cached, so `marketplace list` and `marketplace info`
+still work offline and say how old the cached copy is.
+
 ---
 
 ## 3. Run Your First Pipeline

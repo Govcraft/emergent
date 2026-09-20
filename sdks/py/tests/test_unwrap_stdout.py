@@ -133,12 +133,15 @@ class TestUnwrapStdoutNoStdoutField:
 
 
 class TestParseUnwrapFlag:
-    """The env flag enables unwrapping only for the values every SDK accepts."""
+    """The same table runs in the Rust, Go and TypeScript SDKs."""
 
-    @pytest.mark.parametrize("value", ["true", "1", "TRUE", "True", " true "])
+    @pytest.mark.parametrize("value", ["true", "1", "TRUE", "True", " true ", " 1 ", "\ttrue\n"])
     def test_enabling_values(self, value: str) -> None:
         assert parse_unwrap_flag(value) is True
 
-    @pytest.mark.parametrize("value", [None, "", "false", "0", "no", "off", "yes", "2"])
+    @pytest.mark.parametrize(
+        "value",
+        [None, "", " ", "false", "0", "no", "off", "yes", "on", "2", "11", "truee"],
+    )
     def test_everything_else_leaves_it_off(self, value: str | None) -> None:
         assert parse_unwrap_flag(value) is False

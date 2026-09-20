@@ -49,32 +49,46 @@ func (e *ProtocolError) Error() string { return fmt.Sprintf("protocol error: %s"
 func (e *ProtocolError) Code() string  { return "PROTOCOL_ERROR" }
 
 // SubscriptionError indicates a subscription operation failed.
+//
+// Err is the error underneath, such as a TimeoutError or a ConnectionError, so
+// errors.As and errors.Is reach it. It is nil when the engine rejected the
+// request.
 type SubscriptionError struct {
 	Msg          string
 	MessageTypes []string
+	Err          error
 }
 
 func (e *SubscriptionError) Error() string {
 	return fmt.Sprintf("subscription failed: %s", e.Msg)
 }
-func (e *SubscriptionError) Code() string { return "SUBSCRIPTION_FAILED" }
+func (e *SubscriptionError) Code() string  { return "SUBSCRIPTION_FAILED" }
+func (e *SubscriptionError) Unwrap() error { return e.Err }
 
 // PublishError indicates a message publish operation failed.
+//
+// Err is the error underneath, as in SubscriptionError.
 type PublishError struct {
 	Msg         string
 	MessageType string
+	Err         error
 }
 
 func (e *PublishError) Error() string { return fmt.Sprintf("publish failed: %s", e.Msg) }
 func (e *PublishError) Code() string  { return "PUBLISH_FAILED" }
+func (e *PublishError) Unwrap() error { return e.Err }
 
 // DiscoveryError indicates a discovery request failed.
+//
+// Err is the error underneath, as in SubscriptionError.
 type DiscoveryError struct {
 	Msg string
+	Err error
 }
 
 func (e *DiscoveryError) Error() string { return fmt.Sprintf("discovery failed: %s", e.Msg) }
 func (e *DiscoveryError) Code() string  { return "DISCOVERY_FAILED" }
+func (e *DiscoveryError) Unwrap() error { return e.Err }
 
 // DisposedError indicates an operation was attempted on a closed client.
 type DisposedError struct {

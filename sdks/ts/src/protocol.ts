@@ -100,7 +100,8 @@ export function encodeFrame(
  * An empty body decodes to `null`. A heartbeat frame is a bare header, and
  * neither JSON nor MessagePack can parse zero bytes.
  *
- * @throws {ProtocolError} If the format byte is unknown
+ * @throws {ProtocolError} If the format byte is unknown, or the body is not
+ *   valid in its format, such as one cut short
  */
 export function decodePayload(
   payloadBytes: Uint8Array,
@@ -114,10 +115,18 @@ export function decodePayload(
     return null;
   }
 
-  if (format === FORMAT_JSON) {
-    return JSON.parse(textDecoder.decode(payloadBytes));
+  // Both decoders throw their own errors, a SyntaxError from JSON and a
+  // RangeError or DecodeError from MessagePack. Callers handle one class.
+  try {
+    if (format === FORMAT_JSON) {
+      return JSON.parse(textDecoder.decode(payloadBytes));
+    }
+    return decode(payloadBytes);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const name = format === FORMAT_JSON ? "JSON" : "MessagePack";
+    throw new ProtocolError(`Malformed ${name} frame body: ${reason}`);
   }
-  return decode(payloadBytes);
 }
 
 /** Names of the frame types this SDK knows, keyed by their wire byte. */
@@ -159,14 +168,37 @@ export interface DecodedFrame {
 }
 
 /**
- * Try to decode a frame from a buffer.
+ * What the front of a read buffer holds.
  *
- * Returns null if the buffer doesn't contain a complete frame.
- * Throws ProtocolError if the frame is malformed.
+ * - `incomplete`: not a whole frame yet, so wait for more bytes
+ * - `frame`: a decoded frame
+ * - `bad-body`: a whole frame whose body does not decode. Its length is known,
+ *   so the reader drops `bytesConsumed` bytes and carries on with the next
+ *   frame
+ * - `bad-framing`: a header that cannot be trusted, so the reader cannot tell
+ *   where the next frame starts
  */
-export function tryDecodeFrame(buffer: Uint8Array): DecodedFrame | null {
+export type FrameStep =
+  | { readonly kind: "incomplete" }
+  | { readonly kind: "frame"; readonly frame: DecodedFrame }
+  | {
+    readonly kind: "bad-body";
+    readonly msgType: number;
+    readonly bytesConsumed: number;
+    readonly reason: string;
+  }
+  | { readonly kind: "bad-framing"; readonly reason: string };
+
+/**
+ * Read the frame at the front of a buffer without throwing.
+ *
+ * A body that does not decode is told apart from a header that cannot be
+ * trusted, because only the first leaves the reader able to find the next
+ * frame.
+ */
+export function nextFrame(buffer: Uint8Array): FrameStep {
   if (buffer.length < HEADER_SIZE) {
-    return null; // Not enough data for header
+    return { kind: "incomplete" };
   }
 
   const view = new DataView(
@@ -177,33 +209,66 @@ export function tryDecodeFrame(buffer: Uint8Array): DecodedFrame | null {
   const payloadLen = view.getUint32(0, false); // big-endian
 
   if (payloadLen > MAX_FRAME_SIZE) {
-    throw new ProtocolError(`Frame too large: ${payloadLen} bytes`);
+    return {
+      kind: "bad-framing",
+      reason: `Frame too large: ${payloadLen} bytes`,
+    };
+  }
+
+  const version = buffer[4];
+  if (version !== PROTOCOL_VERSION) {
+    return {
+      kind: "bad-framing",
+      reason:
+        `Unsupported protocol version: ${version} (expected ${PROTOCOL_VERSION})`,
+    };
   }
 
   const totalLen = HEADER_SIZE + payloadLen;
 
   if (buffer.length < totalLen) {
-    return null; // Not enough data for full frame
-  }
-
-  const version = buffer[4];
-  if (version !== PROTOCOL_VERSION) {
-    throw new ProtocolError(
-      `Unsupported protocol version: ${version} (expected ${PROTOCOL_VERSION})`,
-    );
+    return { kind: "incomplete" };
   }
 
   const msgType = buffer[5];
   const format = buffer[6];
 
-  const payload = decodePayload(buffer.subarray(HEADER_SIZE, totalLen), format);
+  try {
+    const payload = decodePayload(
+      buffer.subarray(HEADER_SIZE, totalLen),
+      format,
+    );
+    return {
+      kind: "frame",
+      frame: { msgType, format, payload, bytesConsumed: totalLen },
+    };
+  } catch (err) {
+    return {
+      kind: "bad-body",
+      msgType,
+      bytesConsumed: totalLen,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
-  return {
-    msgType,
-    format,
-    payload,
-    bytesConsumed: totalLen,
-  };
+/**
+ * Try to decode a frame from a buffer.
+ *
+ * Returns null if the buffer doesn't contain a complete frame.
+ * Throws ProtocolError if the frame is malformed.
+ */
+export function tryDecodeFrame(buffer: Uint8Array): DecodedFrame | null {
+  const step = nextFrame(buffer);
+  switch (step.kind) {
+    case "incomplete":
+      return null;
+    case "frame":
+      return step.frame;
+    case "bad-body":
+    case "bad-framing":
+      throw new ProtocolError(step.reason);
+  }
 }
 
 import { typeid } from "typeid-js";

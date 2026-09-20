@@ -161,34 +161,63 @@ Declaration enforcement: `[engine].enforce_declarations` is `"off"`, `"warn"` or
 
 Connection limit: every enabled primitive holds one IPC connection for the life of its process. The ceiling comes from acton-reactive, resolved from `$XDG_CONFIG_HOME/acton/ipc.toml` (`[limits] max_connections`) or its own default; `[engine].max_connections` overrides both, and leaving the key out keeps whatever acton resolved. After engine 0.10.10 the engine refuses to start when that limit cannot cover every enabled primitive plus `RESERVED_IPC_CONNECTIONS` (4: one for a restart overlap, three for CLI and topology-viewer queries), with an error naming both numbers. On 0.10.10 and earlier there was no check, so an oversized topology started with some primitives silently dropped at the accept semaphore while `/api/topology` still reported them running. The decision lives in `emergent-engine/src/config.rs` as `check_connection_capacity`, a pure function.
 
+Marketplace: after engine 0.10.10 the registry is two files fetched over HTTPS,
+`index.toml` and `manifests.toml`, published as assets of the emergent-primitives
+release. `[marketplace].registry_url` (in `$XDG_CONFIG_HOME/emergent/marketplace.toml`)
+is a base URL: one ending in `/releases` resolves to `latest/download/<file>` and
+`download/v<version>/<file>`, which are redirects rather than API calls, so there
+is no token and no rate limit; any other base is treated as a static host serving
+`<file>` and `v<version>/<file>`. Both assets are cached under
+`$XDG_CACHE_HOME/emergent/registry/<release>/`, a pinned release is read straight
+from that cache, and an unreachable network falls back to it with a note. A `404`
+is an answer, not an outage, and reports the URL it fetched. git is no longer
+required. Engine 0.10.10 and earlier cloned `emergent-registry` instead and
+installed a pinned version using the current manifest's filenames. URL
+construction, checksum parsing and cache freshness live in
+`emergent-engine/src/marketplace/registry.rs` as pure functions.
+
 Retention: after engine 0.10.10 `retention_days` is enforced by a prune at startup and once a day, over both the SQLite store and the rotated `events-YYYY-MM-DD.jsonl` logs. `0` disables pruning. The decisions live in `emergent-engine/src/retention.rs` as pure functions.
 
 ## Release Process
 
-Three repos must be released in order. The Rust SDK must be published to crates.io before primitives can build against it.
+Two repos are released, in this order: the SDKs, then emergent-primitives, then the engine. The primitives build against the published Rust SDK, and the engine's marketplace reads its catalog from the primitives release, so each step needs the one before it.
 
-### Step 1: Release emergent (engine + SDKs)
+### Step 1: Release emergent (SDKs, then engine)
 
 ```bash
-# 1. Bump workspace version in Cargo.toml and emergent-engine/Cargo.toml
-# 2. Update example deps to match (examples/*/Cargo.toml)
-# 3. Bump Python SDK version in sdks/py/pyproject.toml
-# 4. Bump TypeScript SDK version in sdks/ts/deno.json and sdks/ts/package.json
+# 1. SDK version: bump the workspace version in Cargo.toml (emergent-client
+#    inherits it), sdks/py/pyproject.toml, sdks/ts/deno.json and
+#    sdks/ts/package.json. The Go SDK has no version file; its tag is its version.
+# 2. Engine version: bump emergent-engine/Cargo.toml. It is separate from the
+#    SDK version.
+# 3. Update example deps to match (examples/*/Cargo.toml)
 
-cargo check && cargo clippy --all-targets && cargo nextest run
+cargo fmt --all --check && cargo clippy --workspace --all-targets && cargo nextest run --workspace
 
-# 5. Publish Rust SDK to crates.io (must happen before primitives build)
-cd sdks/rust && cargo publish
+# 4. Commit and push
+git add -A && git commit -S -m "chore: bump SDKs to A.B.C and engine to X.Y.Z"
+git push
 
-# 6. Commit, push, tag
-git add -A && git commit -S -m "chore: bump to X.Y.Z"
-git push && git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+# 5. Tag the SDKs. Each tag publishes one SDK (table below).
+for sdk in rust py ts go; do git tag -s "sdks/$sdk/vA.B.C" -m "sdks/$sdk/vA.B.C"; done
+git push origin sdks/rust/vA.B.C sdks/py/vA.B.C sdks/ts/vA.B.C sdks/go/vA.B.C
+
+# 6. Release emergent-primitives (Step 2), then tag the engine
+git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 ```
 
-Tagging triggers two GitHub Actions. The release workflow first runs `ci.yml` (the Rust, Python, TypeScript and Go gates) as its quality gate, and the builds, the GitHub release and the crates.io publish all wait for it:
-- **Release workflow** — builds engine binaries for Linux/macOS
-- **PyPI workflow** — publishes Python SDK to PyPI
-- TypeScript SDK (JSR) is published manually by the maintainer
+The `vX.Y.Z` tag triggers the release workflow. It first runs `ci.yml` (the Rust, Python, TypeScript and Go gates) as its quality gate; the engine builds for Linux and macOS, the GitHub release, the `emergent-engine` crates.io publish and the AUR update all wait for it.
+
+Each SDK publishes from its own tag, not from the engine tag:
+
+| Tag | Workflow | Publishes |
+|-----|----------|-----------|
+| `sdks/rust/vX.Y.Z` | `workflow-crates-io.yml` | `emergent-client` to crates.io |
+| `sdks/py/vX.Y.Z` | `workflow-pypi.yml` | Python SDK to PyPI |
+| `sdks/ts/vX.Y.Z` | `workflow-jsr.yml` | `@govcraft/emergent` to JSR |
+| `sdks/go/vX.Y.Z` | `workflow-go-proxy.yml` | Go module to the Go proxy |
+
+Every SDK workflow also accepts a manual `workflow_dispatch`. The engine and the SDKs are versioned separately (engine 0.10.x, SDKs 0.13.x at the time of writing). A `v0.11.0` engine tag and GitHub release already exist from March 2026, so the next engine minor must skip that number.
 
 ### Step 2: Release emergent-primitives
 
@@ -210,21 +239,17 @@ git push && git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 
 Tagging triggers the release workflow which builds Rust + Deno binaries for all platforms.
 
-### Step 3: Update emergent-registry
+There is no third step. After primitives 0.11.0 each primitive's
+`manifest.toml` lives next to its code, the release workflow generates
+`index.toml` and `manifests.toml` from the manifests and the tag, and attaches
+both to the release. After engine 0.10.10 the engine fetches those two assets
+over HTTPS from `https://github.com/Govcraft/emergent-primitives/releases`, so
+nothing has to be retyped in a third repository.
 
-```bash
-# 1. Update version in index.toml and all primitives/*/manifest.toml
-cd /path/to/emergent-registry
-sed -i 's/OLD_VERSION/NEW_VERSION/g' index.toml primitives/*/manifest.toml
-
-# 2. If a new primitive was added, create its manifest directory and manifest.toml
-
-# 3. Commit and push
-git add -A && git commit -S -m "chore: bump to X.Y.Z"
-git push
-```
-
-No tagging needed — the registry is a plain git repo that the engine clones/pulls.
+**The emergent-registry repo is archived, not deleted.** Engine 0.10.10 and
+earlier have its git URL compiled in and clone it on every marketplace command,
+so deleting it would break the marketplace for every engine already installed.
+Its README points at the new location.
 
 ### Verification
 

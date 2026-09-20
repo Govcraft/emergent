@@ -18,13 +18,13 @@
 //!         │                 │                 │
 //!         ▼                 ▼                 ▼
 //!    ┌──────────────────────────────────────────┐
-//!    │             Registry (Git)               │
-//!    │    index.toml + primitive manifests      │
+//!    │        Registry (HTTPS, cached)          │
+//!    │     index.toml + manifests.toml          │
 //!    └──────────────────────────────────────────┘
 //!         │
 //!         ▼
 //!    ┌──────────────────────────────────────────┐
-//!    │      GitHub Releases (Binaries)          │
+//!    │   GitHub Releases (archives + sums)      │
 //!    │   tar.gz (Unix) / zip (Windows)          │
 //!    └──────────────────────────────────────────┘
 //!         │
@@ -66,9 +66,10 @@ pub use error::{MarketplaceError, Result};
 pub use installer::{InstallOptions, InstallResult, Installer};
 pub use platform::TargetPlatform;
 pub use registry::{
-    ArgumentInfo, BinaryInfo, MessageInfo, PrimitiveEntry, PrimitiveInfo, PrimitiveManifest,
-    Registry, RegistryInfo, RegistryMetadata,
+    ArgumentInfo, BinaryInfo, CachePlan, ManifestBundle, MessageInfo, PrimitiveEntry,
+    PrimitiveInfo, PrimitiveManifest, Registry, RegistryInfo, RegistryMetadata,
 };
 pub use storage::{
-    InstallationManifest, InstalledPrimitive, MarketplaceConfig, MarketplaceStorage,
+    DEFAULT_REGISTRY_URL, InstallationManifest, InstalledPrimitive, MarketplaceConfig,
+    MarketplaceStorage, migrated_registry_url,
 };

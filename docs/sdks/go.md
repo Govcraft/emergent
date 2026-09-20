@@ -236,20 +236,32 @@ Both `PublishAll` and `PublishStream` are available on `EmergentSource` and `Eme
 
 ## Error Handling
 
-```go
-err := source.Publish(message)
+A failed subscribe, publish or discover returns a `SubscriptionError`,
+`PublishError` or `DiscoveryError` that wraps its cause. Use `errors.As` to
+reach the cause:
 
-switch e := err.(type) {
-case *emergent.SocketNotFoundError:
-    fmt.Fprintf(os.Stderr, "Socket not found: %s\n", e.Path)
-case *emergent.ConnectionError:
-    fmt.Fprintf(os.Stderr, "Connection failed: %s\n", e.Msg)
-case *emergent.TimeoutError:
-    fmt.Fprintf(os.Stderr, "Timed out: %s\n", e.Msg)
-default:
+```go
+stream, err := sink.Subscribe(ctx, []string{"timer.tick"})
+
+var timeoutErr *emergent.TimeoutError
+var connErr *emergent.ConnectionError
+var subErr *emergent.SubscriptionError
+switch {
+case errors.As(err, &timeoutErr):
+    fmt.Fprintf(os.Stderr, "Timed out after %s\n", timeoutErr.Dur)
+case errors.As(err, &connErr):
+    fmt.Fprintf(os.Stderr, "Connection failed: %s\n", connErr.Msg)
+case errors.As(err, &subErr):
+    fmt.Fprintf(os.Stderr, "Engine rejected %v: %s\n", subErr.MessageTypes, subErr.Msg)
+case err != nil:
     fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 }
 ```
+
+After SDK release 0.13.1 the three wrapping errors have an `Err` field and an
+`Unwrap` method; `Err` is nil when the engine rejected the request. On 0.13.1
+and earlier the cause was flattened into `Msg`, so `errors.As` could not find a
+`TimeoutError` behind a subscribe, publish or discover.
 
 ### Error Types
 
