@@ -450,6 +450,18 @@ earlier Python raised the built-in error itself, which no `except
 EmergentError` catches (Govcraft/emergent#77). Go reports it as a
 `*PublishError` wrapping the `net` error.
 
+When the engine closes the connection, every call still waiting for an answer
+fails at once with a `ConnectionError` ("connection closed"), and the message
+stream ends, so a `for await`, `async for` or channel range over it stops. That
+holds for Go, Python and TypeScript after SDK release 0.13.1. On 0.13.1 and
+earlier an acknowledged publish, `discover`, subscribe, topology or
+subscriptions call in flight waited out its own timeout, 30 seconds by default,
+and reported a timeout (Govcraft/emergent#62 for Go, Govcraft/emergent#80 for
+Python and TypeScript). On those releases the TypeScript stream never ended and
+the Python stream ended only when the read failed, not on a clean close, so a
+consumer loop could wait for ever on a dead engine. In Rust the wait ends with
+`ConnectionFailed` as soon as acton's client sees the connection go.
+
 Rust's `ClientError` also has `IoError`, `IpcError`, `ProtocolError` and
 `EngineError`. The SDK returns none of them. The first two have `From`
 conversions for your own `?`.
