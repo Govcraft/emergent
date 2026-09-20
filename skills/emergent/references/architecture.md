@@ -95,21 +95,28 @@ stream is dropped. After engine 0.10.10 the engine will not start a topology
 whose enabled primitives, plus 4 reserved connections, exceed the effective
 limit.
 
-**Declarations bind only when told to, and only on publish.** After engine
-0.10.10, `[engine].enforce_declarations` makes a primitive's `publishes` list
-authoritative: `"warn"` logs a publish outside it, `"strict"` also refuses the
-message, keeps it out of the event store and both indexes, fails the publisher's
-`publish_ack`, and emits `system.error.<name>` describing the rejection. The
-default is `"off"`, which is the 0.10.10 behavior of forwarding whatever a
-client sends. The check is one hash lookup for the primitive and one set lookup
+**Declarations bind only when told to.** After engine 0.10.10,
+`[engine].enforce_declarations` makes a primitive's `publishes` and `subscribes`
+lists authoritative: `"warn"` logs an operation outside them, `"strict"` also
+refuses it. A refused publish never reaches the event store or the subscribers
+and fails `publish_ack`; a refused subscribe is never applied. Both come back to
+the client as `ACCESS_DENIED` carrying the engine's sentence, and both emit
+`system.error.<name>`. The default is `"off"`, which is the 0.10.10 behavior,
+and in that mode the engine does not install a policy at all.
+
+Enforcement lives in an `IpcSecurityPolicy` (acton-reactive 9.4.0), so the
+decision happens before acton routes the request or applies the subscription
+rather than after. Admission binds a trusted name to the connection by walking
+the peer pid up its process ancestry to a pid the engine spawned, which is how a
+primitive started through `uv` resolves although the engine's own child is `uv`.
+Per operation the cost is one hash lookup for the primitive and one set lookup
 plus a short prefix scan for the topic, off a table built once from config.
 
-Two limits are worth stating plainly. The sender is identified by the message's
-own `source` field, which the client fills in, so enforcement catches mistakes
-rather than lies; connection identity is Govcraft/emergent#24. And the subscribe
-half of the pair is not implemented, because acton-reactive 9.3.0 applies and
-acknowledges a SUBSCRIBE frame inside its listener and offers the embedding
-engine no hook, filter or notification on that path.
+Two limits are worth stating plainly. The identity is a pid: pids can be reused,
+and a connection is not revoked when its child exits, so binding a connection to
+a specific child process instance is still open (Govcraft/emergent#24). And the
+ancestry walk needs `/proc`, so where it is unavailable a primitive behind a
+wrapper resolves as unidentified rather than by name.
 
 **A subscription is a literal message type or a terminal-wildcard prefix.**
 The broker keeps two indexes. A literal topic is looked up character for

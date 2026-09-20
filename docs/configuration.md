@@ -84,7 +84,7 @@ api_port = 8891                # HTTP API port (0 to disable)
 max_connections = 1024         # Concurrent IPC connections the engine accepts
 shutdown_drain_ms = 500        # Voluntary-exit window per shutdown phase
 shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
-enforce_declarations = "off"   # Whether publishes declarations bind: off, warn, strict
+enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
 ```
 
 | Option | Default | Description |
@@ -95,7 +95,7 @@ enforce_declarations = "off"   # Whether publishes declarations bind: off, warn,
 | `max_connections` | unset | Maximum concurrent IPC connections. Leave it out to keep what acton-reactive resolves. |
 | `shutdown_drain_ms` | `500` | How long a shutdown phase waits for its primitives to exit on the `system.shutdown` broadcast alone, before SIGTERM. Sources skip this window because they cannot subscribe. |
 | `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
-| `enforce_declarations` | `"off"` | After 0.10.10. Whether a primitive's `publishes` list binds it. `"off"`, `"warn"` or `"strict"`. |
+| `enforce_declarations` | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it. `"off"`, `"warn"` or `"strict"`. |
 
 **Shutdown timing:** both windows are deadlines, not sleeps. A phase moves on the
 moment every one of its primitives has exited, so a topology of well-behaved
@@ -133,18 +133,19 @@ topology viewer, which reach `system.request.topology` over the same socket. The
 check runs against the limit that actually took effect, so it catches a ceiling
 set in `ipc.toml` as readily as one set in `emergent.toml`.
 
-**Declaration enforcement:** a primitive's `publishes` list describes the
-topology, and up to engine 0.10.10 it was advisory. The broker stored and
-forwarded whatever a client sent, so a topic the code emitted but the TOML never
-declared flowed anyway, and the declaration quietly stopped describing the
-system. After 0.10.10, `[engine].enforce_declarations` decides whether the list
-binds:
+**Declaration enforcement:** a primitive's `publishes` and `subscribes` lists
+describe the topology, and up to engine 0.10.10 they were advisory. The broker
+stored and forwarded whatever a client sent and the IPC listener applied
+whatever subscription a client asked for, so a topic the code used but the TOML
+never declared worked anyway, and the declaration quietly stopped describing the
+system. After 0.10.10, `[engine].enforce_declarations` decides whether the lists
+bind:
 
 | Value | Effect |
 |-------|--------|
-| `"off"` (default) | Nothing is checked. Exactly the 0.10.10 behavior. |
-| `"warn"` | A publish outside the declarations logs at WARN, naming the primitive, the operation and the message type. The message still flows. |
-| `"strict"` | The same log line, and the message is refused: it is neither stored nor forwarded, the publisher's `publish_ack` fails, and the engine emits `system.error.<name>` describing the rejection. |
+| `"off"` (default) | Nothing is checked. Exactly the 0.10.10 behavior, and the engine does not install a security policy at all. |
+| `"warn"` | An operation outside the declarations logs at WARN, naming the primitive, the operation and the message type. It still goes through. |
+| `"strict"` | The same log line, and the operation is refused. A publish is neither stored nor forwarded and `publish_ack` fails; a subscribe is not applied. Either way the client gets an `ACCESS_DENIED` error carrying the engine's explanation, and the engine emits `system.error.<name>` describing the rejection. |
 
 The default is `"off"` because turning enforcement on can stop messages a
 working topology depends on. The shipped example configurations are clean under
@@ -153,45 +154,69 @@ existed usually is not. The `exec` handler is the common case: configured the
 way its documented example is written, declaring only its `--publish-as` topic,
 it violates on every failure because its `--error-as` topic (default
 `exec.error`) is undeclared. Run `"warn"` first, read the log, add the topics it
-names to `publishes`, then move to `"strict"`.
+names to `publishes` or `subscribes`, then move to `"strict"`.
 
-Matching follows the same rule as subscriptions: a declared entry is either an
-exact message type or a prefix ending in a single trailing `*`, so
-`publishes = ["metrics.*"]` permits `metrics.cpu`. `system.request.subscriptions`
-and `system.request.topology` are engine protocol rather than topology, and are
-always allowed: every SDK sends the first before it can subscribe to anything.
-The engine's own `system.*` lifecycle events are produced by the engine, not by
-a primitive, and are never checked.
+Matching follows the same rule as subscriptions everywhere else: a declared
+entry is either an exact message type or a prefix ending in a single trailing
+`*`, so `publishes = ["metrics.*"]` permits `metrics.cpu`.
 
-**What enforcement protects against, and what it does not.** The check is keyed
-on the message's `source` field, which the publishing client fills in itself. So
-enforcement catches a primitive that names itself honestly and publishes
-something it did not declare, which is what every typo, every drifted
-declaration and every undeclared topic looks like. It does **not** stop a client
-that lies: anything that can open the engine's socket can claim to be `timer`
-and publish whatever `timer` declared. The engine has no connection identity to
-check the claimed name against, so this is a correctness and hygiene control,
-not a security boundary. Authenticating connections by spawned PID is tracked
-separately (Govcraft/emergent#24). Treat access to the Unix socket as the actual
-trust boundary.
+Some topics are protocol rather than topology, and are always allowed on the
+operation they belong to, for every client:
 
-**Subscriptions are not enforced.** The issue asked for both halves, and only
-the publish half is implementable today. A SUBSCRIBE request is handled inside
-acton-reactive's IPC listener and acknowledged there; acton 9.3.0 exposes no
-hook, callback or validation point on that path, and no way to enumerate
-connections after the fact, so the engine never sees the request and cannot
-refuse it. A primitive using the SDKs still subscribes only to what the engine
-told it it declared, which is where subscription filtering has always lived, but
-a client speaking the protocol directly can subscribe to anything. In `"strict"`
-mode the `subscribes` list therefore remains advisory while the `publishes` list
-binds.
+| Topic | Operation |
+|-------|-----------|
+| `system.request.subscriptions` | publish |
+| `system.request.topology` | publish |
+| `system.response.subscriptions` | subscribe |
+| `system.response.topology` | subscribe |
+| `system.shutdown` | subscribe |
 
-**The rejection a publisher sees.** In `"strict"` mode `publish_ack` fails, but
-with acton's generic text, `Publish failed: I/O error: Response channel closed
-without receiving a response`, rather than the engine's explanation. acton 9.3.0
-turns any actor reply into a success frame and gives an actor no way to reply
-with an error of its own, so the engine refuses by not replying. The reason is
-in the engine log and in the `system.error.<name>` payload:
+Every SDK publishes the requests and subscribes to the responses on your
+primitive's behalf, before your code runs, and `system.shutdown` is how a
+primitive learns to stop. Holding a primitive to its TOML on those would refuse
+every primitive at startup. The engine's own `system.*` lifecycle events are
+produced by the engine, not by a primitive, and are never checked.
+
+**How the engine knows who is publishing.** After 0.10.10 the engine binds each
+IPC connection to a primitive when the connection is accepted, using the peer
+pid the kernel reports and the pids of the children it spawned. A primitive
+started through a wrapper resolves too: `path = "uv"` makes `uv` the engine's
+child and the Python interpreter a grandchild, so the engine walks up the
+process ancestry until it reaches a pid it spawned. The name that comes out is
+the kernel's answer, not the `source` field the publisher wrote, and a message
+whose `source` names a different primitive is a violation in its own right.
+
+**What enforcement protects against, and what it does not.** It stops a
+primitive from publishing or subscribing outside its declarations, and it stops
+one primitive from publishing under another's name. It does not authenticate
+who may connect: a client the engine did not spawn is admitted, and in
+`"strict"` mode it may do only what any unidentified client may do, which is ask
+the engine the protocol questions. That is enough for a CLI or a topology
+viewer, and not enough to inject traffic.
+
+The identity is a pid, and pids can be reused. The engine does not yet bind a
+connection to a specific child process instance, or revoke a connection when
+that child exits, so a pid recycled into a new process between a primitive's
+death and the engine noticing could be admitted under the dead primitive's name.
+Closing that is tracked separately (Govcraft/emergent#24). Where `/proc` is not
+available the ancestry walk cannot run, and a primitive behind a wrapper
+resolves as unidentified rather than by name.
+
+Treat access to the Unix socket as the outer trust boundary. Enforcement is what
+keeps a topology honest inside it.
+
+**The rejection a client sees.** In `"strict"` mode the refusal carries the
+engine's own sentence:
+
+```
+publish_ack ERR   'proof' tried to publish 'proof.undeclared', which is not in its declared publishes list
+subscribe ERR     ACCESS_DENIED: 'proof' tried to subscribe 'secrets.all', which is not in its declared subscribes list
+```
+
+A subscribe request is applied all or nothing, so a batch containing one
+undeclared topic is refused whole and the denial names that topic.
+
+The same sentence is in the engine log and in the `system.error.<name>` payload:
 
 ```json
 {"primitive":"proof","operation":"publish","message_type":"proof.undeclared",
@@ -200,7 +225,8 @@ in the engine log and in the `system.error.<name>` payload:
 ```
 
 A sink already subscribed to `system.error.*` sees rejections without
-subscribing to anything new.
+subscribing to anything new. A rejection on a connection the engine could not
+identify has no primitive to attribute an event to, so it stays in the log.
 
 `wire_format` is accepted but selects nothing: IPC is always MessagePack. On engine 0.10.10 and earlier the key was silently inert and the startup line reported the value you set. After 0.10.10 the engine warns at startup that the key has no effect and the ready line no longer names a wire format. Leave it out. To read events in a human-readable form, read the JSON event log.
 
