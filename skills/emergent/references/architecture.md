@@ -96,27 +96,30 @@ whose enabled primitives, plus 4 reserved connections, exceed the effective
 limit.
 
 **Declarations bind only when told to.** After engine 0.10.10,
-`[engine].enforce_declarations` makes a primitive's `publishes` and `subscribes`
-lists authoritative: `"warn"` logs an operation outside them, `"strict"` also
-refuses it. A refused publish never reaches the event store or the subscribers
-and fails `publish_ack`; a refused subscribe is never applied. Both come back to
-the client as `ACCESS_DENIED` carrying the engine's sentence, and both emit
+`[engine].enforce_declarations` makes a primitive's `publishes` list
+authoritative: `"warn"` logs a publish outside it, `"strict"` also refuses it. A
+refused publish never reaches the event store or the subscribers, fails
+`publish_ack` with `ACCESS_DENIED` carrying the engine's sentence, and emits
 `system.error.<name>`. The default is `"off"`, which is the 0.10.10 behavior,
 and in that mode the engine does not install a policy at all.
 
-Enforcement lives in an `IpcSecurityPolicy` (acton-reactive 9.4.0), so the
-decision happens before acton routes the request or applies the subscription
-rather than after. Admission binds a trusted name to the connection by walking
-the peer pid up its process ancestry to a pid the engine spawned, which is how a
-primitive started through `uv` resolves although the engine's own child is `uv`.
-Per operation the cost is one hash lookup for the primitive and one set lookup
-plus a short prefix scan for the topic, off a table built once from config.
+Enforcement lives in an `IpcSecurityPolicy` (acton-reactive 9.4.0), split across
+two modules. `ipc_policy.rs` holds the policy: `authorize` decides, and the
+decision happens before acton routes the request rather than after. Per
+operation the cost is one hash lookup for the primitive and one set lookup plus
+a short prefix scan for the topic, off a table built once from config.
+`ipc_identity.rs` holds `ConnectionIdentity` and the resolver `admit` asks who a
+peer is.
 
-Two limits are worth stating plainly. The identity is a pid: pids can be reused,
-and a connection is not revoked when its child exits, so binding a connection to
-a specific child process instance is still open (Govcraft/emergent#24). And the
-ancestry walk needs `/proc`, so where it is unavailable a primitive behind a
-wrapper resolves as unidentified rather than by name.
+The resolver that ships today names nobody: every connection is `Unmanaged`, so
+the name a check is made under is the `source` the client wrote, and the engine
+warns at startup that this is so. That catches every honest mistake and no lie,
+it lets a refusal be attributed to a primitive that did nothing wrong, and it
+leaves subscriptions unchecked, because a subscribe frame carries no `source` at
+all and refusing on that basis would stop every handler and sink at startup.
+Resolving a peer to the primitive that spawned it, which closes all three, is
+Govcraft/emergent#24; the split is what lets it land as a replacement of
+`ipc_identity.rs` alone.
 
 **That one connection is also rate limited: 100 messages per second, burst 50.**
 acton-reactive applies a token bucket per connection, with those defaults, so

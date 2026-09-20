@@ -146,19 +146,21 @@ depends on. The shipped example configs are clean under `"strict"`, but an
 every failure, because its `--error-as` topic (default `exec.error`) is not in
 `publishes`. Run `"warn"`, fix what it names, then go `"strict"`.
 
-Be precise about the guarantee. The engine identifies the primitive when the
-connection is accepted, from the peer pid the kernel reports, walking up the
-process ancestry to a pid it spawned so that a primitive behind a wrapper such
-as `uv` still resolves. That name is not the `source` field the client writes,
-so a message claiming another primitive's name is refused too. What is not
-covered: a client the engine did not spawn is still admitted, and under
-`"strict"` may do only what any unidentified client may do, which is ask the
-engine the protocol questions, enough for a CLI or a topology viewer and not
-enough to inject traffic; pids can be reused, and the engine does not yet bind a
-connection to a child process instance or revoke it when that child exits
-(Govcraft/emergent#24); and where `/proc` is unavailable the ancestry walk
-cannot run, so a primitive behind a wrapper resolves as unidentified. Access to
-the Unix socket is the outer trust boundary.
+Be precise about the guarantee. The name a check is made under is the `source`
+field on the message, which the client writes itself, so a check catches every
+honest mistake and no lie. The engine says so at startup whenever enforcement is
+on. Three things follow: a client can publish under any configured primitive's
+name and be held to that primitive's declarations rather than refused; a refusal
+is attributed to the name on the message, so `system.error.<name>` can name a
+primitive that did nothing wrong, with the peer pid and `identity.trusted=false`
+on the WARN line beside it as the tell; and a subscribe frame carries no
+`source`, so subscriptions are not checked at all, because refusing them for
+want of a name would stop every handler and sink at startup. Binding a
+connection to the primitive that opened it closes all three and is tracked
+separately (Govcraft/emergent#24); enforcement is already written against that
+binding, so it starts using it with no configuration change. Access to the Unix
+socket is the outer trust boundary, and enforcement is what keeps a topology
+honest inside it.
 
 Every enabled primitive holds one IPC connection for the life of its process,
 so the connection ceiling is a hard cap on topology size. On engine 0.10.10 and
