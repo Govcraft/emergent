@@ -167,8 +167,8 @@ msg := stream.Next()     // blocks, returns nil on close
 msg := stream.TryNext()  // non-blocking, returns nil if empty
 ```
 
-A client has one live stream, so call `Subscribe` once with every topic. After
-SDK release 0.13.1 a second `Subscribe` on the same client closes the earlier
+A client has one live stream, so call `Subscribe` once with every topic. From
+0.14.0 a second `Subscribe` on the same client closes the earlier
 stream, so a range over its channel stops, and returns a new one. The engine
 keeps the earlier subscriptions, so the new stream receives the earlier topics
 as well as the new ones. The earlier stream closes when the second call starts,
@@ -246,7 +246,7 @@ emergent.RunSink("my_sink", []string{"timer.tick"}, func(msg *emergent.EmergentM
 The name argument falls back to the `EMERGENT_NAME` environment variable when
 set to an empty string.
 
-`RunSource` cancels `ctx` on SIGTERM, on SIGINT, and, after SDK release 0.13.1,
+`RunSource` cancels `ctx` on SIGTERM, on SIGINT, and, from 0.14.0,
 when the engine closes the connection. A Source subscribes to nothing, so no
 stream ends to tell it the engine is gone, and a lost connection is the only
 notice an engine that was killed ever gives. On 0.13.1 and earlier only the two
@@ -278,13 +278,13 @@ case errors.As(err, &subErr):
 }
 ```
 
-After SDK release 0.13.1 the three wrapping errors have an `Err` field and an
+From 0.14.0 the three wrapping errors have an `Err` field and an
 `Unwrap` method. `Err` is nil when the engine rejected the request. On 0.13.1
 and earlier the cause was flattened into `Msg`, so neither `errors.As` nor a
 type switch could find a `TimeoutError` behind a subscribe, publish or
 discover, and `errors.Is(err, context.Canceled)` was always false.
 
-`ConnectionError` keeps its cause the same way after 0.13.1: `Err` holds the
+`ConnectionError` keeps its cause the same way from 0.14.0: `Err` holds the
 `net` error from a refused dial or a failed write, so
 `errors.Is(err, syscall.ECONNREFUSED)` and `errors.As(err, &opErr)` with a
 `*net.OpError` work, through a `SubscriptionError` wrapped around it too. `Err`
@@ -305,8 +305,8 @@ closed". On 0.13.1 and earlier `ConnectionError` had only `Msg`.
 | `DisposedError`       | `DISPOSED`            | `ClientType`     |
 | `ValidationError`     | `VALIDATION_ERROR`    | `Msg`, `Field`   |
 
-A frame the engine sends with a malformed body never reaches the caller. After
-SDK release 0.13.1 it is logged and skipped, and the frames behind it are
+A frame the engine sends with a malformed body never reaches the caller. From
+0.14.0 it is logged and skipped, and the frames behind it are
 still delivered. On 0.13.1 and earlier a body that did not decode emptied the
 read buffer, which lost every frame already buffered behind it, and a message
 with wrong-typed fields reached the subscriber with an empty `ID`.

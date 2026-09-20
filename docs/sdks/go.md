@@ -142,7 +142,7 @@ emergent.RunSink("name", []string{"topic"}, func(msg *emergent.EmergentMessage) 
 })
 ```
 
-After SDK release 0.13.1 `RunSource` also cancels `ctx` when the engine closes
+From 0.14.0 `RunSource` also cancels `ctx` when the engine closes
 the connection. A Source subscribes to nothing, so no stream ends to tell it the
 engine is gone. On 0.13.1 and earlier only SIGTERM and SIGINT cancelled it.
 
@@ -205,8 +205,8 @@ msg := stream.Next() // nil when closed
 msg := stream.TryNext() // nil if nothing available
 ```
 
-A client has one live stream, so call `Subscribe` once with every topic. After
-SDK release 0.13.1 a second `Subscribe` on the same client closes the earlier
+A client has one live stream, so call `Subscribe` once with every topic. From
+0.14.0 a second `Subscribe` on the same client closes the earlier
 stream and returns a new one, which receives the earlier topics too because the
 engine keeps those subscriptions. On 0.13.1 and earlier the earlier stream was
 left open and unfed, and nothing ever closed it.
@@ -268,12 +268,12 @@ case err != nil:
 }
 ```
 
-After SDK release 0.13.1 the three wrapping errors have an `Err` field and an
+From 0.14.0 the three wrapping errors have an `Err` field and an
 `Unwrap` method; `Err` is nil when the engine rejected the request. On 0.13.1
 and earlier the cause was flattened into `Msg`, so `errors.As` could not find a
 `TimeoutError` behind a subscribe, publish or discover.
 
-`ConnectionError` keeps its cause the same way after 0.13.1: `Err` holds the
+`ConnectionError` keeps its cause the same way from 0.14.0: `Err` holds the
 `net` error from a refused dial or a failed write, so
 `errors.Is(err, syscall.ECONNREFUSED)` and `errors.As(err, &opErr)` with a
 `*net.OpError` work, through a `SubscriptionError` wrapped around it too. `Err`

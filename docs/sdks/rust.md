@@ -219,7 +219,7 @@ let stream = handler.subscribe(topics).await?;
 ```
 
 A Handler or Sink has one message stream, so pass every topic to one `subscribe`
-call. A second call returns `SubscriptionFailed`. After emergent-client 0.13.1
+call. A second call returns `SubscriptionFailed`. From 0.14.0
 it is refused before anything is sent, so the first stream and
 `subscribed_types()` stay as they were. On 0.13.1 and earlier the engine was
 asked first, so the refused topics started arriving on the first stream. To read
@@ -345,7 +345,7 @@ it cheap. The engine can still refuse it. The IPC connection is rate limited to
 message when its mailbox is full or when the engine is shutting down. A refused
 message is never delivered to anyone.
 
-After engine 0.13.1 the SDK claims the engine's answer to every `publish` and
+From 0.14.0 the SDK claims the engine's answer to every `publish` and
 makes a refusal visible. On 0.13.1 and earlier the answer was dropped at `trace`
 level and `publish` reported success over lost messages.
 

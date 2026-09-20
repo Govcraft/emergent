@@ -11,7 +11,7 @@ emergent --config ./emergent.toml
 
 Use `emergent init` to generate a starter config interactively.
 
-On engine 0.10.10 and earlier an unknown key was ignored without a word, so `retension_days` or a singular `subscribe` loaded cleanly and did nothing. After 0.10.10 an unknown key is a load error that names the key, the keys its table accepts, and the file it came from.
+On engine 0.10.10 and earlier an unknown key was ignored without a word, so `retension_days` or a singular `subscribe` loaded cleanly and did nothing. From 0.14.0 an unknown key is a load error that names the key, the keys its table accepts, and the file it came from.
 
 ## Complete Example
 
@@ -94,12 +94,12 @@ enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
 | `name` | `"emergent"` | Engine instance name |
 | `socket_path` | `"auto"` | `"auto"` for XDG-compliant path, or explicit path like `"/tmp/emergent.sock"` |
 | `api_port` | `8891` | HTTP API port for topology queries. Set to `0` to disable. |
-| `api_allowed_hosts` | `[]` | After 0.10.10. Host names the HTTP API answers to, beyond an IP literal and `localhost`. |
+| `api_allowed_hosts` | `[]` | From 0.14.0. Host names the HTTP API answers to, beyond an IP literal and `localhost`. |
 | `max_connections` | unset | Maximum concurrent IPC connections. Leave it out to keep what acton-reactive resolves. |
 | `shutdown_drain_ms` | `500` | How long a shutdown phase waits for its primitives to exit on the `system.shutdown` broadcast alone, before SIGTERM. Sources skip this window because they cannot subscribe. |
 | `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
 | `startup_ready_timeout_ms` | `5000` | How long startup waits for one tier of primitives to reach the engine before starting the next. `0` disables the wait. |
-| `enforce_declarations` | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it. `"off"`, `"warn"` or `"strict"`. |
+| `enforce_declarations` | `"off"` | From 0.14.0. Whether a primitive's `publishes` and `subscribes` lists bind it. `"off"`, `"warn"` or `"strict"`. |
 
 **Startup timing:** `startup_ready_timeout_ms` is a deadline, not a sleep. The
 engine leaves a tier the moment every primitive in it that declares `subscribes`
@@ -133,7 +133,7 @@ engine logs a warning naming it. Raise `shutdown_grace_ms` for primitives that
 legitimately need longer to flush.
 
 **If the engine dies instead of shutting down** (SIGKILL, or the abort a release
-build takes on panic), none of that timing applies. After engine 0.10.10 the
+build takes on panic), none of that timing applies. From 0.14.0 the
 primitives stop anyway: on Linux the engine arms a parent-death SIGTERM in each
 child before exec, and on every platform a primitive sees its IPC connection
 reach EOF, which ends a Handler's or Sink's subscription stream and, in the Rust
@@ -152,7 +152,7 @@ key out to accept whatever acton resolves.
 On engine 0.10.10 and earlier the engine never looked at the limit. A topology
 larger than the ceiling started anyway: the primitives that lost the race to
 connect were dropped, `/api/topology` still reported them as `running`, and
-nothing said why they were doing no work. After 0.10.10 the engine refuses to
+nothing said why they were doing no work. From 0.14.0 the engine refuses to
 start when the limit cannot cover every enabled primitive plus 4 reserved
 connections, and the error names the limit, the primitive count and the key to
 raise. The 4 cover one restarting primitive, which can briefly hold both its old
@@ -166,7 +166,7 @@ describe the topology, and up to engine 0.10.10 they were advisory. The broker
 stored and forwarded whatever a client sent and the IPC listener applied
 whatever subscription a client asked for, so a topic the code used but the TOML
 never declared worked anyway, and the declaration quietly stopped describing the
-system. After 0.10.10, `[engine].enforce_declarations` decides whether the lists
+system. From 0.14.0, `[engine].enforce_declarations` decides whether the lists
 bind:
 
 | Value | Effect |
@@ -283,7 +283,7 @@ $ curl -H 'Host: attacker.example' http://127.0.0.1:8891/api/topology
 ```
 
 The one thing an attacker cannot choose is the name the browser puts in the
-request. So after 0.10.10 the API answers only when every host the request names
+request. So from 0.14.0 the API answers only when every host the request names
 is one of:
 
 - an IP literal, such as `127.0.0.1`, `192.168.1.20` or `[::1]`, because a
@@ -330,14 +330,14 @@ limit in `$XDG_CONFIG_HOME/acton/ipc.toml` under `[rate_limit]`
 into one message, or have it publish with an acknowledgment so it cannot outpace
 the engine.
 
-The refusal is visible from the primitive side. After engine 0.13.1 the Rust
+The refusal is visible from the primitive side. From 0.14.0 the Rust
 SDK logs it at `WARN` with the engine's error text and the message type and
 counts it for the caller; the Go, Python and TypeScript SDKs log the unmatched
 ERROR frame at error level. On 0.13.1 and earlier the Rust SDK's fire-and-forget
 `publish` returned success and the refusal was dropped at `trace` level, so the
 loss was silent (Govcraft/emergent#65).
 
-`wire_format` is accepted but selects nothing: IPC is always MessagePack. On engine 0.10.10 and earlier the key was silently inert and the startup line reported the value you set. After 0.10.10 the engine warns at startup that the key has no effect and the ready line no longer names a wire format. Leave it out. To read events in a human-readable form, read the JSON event log.
+`wire_format` is accepted but selects nothing: IPC is always MessagePack. On engine 0.10.10 and earlier the key was silently inert and the startup line reported the value you set. From 0.14.0 the engine warns at startup that the key has no effect and the ready line no longer names a wire format. Leave it out. To read events in a human-readable form, read the JSON event log.
 
 **Socket path resolution:**
 
@@ -361,7 +361,7 @@ retention_days = 30
 
 Both paths support `"auto"` for XDG data directory placement.
 
-**Retention:** on engine 0.10.10 and earlier `retention_days` was parsed and never enforced, so both stores grew without bound. After 0.10.10 the engine prunes at startup and once a day afterwards: SQLite rows older than the window are deleted, and `events-YYYY-MM-DD.jsonl` files dated before the window are removed. The day at the edge of the window is kept, and files that are not rotated event logs are never touched. Each pass logs what it removed. `retention_days = 0` disables pruning and keeps every event, which the engine states at startup.
+**Retention:** on engine 0.10.10 and earlier `retention_days` was parsed and never enforced, so both stores grew without bound. From 0.14.0 the engine prunes at startup and once a day afterwards: SQLite rows older than the window are deleted, and `events-YYYY-MM-DD.jsonl` files dated before the window are removed. The day at the edge of the window is kept, and files that are not rotated event logs are never touched. Each pass logs what it removed. `retention_days = 0` disables pruning and keeps every event, which the engine states at startup.
 
 ## Sources
 
@@ -530,7 +530,7 @@ running a primitive that would receive nothing.
 Overlapping entries deliver one copy each: a primitive subscribing to both
 `timer.tick` and `timer.*` receives a single `timer.tick`.
 
-Wildcard routing arrived after engine 0.10.10. On 0.10.10 and earlier a
+Wildcard routing arrived from 0.14.0. On 0.10.10 and earlier a
 subscription containing `*` was accepted and then never delivered, so configs
 written for those releases name every type.
 
@@ -621,7 +621,7 @@ The engine starts primitives in this order:
 
 Within each tier, primitives start in the order they appear in the configuration file. This matters when one primitive depends on another's `system.started.*` event -- the subscriber must appear before the publisher in the config.
 
-After engine 0.10.10 the engine waits for a tier before starting the next one: it holds until every primitive in the tier that declares `subscribes` has reached it over IPC, then moves on. A primitive that declares no `subscribes`, every source among them, is never waited on. `startup_ready_timeout_ms` bounds the wait; at the deadline the engine logs a warning naming the primitives it never heard from and carries on, so one broken primitive cannot hang startup. A primitive that exits or fails during the wait releases its tier at once.
+From 0.14.0 the engine waits for a tier before starting the next one: it holds until every primitive in the tier that declares `subscribes` has reached it over IPC, then moves on. A primitive that declares no `subscribes`, every source among them, is never waited on. `startup_ready_timeout_ms` bounds the wait; at the deadline the engine logs a warning naming the primitives it never heard from and carries on, so one broken primitive cannot hang startup. A primitive that exits or fails during the wait releases its tier at once.
 
 On 0.10.10 and earlier the engine slept a fixed 50 ms after each primitive and started the next tier regardless, so anything slower than that to subscribe missed the first events (Govcraft/emergent#66). That included every Deno and Python primitive on a cold start.
 
@@ -742,10 +742,10 @@ args = ["--shell", "sh", "--command", "curl -s ... -H \"Authorization: Bearer $(
 The engine validates configuration at startup:
 
 - All primitive names must be unique
-- Every primitive name must start with a lowercase letter and use only `a-z`, `0-9`, `-`, `_`, at most 64 characters, because the engine builds `system.started.<name>` from it. On engine 0.10.10 and earlier this was not checked and an invalid name aborted the engine once that primitive started; after 0.10.10 the load fails with an error naming the primitive and the rule
+- Every primitive name must start with a lowercase letter and use only `a-z`, `0-9`, `-`, `_`, at most 64 characters, because the engine builds `system.started.<name>` from it. On engine 0.10.10 and earlier this was not checked and an invalid name aborted the engine once that primitive started; from 0.14.0 the load fails with an error naming the primitive and the rule
 - Paths must exist
-- Every `subscribes` entry must be an exact message type or a prefix ending in a single trailing `*`. A wildcard anywhere else, such as `system.*.error`, is a load error (after 0.10.10)
-- `restart` must be one of `never`, `on-failure` or `always` (after 0.10.10)
-- Unknown keys are a load error that names the key and its table (after 0.10.10). That is what rejects `subscribes` on a source and `publishes` on a sink, since neither table has that key
+- Every `subscribes` entry must be an exact message type or a prefix ending in a single trailing `*`. A wildcard anywhere else, such as `system.*.error`, is a load error (from 0.14.0)
+- `restart` must be one of `never`, `on-failure` or `always` (from 0.14.0)
+- Unknown keys are a load error that names the key and its table (from 0.14.0). That is what rejects `subscribes` on a source and `publishes` on a sink, since neither table has that key
 
 `subscribes` and `publishes` may be empty or omitted. The engine does not require them, and an empty `subscribes` on a handler or sink loads and receives nothing.

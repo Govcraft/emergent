@@ -82,7 +82,7 @@ Each primitive in the response includes:
 
 The engine itself appears as the first entry with name `"emergent-engine"`.
 
-After engine 0.10.10 the rest of the list has a stable order: primitives are
+From 0.14.0 the rest of the list has a stable order: primitives are
 sorted by kind in data-flow order (every `source`, then every `handler`, then
 every `sink`) and by name, byte order, within a kind. Both transports serialize
 the same sorted payload, so two reads of an unchanged topology are byte
@@ -90,7 +90,7 @@ identical and a consumer can diff them directly. On 0.10.10 and earlier the
 order came from the engine's internal hash map and changed between reads
 (Govcraft/emergent#67), so consumers had to sort for themselves.
 
-After engine 0.10.10, `state`, `pid` and `error` are live: a running primitive
+From 0.14.0, `state`, `pid` and `error` are live: a running primitive
 reports `"running"` with its pid, one that exited cleanly reports `"stopped"`
 with a null pid, and one that exited non-zero reports `"failed"` with the exit
 status in `error`. On 0.10.10 and earlier every managed primitive reported

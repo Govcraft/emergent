@@ -8,7 +8,7 @@ and `--verbose/-v` logs to stderr instead of
 
 On engine 0.10.10 and earlier unknown keys were ignored without a warning, so a
 typo such as `subscribe =` produced a primitive that loaded and received nothing.
-After 0.10.10 an unknown key is a load error naming the key, the keys its table
+From 0.14.0 an unknown key is a load error naming the key, the keys its table
 accepts, and the file. On an older engine, check spelling first when a primitive
 is silent.
 
@@ -118,15 +118,15 @@ subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ti
 | `name` | String | `"emergent"` | Engine instance name |
 | `socket_path` | String | `"auto"` | Unix socket path (`"auto"` for XDG default) |
 | `api_port` | Integer | `8891` | HTTP API port (`0` to disable) |
-| `api_allowed_hosts` | Array | `[]` | After 0.10.10. Host names the HTTP API answers to, beyond an IP literal and `localhost` |
-| `max_connections` | Integer | unset | After 0.10.10. Maximum concurrent IPC connections. Unset keeps what acton-reactive resolves, from `$XDG_CONFIG_HOME/acton/ipc.toml` or its own default. Setting it overrides both |
-| `shutdown_drain_ms` | Integer | `500` | After 0.10.10. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
-| `shutdown_grace_ms` | Integer | `2000` | After 0.10.10. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
-| `enforce_declarations` | String | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it: `"off"`, `"warn"` or `"strict"` |
+| `api_allowed_hosts` | Array | `[]` | From 0.14.0. Host names the HTTP API answers to, beyond an IP literal and `localhost` |
+| `max_connections` | Integer | unset | From 0.14.0. Maximum concurrent IPC connections. Unset keeps what acton-reactive resolves, from `$XDG_CONFIG_HOME/acton/ipc.toml` or its own default. Setting it overrides both |
+| `shutdown_drain_ms` | Integer | `500` | From 0.14.0. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
+| `shutdown_grace_ms` | Integer | `2000` | From 0.14.0. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
+| `enforce_declarations` | String | `"off"` | From 0.14.0. Whether a primitive's `publishes` and `subscribes` lists bind it: `"off"`, `"warn"` or `"strict"` |
 
 A primitive's `publishes` and `subscribes` lists were advisory up to engine
 0.10.10: the broker stored and forwarded whatever a client sent, and the IPC
-listener applied whatever subscription a client asked for. After 0.10.10,
+listener applied whatever subscription a client asked for. From 0.14.0,
 `enforce_declarations` decides whether they bind. `"warn"` logs an operation
 outside the declarations at WARN, naming the primitive, the operation and the
 message type, and lets it through. `"strict"` also refuses it: a publish is
@@ -171,7 +171,7 @@ The HTTP API has no authentication, and binding `127.0.0.1` does not keep a
 browser out: a page can re-resolve its own name to `127.0.0.1` and the browser
 then treats the API as that page's origin. Up to engine 0.10.10
 `curl -H 'Host: attacker.example' http://127.0.0.1:8891/api/topology` returned
-the whole topology. After 0.10.10 the API answers only when every host the
+the whole topology. From 0.14.0 the API answers only when every host the
 request names is an IP literal, `localhost`, or a name in `api_allowed_hosts`,
 and returns `421 Misdirected Request` otherwise. The port is never compared, so
 a port forward or a container opened as `localhost` is unaffected. Use
@@ -185,7 +185,7 @@ Every enabled primitive holds one IPC connection for the life of its process,
 so the connection ceiling is a hard cap on topology size. On engine 0.10.10 and
 earlier the engine never checked it: an oversized topology started, the
 primitives that lost the race to connect were dropped, and `/api/topology` still
-called them `running`. After 0.10.10 the engine refuses to start unless the
+called them `running`. From 0.14.0 the engine refuses to start unless the
 effective limit covers every enabled primitive plus 4 reserved connections, one
 for a restarting primitive holding two at once and three for CLI or
 topology-viewer queries over the same socket. The error names the limit, the
@@ -193,7 +193,7 @@ primitive count and the required total. The check reads the limit that actually
 took effect, so a ceiling set in `ipc.toml` is caught as readily as one set in
 `emergent.toml`.
 
-Leave `wire_format` unset. The key still parses (`"messagepack"` or `"json"`) but has no effect: IPC is always MessagePack. On engine 0.10.10 and earlier it was silently inert and the ready line echoed it back; after 0.10.10 setting it earns a warning at startup and the ready line no longer names a format. For human-readable inspection, read the event store's JSON logs.
+Leave `wire_format` unset. The key still parses (`"messagepack"` or `"json"`) but has no effect: IPC is always MessagePack. On engine 0.10.10 and earlier it was silently inert and the ready line echoed it back; from 0.14.0 setting it earns a warning at startup and the ready line no longer names a format. For human-readable inspection, read the event store's JSON logs.
 
 ### [event_store]
 
@@ -207,7 +207,7 @@ Both stores are always on. `~` is **not** expanded in `json_log_dir`,
 `sqlite_path`, or `socket_path`; only a primitive's `path` gets tilde expansion.
 
 On engine 0.10.10 and earlier `retention_days` was parsed and nothing pruned
-either store, so a fast source filled the disk. After 0.10.10 the engine prunes
+either store, so a fast source filled the disk. From 0.14.0 the engine prunes
 at startup and once a day: SQLite rows older than the window are deleted, and
 `events-YYYY-MM-DD.jsonl` files dated before it are removed, keeping the day at
 the edge of the window and never touching files that are not rotated event logs.
@@ -232,7 +232,7 @@ sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | String | Yes | Unique across sources, handlers, and sinks combined. Lowercase letter first, then `a-z 0-9 - _`, at most 64 characters, because the name becomes the last segment of `system.started.<name>`. On engine 0.10.10 and earlier the config loader did not check this, and an invalid name (a space, an uppercase letter) aborted the engine with exit 134 the moment that primitive started, leaving the child it just spawned running as an orphan (Govcraft/emergent#42). After 0.10.10 the loader rejects the name, naming the primitive and the rule, and the engine exits 1 before spawning anything |
+| `name` | String | Yes | Unique across sources, handlers, and sinks combined. Lowercase letter first, then `a-z 0-9 - _`, at most 64 characters, because the name becomes the last segment of `system.started.<name>`. On engine 0.10.10 and earlier the config loader did not check this, and an invalid name (a space, an uppercase letter) aborted the engine with exit 134 the moment that primitive started, leaving the child it just spawned running as an orphan (Govcraft/emergent#42). From 0.14.0 the loader rejects the name, naming the primitive and the rule, and the engine exits 1 before spawning anything |
 | `path` | Path | Yes | Path to executable. See Path Resolution. Must exist for every enabled primitive or the engine refuses to start |
 | `args` | Array[String] | No | Command-line arguments |
 | `enabled` | Boolean | No | Enable/disable (default: `true`) |
@@ -264,9 +264,9 @@ sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
 | `env` | Map[String, String] | No | Environment variables, as literals. See Secrets Management before putting anything here |
 | `unwrap_stdout` | Boolean | No | Same as for handlers: auto-unwrap exec-source's stdout envelope |
 
-### Restart policy (any primitive, after 0.10.10)
+### Restart policy (any primitive, from 0.14.0)
 
-Engine 0.10.10 and earlier never restart a primitive and do not know these keys. After 0.10.10 every `[[sources]]`, `[[handlers]]` and `[[sinks]]` block also takes:
+Engine 0.10.10 and earlier never restart a primitive and do not know these keys. From 0.14.0 every `[[sources]]`, `[[handlers]]` and `[[sinks]]` block also takes:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

@@ -237,7 +237,7 @@ This uses the low-level loop rather than `run_handler`, because the loop owns
 its state outright and so needs no `Arc` or `Mutex`. On emergent-client 0.13.1
 and earlier the loop was the only option for a handler that publishes at all:
 the helper's bound rejected a closure that borrows `handler` across an `.await`
-(Govcraft/emergent#41, see `sdk-api.md`). After 0.13.1 `run_handler` takes the
+(Govcraft/emergent#41, see `sdk-api.md`). From 0.14.0 `run_handler` takes the
 handler by value and a publishing closure compiles.
 
 ```rust

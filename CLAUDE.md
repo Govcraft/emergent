@@ -65,7 +65,7 @@ Emergent is an **event-driven workflow engine** built on **acton-reactive** (a R
 - **Startup**: Sinks → Handlers → Sources (consumers ready before producers)
 - **Shutdown**: Sources (SIGTERM) → Handlers (`system.shutdown` broadcast) → Sinks (`system.shutdown` broadcast)
 
-After engine 0.10.10 startup waits for each tier before starting the next: it
+From 0.14.0 startup waits for each tier before starting the next: it
 holds until every primitive in the tier that declares `subscribes` has reached
 the engine over IPC, bounded by `[engine].startup_ready_timeout_ms` (default
 5000). At the deadline the engine logs a WARN naming the primitives it never
@@ -152,7 +152,7 @@ and by the SDKs. Overlapping topics deliver one copy per message. Engine
 
 ### IPC Protocol
 
-- Wire format: MessagePack, always. `[engine].wire_format` is accepted so older configs keep loading but selects nothing; after engine 0.10.10 setting it warns at startup
+- Wire format: MessagePack, always. `[engine].wire_format` is accepted so older configs keep loading but selects nothing; from 0.14.0 setting it warns at startup
 - Transport: Unix domain sockets
 - Messages registered with `#[acton_message(ipc)]` macro from acton-reactive
 - Environment variables set by engine: `EMERGENT_SOCKET`, `EMERGENT_NAME`, `EMERGENT_PUBLISHES` (comma-separated), `EMERGENT_SUBSCRIBES` (comma-separated)
@@ -160,7 +160,7 @@ and by the SDKs. Overlapping topics deliver one copy per message. Engine
 ### HTTP API
 
 - Axum-based server on configurable port (default: 8891, set `api_port = 0` to disable)
-- After 0.10.10 it answers only to host names that are its own: an IP literal, `localhost`, or a name in `[engine].api_allowed_hosts`; anything else gets `421 Misdirected Request`
+- From 0.14.0 it answers only to host names that are its own: an IP literal, `localhost`, or a name in `[engine].api_allowed_hosts`; anything else gets `421 Misdirected Request`
 - `GET /api/topology` — returns all primitives with state, publishes, subscribes, PID
 
 ### Configuration
@@ -174,15 +174,15 @@ TOML-based configuration in `config/emergent.toml`:
 
 Path resolution: tilde expansion (`~/bin/app`), bare command lookup via PATH (`path = "uv"`), and "auto" XDG paths.
 
-Unknown keys: after engine 0.10.10 every config table denies unknown fields, so a typo is a load error that names the key and its table. On 0.10.10 and earlier it was ignored.
+Unknown keys: from 0.14.0 every config table denies unknown fields, so a typo is a load error that names the key and its table. On 0.10.10 and earlier it was ignored.
 
-Declaration enforcement: `[engine].enforce_declarations` is `"off"`, `"warn"` or `"strict"`, default `"off"`. After engine 0.10.10 it decides whether a primitive's `publishes` list binds it. `"warn"` logs a publish outside the declarations at WARN with the primitive, operation and message type; `"strict"` also refuses it, so the message is neither stored nor forwarded, the client gets an `ACCESS_DENIED` error carrying the engine's sentence, and the engine emits `system.error.<name>` with the reason. Matching is the same exact-or-trailing-wildcard rule as subscriptions. Protocol topics are always allowed on the operation they belong to: publishing `system.request.subscriptions` and `system.request.topology`, subscribing to `system.response.subscriptions`, `system.response.topology` and `system.shutdown`, all of which the SDKs do for you before your code runs. The engine's own `system.*` events arrive as `IpcSystemEvent` and never pass the check. On 0.10.10 and earlier the lists were advisory and nothing was checked. Enforcement runs in an `IpcSecurityPolicy` (acton-reactive 9.4.0), installed only when the mode is `warn` or `strict`, in `emergent-engine/src/ipc_policy.rs`; the decisions are pure functions in `emergent-engine/src/declarations.rs` and the lookup table is built once from config. The name a check is made under comes from the `source` field on the message, which the client writes itself, and the engine warns at startup that this is so: it catches every honest mistake and no lie, a refusal can be attributed to a primitive that did nothing wrong, and subscriptions are not checked at all because a subscribe frame carries no `source` and refusing on that basis would stop every handler and sink at startup. Resolving a connection to the primitive that opened it closes all three and is issue #24, which replaces `emergent-engine/src/ipc_identity.rs` and nothing else.
+Declaration enforcement: `[engine].enforce_declarations` is `"off"`, `"warn"` or `"strict"`, default `"off"`. From 0.14.0 it decides whether a primitive's `publishes` list binds it. `"warn"` logs a publish outside the declarations at WARN with the primitive, operation and message type; `"strict"` also refuses it, so the message is neither stored nor forwarded, the client gets an `ACCESS_DENIED` error carrying the engine's sentence, and the engine emits `system.error.<name>` with the reason. Matching is the same exact-or-trailing-wildcard rule as subscriptions. Protocol topics are always allowed on the operation they belong to: publishing `system.request.subscriptions` and `system.request.topology`, subscribing to `system.response.subscriptions`, `system.response.topology` and `system.shutdown`, all of which the SDKs do for you before your code runs. The engine's own `system.*` events arrive as `IpcSystemEvent` and never pass the check. On 0.10.10 and earlier the lists were advisory and nothing was checked. Enforcement runs in an `IpcSecurityPolicy` (acton-reactive 9.4.0), installed only when the mode is `warn` or `strict`, in `emergent-engine/src/ipc_policy.rs`; the decisions are pure functions in `emergent-engine/src/declarations.rs` and the lookup table is built once from config. The name a check is made under comes from the `source` field on the message, which the client writes itself, and the engine warns at startup that this is so: it catches every honest mistake and no lie, a refusal can be attributed to a primitive that did nothing wrong, and subscriptions are not checked at all because a subscribe frame carries no `source` and refusing on that basis would stop every handler and sink at startup. Resolving a connection to the primitive that opened it closes all three and is issue #24, which replaces `emergent-engine/src/ipc_identity.rs` and nothing else.
 
-HTTP API host guard: the API has no authentication and binding `127.0.0.1` does not keep a browser out, because a page can re-resolve its own name to `127.0.0.1` and the browser then treats the API as that page's own origin. Up to engine 0.10.10 `curl -H 'Host: attacker.example' http://127.0.0.1:8891/api/topology` returned every primitive's name, kind, state, pid and topics. After 0.10.10 the API answers only when every host the request names is an IP literal, `localhost`, or a name in `[engine].api_allowed_hosts`, and returns `421 Misdirected Request` with a body naming that key otherwise. The port is never compared, so a port forward or a container opened as `localhost` is unaffected. Every `Host` header is checked rather than the first, and the request URI's authority as well, because hyper keeps a duplicate `Host` and an absolute-form request line intact, and `axum::serve` speaks HTTP/2 over cleartext where there is no `Host` header at all. A request naming no host is refused. The decisions are pure functions in `emergent-engine/src/api_host.rs`, whose table mirrors `primitives/sse-sink/host_test.ts` in emergent-primitives row for row so the two implementations cannot drift; `api_allowed_hosts` entries are validated at load, since a value with a scheme, port, path or `*` would be listed and never match.
+HTTP API host guard: the API has no authentication and binding `127.0.0.1` does not keep a browser out, because a page can re-resolve its own name to `127.0.0.1` and the browser then treats the API as that page's own origin. Up to engine 0.10.10 `curl -H 'Host: attacker.example' http://127.0.0.1:8891/api/topology` returned every primitive's name, kind, state, pid and topics. From 0.14.0 the API answers only when every host the request names is an IP literal, `localhost`, or a name in `[engine].api_allowed_hosts`, and returns `421 Misdirected Request` with a body naming that key otherwise. The port is never compared, so a port forward or a container opened as `localhost` is unaffected. Every `Host` header is checked rather than the first, and the request URI's authority as well, because hyper keeps a duplicate `Host` and an absolute-form request line intact, and `axum::serve` speaks HTTP/2 over cleartext where there is no `Host` header at all. A request naming no host is refused. The decisions are pure functions in `emergent-engine/src/api_host.rs`, whose table mirrors `primitives/sse-sink/host_test.ts` in emergent-primitives row for row so the two implementations cannot drift; `api_allowed_hosts` entries are validated at load, since a value with a scheme, port, path or `*` would be listed and never match.
 
-Connection limit: every enabled primitive holds one IPC connection for the life of its process. The ceiling comes from acton-reactive, resolved from `$XDG_CONFIG_HOME/acton/ipc.toml` (`[limits] max_connections`) or its own default; `[engine].max_connections` overrides both, and leaving the key out keeps whatever acton resolved. After engine 0.10.10 the engine refuses to start when that limit cannot cover every enabled primitive plus `RESERVED_IPC_CONNECTIONS` (4: one for a restart overlap, three for CLI and topology-viewer queries), with an error naming both numbers. On 0.10.10 and earlier there was no check, so an oversized topology started with some primitives silently dropped at the accept semaphore while `/api/topology` still reported them running. The decision lives in `emergent-engine/src/config.rs` as `check_connection_capacity`, a pure function.
+Connection limit: every enabled primitive holds one IPC connection for the life of its process. The ceiling comes from acton-reactive, resolved from `$XDG_CONFIG_HOME/acton/ipc.toml` (`[limits] max_connections`) or its own default; `[engine].max_connections` overrides both, and leaving the key out keeps whatever acton resolved. From 0.14.0 the engine refuses to start when that limit cannot cover every enabled primitive plus `RESERVED_IPC_CONNECTIONS` (4: one for a restart overlap, three for CLI and topology-viewer queries), with an error naming both numbers. On 0.10.10 and earlier there was no check, so an oversized topology started with some primitives silently dropped at the accept semaphore while `/api/topology` still reported them running. The decision lives in `emergent-engine/src/config.rs` as `check_connection_capacity`, a pure function.
 
-Marketplace: after engine 0.10.10 the registry is two files fetched over HTTPS,
+Marketplace: from 0.14.0 the registry is two files fetched over HTTPS,
 `index.toml` and `manifests.toml`, published as assets of the emergent-primitives
 release. `[marketplace].registry_url` (in `$XDG_CONFIG_HOME/emergent/marketplace.toml`)
 is a base URL: one ending in `/releases` resolves to `latest/download/<file>` and
@@ -197,7 +197,7 @@ installed a pinned version using the current manifest's filenames. URL
 construction, checksum parsing and cache freshness live in
 `emergent-engine/src/marketplace/registry.rs` as pure functions.
 
-Retention: after engine 0.10.10 `retention_days` is enforced by a prune at startup and once a day, over both the SQLite store and the rotated `events-YYYY-MM-DD.jsonl` logs. `0` disables pruning. The decisions live in `emergent-engine/src/retention.rs` as pure functions.
+Retention: from 0.14.0 `retention_days` is enforced by a prune at startup and once a day, over both the SQLite store and the rotated `events-YYYY-MM-DD.jsonl` logs. `0` disables pruning. The decisions live in `emergent-engine/src/retention.rs` as pure functions.
 
 ## Release Process
 
@@ -260,10 +260,10 @@ git push && git tag -s vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 
 Tagging triggers the release workflow which builds Rust + Deno binaries for all platforms.
 
-There is no third step. After primitives 0.11.0 each primitive's
+There is no third step. From primitives 0.12.0 each primitive's
 `manifest.toml` lives next to its code, the release workflow generates
 `index.toml` and `manifests.toml` from the manifests and the tag, and attaches
-both to the release. After engine 0.10.10 the engine fetches those two assets
+both to the release. From 0.14.0 the engine fetches those two assets
 over HTTPS from `https://github.com/Govcraft/emergent-primitives/releases`, so
 nothing has to be retyped in a third repository.
 

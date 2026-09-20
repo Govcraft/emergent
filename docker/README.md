@@ -43,7 +43,7 @@ sqlite_path = "/var/lib/emergent/events.db"
 retention_days = 30
 ```
 
-`retention_days` is enforced after engine 0.10.10: the engine prunes both stores at startup and once a day, so a long-running container no longer fills its volume. Set `0` to keep everything.
+`retention_days` is enforced from 0.14.0: the engine prunes both stores at startup and once a day, so a long-running container no longer fills its volume. Set `0` to keep everything.
 
 ## Running Primitives
 

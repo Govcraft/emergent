@@ -2,7 +2,7 @@
 //!
 //! The IPC connection is rate limited to 100 messages per second with a burst
 //! of 50, so a source in a tight loop loses most of what it publishes. Before
-//! engine 0.13.1 every one of those calls returned `Ok(())` and the engine's
+//! 0.14.0 every one of those calls returned `Ok(())` and the engine's
 //! refusal went into acton's unclaimed-response drain at `trace` level. This
 //! starts a real engine and checks that the loss is now accounted for.
 

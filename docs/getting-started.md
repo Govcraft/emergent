@@ -262,7 +262,7 @@ sqlite_path = "./events.db"       # Structured storage for queries
 retention_days = 30                # Days of events to keep (0 keeps everything)
 ```
 
-Every message is persisted before routing. You can replay workflows, trace causation chains, and audit all activity. On engine 0.10.10 and earlier `retention_days` was never enforced and both stores grew without bound; after 0.10.10 the engine prunes them at startup and once a day.
+Every message is persisted before routing. You can replay workflows, trace causation chains, and audit all activity. On engine 0.10.10 and earlier `retention_days` was never enforced and both stores grew without bound; from 0.14.0 the engine prunes them at startup and once a day.
 
 ### The Three Primitive Types
 

@@ -89,7 +89,7 @@ EmergentMessage {
 - The `*` is terminal. `"system.*.error"` can never match, and the engine
   rejects the config instead of starting an idle primitive.
 - Subscribing to both `"timer.tick"` and `"timer.*"` delivers one copy, not two.
-- Wildcards route on engines after 0.10.10; on 0.10.10 and earlier they were
+- Wildcards route on engines from 0.14.0; on 0.10.10 and earlier they were
   accepted and delivered nothing.
 
 **Fan-out**: Multiple primitives subscribe to the same message type. One source event reaches multiple handlers or sinks simultaneously.
@@ -146,7 +146,7 @@ sqlite_path = "./events.db"
 retention_days = 30
 ```
 
-`retention_days` is the window both stores keep. On engine 0.10.10 and earlier it was parsed and never enforced; after 0.10.10 the engine prunes at startup and once a day, and `retention_days = 0` keeps everything.
+`retention_days` is the window both stores keep. On engine 0.10.10 and earlier it was parsed and never enforced; from 0.14.0 the engine prunes at startup and once a day, and `retention_days = 0` keeps everything.
 
 ---
 
@@ -162,7 +162,7 @@ The engine starts primitives in a specific order to ensure consumers are ready b
 
 Within each tier, primitives start in the order they appear in the configuration file. This matters when one primitive depends on another's `system.started.*` event.
 
-After engine 0.10.10 the engine waits for each tier before starting the next: it holds until every primitive in the tier that declares `subscribes` has reached it over IPC, bounded by `[engine].startup_ready_timeout_ms`. So "consumers are ready before producers" is now enforced rather than hoped for. See [Configuration](configuration.md#startup-order). On 0.10.10 and earlier the engine slept 50 ms per primitive and moved on regardless, so a slow-starting subscriber missed the first events (Govcraft/emergent#66).
+From 0.14.0 the engine waits for each tier before starting the next: it holds until every primitive in the tier that declares `subscribes` has reached it over IPC, bounded by `[engine].startup_ready_timeout_ms`. So "consumers are ready before producers" is now enforced rather than hoped for. See [Configuration](configuration.md#startup-order). On 0.10.10 and earlier the engine slept 50 ms per primitive and moved on regardless, so a slow-starting subscriber missed the first events (Govcraft/emergent#66).
 
 ### Three-Phase Shutdown
 
@@ -206,7 +206,7 @@ System events enable reactive patterns. The [ouroboros-loop example](../config/e
 
 Primitives communicate with the engine over Unix domain sockets:
 
-- **Wire format**: MessagePack, always. The `[engine].wire_format` key is accepted so older configs keep loading, but it selects nothing. After engine 0.10.10 setting it earns a warning at startup. For human-readable events, read the JSON event log.
+- **Wire format**: MessagePack, always. The `[engine].wire_format` key is accepted so older configs keep loading, but it selects nothing. From 0.14.0 setting it earns a warning at startup. For human-readable events, read the JSON event log.
 - **Framing**: Length-prefixed messages with type header
 - **Transport**: Unix domain sockets (no network overhead)
 

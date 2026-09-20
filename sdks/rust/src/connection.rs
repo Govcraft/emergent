@@ -649,7 +649,7 @@ impl EmergentSource {
     /// refuse a message because its mailbox is full or it is shutting down. A
     /// refused message is never delivered to anyone.
     ///
-    /// After engine 0.13.1 that refusal is no longer silent. The SDK claims the
+    /// From 0.14.0 that refusal is no longer silent. The SDK claims the
     /// engine's answer to every publish, logs a refusal at `WARN` with the
     /// engine's own error text and the message type, and counts it in
     /// [`publish_stats`](Self::publish_stats). Before that, `publish` reported
@@ -1032,7 +1032,7 @@ impl EmergentHandler {
     /// refuse a message because its mailbox is full or it is shutting down. A
     /// refused message is never delivered to anyone.
     ///
-    /// After engine 0.13.1 that refusal is no longer silent. The SDK claims the
+    /// From 0.14.0 that refusal is no longer silent. The SDK claims the
     /// engine's answer to every publish, logs a refusal at `WARN` with the
     /// engine's own error text and the message type, and counts it in
     /// [`publish_stats`](Self::publish_stats). Before that, `publish` reported

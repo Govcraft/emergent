@@ -39,14 +39,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 `shutdown` fires on SIGTERM, which is how the engine asks for a graceful stop.
-After engine 0.10.10 it also fires when the engine's connection reaches EOF, so
+From 0.14.0 it also fires when the engine's connection reaches EOF, so
 a Source built on `run_source` stops instead of publishing into a dead socket
 when the engine is SIGKILLed or aborts (Govcraft/emergent#56). Select on it
 rather than looping on the publish result. A Source that drives its own loop on
 a bare `EmergentSource` gets no such signal and has to exit on a failed publish
 itself.
 
-The Python, TypeScript and Go helpers do the same after SDK release 0.13.1:
+The Python, TypeScript and Go helpers do the same from 0.14.0:
 `run_source` sets its `shutdown_event`, `runSource` aborts its `AbortSignal` and
 `RunSource` cancels its `context.Context` when the engine closes the connection,
 whether the read ends in EOF or in a reset. On 0.13.1 and earlier those three
@@ -87,7 +87,7 @@ On emergent-client 0.13.1 and earlier the bound was
 holding `handler` across an `.await`: the example above failed to compile with
 "lifetime may not live long enough" (Govcraft/emergent#41). A handler that
 publishes is nearly every handler, so on those versions write the loop below
-instead. After 0.13.1 either form works.
+instead. From 0.14.0 either form works.
 
 #### A handler that publishes: the loop
 
@@ -157,7 +157,7 @@ source.disconnect().await?;
 | `connect_to` | `async fn connect_to(name: &str, socket_path: &Path) -> Result<Self>` | Connect to an explicit socket instead of `EMERGENT_SOCKET` |
 | `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish, fire-and-forget. `Ok` means queued, not delivered: see Publish guarantees below |
 | `publish_ack` | `async fn publish_ack(&self, message: EmergentMessage) -> Result<()>` | Publish and wait for the engine's acknowledgment |
-| `publish_stats` | `fn publish_stats(&self) -> PublishStats` | Counts of accepted, rejected and unanswered `publish` calls. After engine 0.13.1 |
+| `publish_stats` | `fn publish_stats(&self) -> PublishStats` | Counts of accepted, rejected and unanswered `publish` calls. From 0.14.0 |
 | `publish_all` | `async fn publish_all(&self, messages: impl IntoIterator<Item = EmergentMessage>) -> Result<usize>` | Publish each message with `publish_ack`; returns the count |
 | `publish_stream` | `async fn publish_stream<S>(&self, stream: S) -> Result<usize>` | Same, from an async `Stream` |
 | `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
@@ -186,7 +186,7 @@ handler.disconnect().await?;
 | `subscribe` | `async fn subscribe(&mut self, types: impl IntoSubscription) -> Result<MessageStream>` | Subscribe and get stream |
 | `publish` | `async fn publish(&self, message: EmergentMessage) -> Result<()>` | Publish, fire-and-forget. `Ok` means queued, not delivered: see Publish guarantees below |
 | `publish_ack` | `async fn publish_ack(&self, message: EmergentMessage) -> Result<()>` | Publish and wait for the engine's acknowledgment |
-| `publish_stats` | `fn publish_stats(&self) -> PublishStats` | Counts of accepted, rejected and unanswered `publish` calls. After engine 0.13.1 |
+| `publish_stats` | `fn publish_stats(&self) -> PublishStats` | Counts of accepted, rejected and unanswered `publish` calls. From 0.14.0 |
 | `publish_all` / `publish_stream` | as on `EmergentSource` | Acked batch publish; returns the count |
 | `stream_offer` / `stream_consume` | see Pull-Based Streaming below | Consumer-driven streaming |
 | `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
@@ -221,7 +221,7 @@ let mut stream = EmergentSink::messages("my_sink", ["timer.tick"]).await?;
 | `subscribe` | `async fn subscribe(&mut self, types: impl IntoSubscription) -> Result<MessageStream>` | Subscribe and get stream |
 | `discover` | `async fn discover(&self) -> Result<DiscoveryInfo>` | List the engine's IPC type names and IPC-exposed actors. These are not topics or primitives: the sink's topology call or `GET /api/topology` lists those |
 | `get_my_subscriptions` | `async fn get_my_subscriptions(&self) -> Result<Vec<String>>` | Get configured subscriptions |
-| `get_topology` | `async fn get_topology(&self) -> Result<TopologyState>` | Publishes `system.request.topology` and waits up to 30 s for `system.response.topology`. Engines after 0.10.10 answer it at once. On 0.10.10 and earlier nothing answers, so it returns `ClientError::Timeout` (Govcraft/emergent#46); use `GET /api/topology` there |
+| `get_topology` | `async fn get_topology(&self) -> Result<TopologyState>` | Publishes `system.request.topology` and waits up to 30 s for `system.response.topology`. Engines from 0.14.0 answer it at once. On 0.10.10 and earlier nothing answers, so it returns `ClientError::Timeout` (Govcraft/emergent#46); use `GET /api/topology` there |
 | `name` | `fn name(&self) -> &str` | Get sink name |
 | `subscribed_types` | `fn subscribed_types(&self) -> &[String]` | Types passed to the last `subscribe` call |
 | `disconnect` | `async fn disconnect(&self) -> Result<()>` | Gracefully disconnect |
@@ -280,7 +280,7 @@ let msg = msg.unwrap_stdout();
 ### IntoSubscription Trait
 
 Every form takes either an exact message type or a terminal-wildcard prefix.
-After engine 0.10.10, `"timer.*"` delivers every `timer.` type and `"*"`
+From 0.14.0, `"timer.*"` delivers every `timer.` type and `"*"`
 delivers everything; on 0.10.10 and earlier both were accepted and delivered
 nothing. The star has to be last: `"tim*.tick"` is rejected with
 `Error::InvalidSubscriptionTopic` rather than accepted and starved.
@@ -304,12 +304,12 @@ call. What a second call on the same Handler or Sink does differs:
   `async for`, `for await` or channel range over it stops, and returns a new
   stream. The engine keeps the earlier subscriptions, so the new stream receives
   the earlier topics as well as the new ones. The earlier stream ends when the
-  second call starts, even if that call then fails. That holds after SDK release
-  0.13.1. On 0.13.1 and earlier the earlier stream was left open and unfed, and
+  second call starts, even if that call then fails. That holds from
+  0.14.0. On 0.13.1 and earlier the earlier stream was left open and unfed, and
   nothing ever ended it, not connection loss, not `system.shutdown`, not
   `close()`, so its consumer loop waited for ever (Govcraft/emergent#86).
 - **Rust:** the second call returns `SubscriptionFailed`, because a client hands
-  its push channel to its first stream. After emergent-client 0.13.1 the refusal
+  its push channel to its first stream. From 0.14.0 the refusal
   comes before anything is sent, so the first stream and `subscribed_types()`
   stay as they were. On 0.13.1 and earlier the engine was asked first and the
   call failed afterwards, so the refused topics started arriving on the first
@@ -361,11 +361,11 @@ refuses the message and it is never delivered. A full broker mailbox
 (`TARGET_BUSY`) and a shutting-down engine (`SHUTTING_DOWN`) refuse it the same
 way.
 
-After engine 0.13.1 the Rust SDK claims the engine's answer to every `publish`,
+From 0.14.0 the Rust SDK claims the engine's answer to every `publish`,
 logs a refusal at `WARN` with the engine's error text and the message type, and
 counts it in `publish_stats()`. On 0.13.1 and earlier it dropped that answer at
 `trace` level and `publish` returned success over lost messages. The Go, Python
-and TypeScript SDKs own their read loops and, also after engine 0.13.1, log an
+and TypeScript SDKs own their read loops and, also from 0.14.0, log an
 unmatched ERROR frame at error level instead of discarding it.
 
 A primitive that has to sustain more than 100 messages per second should use
@@ -454,14 +454,14 @@ which request failed.
 On SDK release 0.13.1 and earlier TypeScript exported all three classes and
 threw none of them, and Python raised only `PublishError`: every other
 rejection was a plain `ConnectionError` with the code `CONNECTION_FAILED`
-(Govcraft/emergent#68). After 0.13.1 the TypeScript three and Python's
+(Govcraft/emergent#68). From 0.14.0 the TypeScript three and Python's
 `SubscriptionError` and `DiscoveryError` are raised, and each is a subclass of
 `ConnectionError`, so code that catches `ConnectionError` keeps working. Test
 for the specific class first. Python's `PublishError` is not a
 `ConnectionError`.
 
 In Go the same three types also wrap a failure that is not a rejection: a
-timeout, a lost connection, a cancelled context. After SDK release 0.13.1 they
+timeout, a lost connection, a cancelled context. From 0.14.0 they
 carry it in an `Err` field with `Unwrap`, so `errors.As(err, &timeoutErr)` and
 `errors.Is(err, context.Canceled)` work, and `Err` is nil for a rejection. On
 0.13.1 and earlier the cause was flattened into `Msg` and could not be reached
@@ -470,10 +470,10 @@ for a refused dial and a failed write and nil for "not connected" and
 "connection closed", so `errors.Is(err, syscall.ECONNREFUSED)` works
 (Govcraft/emergent#78).
 
-A socket that refuses a write is not a rejection either. After SDK release
-0.13.1 a failed TypeScript `publish()` throws a `PublishError` whose `cause` is
+A socket that refuses a write is not a rejection either. From
+0.14.0 a failed TypeScript `publish()` throws a `PublishError` whose `cause` is
 the `Deno.errors.*` error, where 0.13.1 and earlier threw that error itself
-(Govcraft/emergent#75). Python follows the same contract after 0.13.1: a refused
+(Govcraft/emergent#75). Python follows the same contract from 0.14.0: a refused
 `publish()` or `publish_ack()` raises `PublishError`, a refused `subscribe()`,
 `discover()` or other request raises `ConnectionError`, and the built-in
 `ConnectionResetError` or `BrokenPipeError` is its `__cause__`. On 0.13.1 and
@@ -484,7 +484,7 @@ EmergentError` catches (Govcraft/emergent#77). Go reports it as a
 When the engine closes the connection, every call still waiting for an answer
 fails at once with a `ConnectionError` ("connection closed"), and the message
 stream ends, so a `for await`, `async for` or channel range over it stops. That
-holds for Go, Python and TypeScript after SDK release 0.13.1. On 0.13.1 and
+holds for Go, Python and TypeScript from 0.14.0. On 0.13.1 and
 earlier an acknowledged publish, `discover`, subscribe, topology or
 subscriptions call in flight waited out its own timeout, 30 seconds by default,
 and reported a timeout (Govcraft/emergent#62 for Go, Govcraft/emergent#80 for
@@ -499,7 +499,7 @@ conversions for your own `?`.
 
 ### A malformed frame from the engine
 
-After SDK release 0.13.1 the Python, TypeScript and Go read loops log and skip
+From 0.14.0 the Python, TypeScript and Go read loops log and skip
 a frame whose body does not decode or has the wrong shape, and deliver the
 frames behind it. On 0.13.1 and earlier one such frame (a PUSH with a null
 body, a wrong-typed field, a truncated MessagePack or JSON body) ended the
@@ -517,7 +517,7 @@ refused (Govcraft/emergent#74).
 
 ### A socket that takes only part of a frame
 
-After SDK release 0.13.1 the TypeScript SDK writes every byte of a frame and
+From 0.14.0 the TypeScript SDK writes every byte of a frame and
 writes frames one at a time. On 0.13.1 and earlier it called `Deno.Conn.write`
 once and ignored the byte count, so a full socket buffer (a large payload, a
 slow engine) could leave half a frame on the wire, after which the engine could

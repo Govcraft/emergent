@@ -202,8 +202,8 @@ async with await sink.subscribe(["timer.tick"]) as stream:
 The stream also ends when the connection to the engine is lost, so the loop
 stops and the code after it runs. See [Error Handling](#error-handling).
 
-A client has one live stream, so call `subscribe` once with every topic. After
-SDK release 0.13.1 a second `subscribe` on the same client ends the earlier
+A client has one live stream, so call `subscribe` once with every topic. From
+0.14.0 a second `subscribe` on the same client ends the earlier
 stream, so an `async for` over it stops, and returns a new one. The engine keeps
 the earlier subscriptions, so the new stream receives the earlier topics as well
 as the new ones. The earlier stream ends when the second call starts, even if
@@ -290,8 +290,8 @@ await run_sink("my_sink", ["timer.tick"], consume)
 The name argument is optional. When omitted or set to `None`, the helper reads
 from the `EMERGENT_NAME` environment variable.
 
-`run_source` sets `shutdown_event` on SIGTERM, on SIGINT, and, after SDK release
-0.13.1, when the engine closes the connection. A Source subscribes to nothing,
+`run_source` sets `shutdown_event` on SIGTERM, on SIGINT, and, from
+0.14.0, when the engine closes the connection. A Source subscribes to nothing,
 so no stream ends to tell it the engine is gone, and a lost connection is the
 only notice an engine that was killed ever gives. On 0.13.1 and earlier only the
 two signals set the event, so a Source that caught its publish errors kept
@@ -346,8 +346,8 @@ failures now sees the code in the table. `PublishError` extends
 `EmergentError` directly, as it always has.
 
 When the socket refuses a write, which is what happens once the engine has gone
-away, the SDK error keeps the operating system's error as `__cause__`. After
-SDK release 0.13.1 a refused `publish()` or `publish_ack()` raises
+away, the SDK error keeps the operating system's error as `__cause__`. From
+0.14.0 a refused `publish()` or `publish_ack()` raises
 `PublishError`, and a refused `subscribe()`, `discover()` or other request
 raises `ConnectionError`. On 0.13.1 and earlier all of them raised the built-in
 error itself (`ConnectionResetError`, `BrokenPipeError`), which is not an
@@ -358,19 +358,19 @@ error itself (`ConnectionResetError`, `BrokenPipeError`), which is not an
 When the engine closes the connection, every call still waiting for an answer
 (`publish_ack()`, `discover()`, `subscribe()`, `get_topology()`,
 `get_my_subscriptions()`) raises `ConnectionError("Connection closed")` at once,
-and the message stream ends, so an `async for` over it stops. That holds after
-SDK release 0.13.1. On 0.13.1 and earlier each call waited out its own timeout,
+and the message stream ends, so an `async for` over it stops. That holds from
+0.14.0. On 0.13.1 and earlier each call waited out its own timeout,
 30 seconds by default, and then raised `TimeoutError`. The stream ended only
 when the read failed: when the engine closed the connection cleanly it never
 ended, so an `async for` consumer waited until the process was stopped.
 
 A frame the engine sends with a malformed body is never raised to the caller.
-After SDK release 0.13.1 it is logged and skipped, and the subscription stays
+From 0.14.0 it is logged and skipped, and the subscription stays
 open. On 0.13.1 and earlier one such frame ended the read loop and closed the
 stream.
 
 A message whose envelope carries a field this SDK does not know is delivered
-with that field ignored, after SDK release 0.13.1. On 0.13.1 and earlier the
+with that field ignored, from 0.14.0. On 0.13.1 and earlier the
 wire model forbade unknown fields, so one new envelope field from the engine
 would have stopped every Python subscriber from receiving messages.
 

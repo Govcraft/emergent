@@ -139,7 +139,7 @@ Wildcards work in configuration and in a `subscribe()` call:
 subscribes = ["system.started.*"]  # matches system.started.timer, etc.
 ```
 
-The `*` has to be the last character, and it routes on engines after 0.10.10.
+The `*` has to be the last character, and it routes on engines from 0.14.0.
 On 0.10.10 and earlier a wildcard subscription was accepted and never delivered.
 
 ## Patterns

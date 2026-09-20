@@ -207,8 +207,8 @@ using stream = await sink.subscribe(["timer.tick"]);
 The stream also ends when the connection to the engine is lost, so the loop
 stops and the code after it runs. See [Error Handling](#error-handling).
 
-A client has one live stream, so call `subscribe` once with every topic. After
-SDK release 0.13.1 a second `subscribe` on the same client ends the earlier
+A client has one live stream, so call `subscribe` once with every topic. From
+0.14.0 a second `subscribe` on the same client ends the earlier
 stream, so a `for await` over it stops, and returns a new one. The engine keeps
 the earlier subscriptions, so the new stream receives the earlier topics as well
 as the new ones. The earlier stream ends when the second call starts, even if
@@ -272,8 +272,8 @@ await runSink("my_sink", ["timer.tick"], async (msg) => {
 The name argument is optional. When omitted, the helper reads from the
 `EMERGENT_NAME` environment variable.
 
-`runSource` aborts `shutdown` on SIGTERM, on SIGINT, and, after SDK release
-0.13.1, when the engine closes the connection. A Source subscribes to nothing,
+`runSource` aborts `shutdown` on SIGTERM, on SIGINT, and, from
+0.14.0, when the engine closes the connection. A Source subscribes to nothing,
 so no stream ends to tell it the engine is gone, and a lost connection is the
 only notice an engine that was killed ever gives. On 0.13.1 and earlier only the
 two signals aborted it, so a Source that caught its publish errors kept running
@@ -330,7 +330,7 @@ against `CONNECTION_FAILED` for one of these rejections now sees the code in the
 table.
 
 When the socket refuses a write, the error keeps the socket's own error as
-`cause`. After SDK release 0.13.1 a failed `publish()` throws a `PublishError`
+`cause`. From 0.14.0 a failed `publish()` throws a `PublishError`
 whose `cause` is the `Deno.errors.*` error. On 0.13.1 and earlier `publish()`
 threw that `Deno.errors.*` error itself, which is not an `EmergentError`, so a
 handler written against the classes above never saw it. Code that tested for
@@ -340,17 +340,17 @@ When the engine closes the connection, every call still waiting for an answer
 (`publishAck()`, `discover()`, `subscribe()`, `getTopology()`,
 `getMySubscriptions()`) rejects with `ConnectionError("Connection closed")` at
 once, and the message stream ends, so a `for await` over it stops. That holds
-after SDK release 0.13.1. On 0.13.1 and earlier each call waited out its own
+from 0.14.0. On 0.13.1 and earlier each call waited out its own
 timeout, 30 seconds by default, and then rejected with `TimeoutError`, and the
 stream never ended, so a `for await` consumer waited until the process was
 stopped.
 
 A frame the engine sends with a malformed body is never thrown to the caller.
-After SDK release 0.13.1 it is logged and skipped, and the subscription stays
+From 0.14.0 it is logged and skipped, and the subscription stays
 open. On 0.13.1 and earlier one such frame ended the read loop and closed the
 stream.
 
-After SDK release 0.13.1 every frame is written to the socket in full, and
+From 0.14.0 every frame is written to the socket in full, and
 frames are written one at a time, so two concurrent publishes cannot interleave.
 On 0.13.1 and earlier the SDK called `Deno.Conn.write` once per frame and
 ignored the byte count, so a socket that took only part of a large frame left

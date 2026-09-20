@@ -609,7 +609,7 @@ cost.
 sensible behavior? If a
 primitive only works when its predecessor just ran, they are coupled through
 hidden state. One caution behind a `stream-runner`: without `--ack-key` (added
-after primitives 0.11.0) acks are not matched to items, so an injected item that
+from primitives 0.12.0) acks are not matched to items, so an injected item that
 reaches the ack topic releases the stream's next item early. Say which you
 chose: `--ack-key`, a separate exit for injected items, or the skew.
 
@@ -628,7 +628,7 @@ never the answer for an error topic or for any event on a `stream-runner` ack
 path. For every router group, show that some arm matches any
 payload. An event nobody consumes and a payload no arm matches both vanish
 silently, and behind a `stream-runner` either one stalls the batch for good.
-After engine 0.10.10 a terminal wildcard is a real subscription, so
+From 0.14.0 a terminal wildcard is a real subscription, so
 `"system.error.*"` and `"issue.*"` do reach every matching type, and a `*` sink
 sees everything. On 0.10.10 and earlier both subscribed to nothing, so
 topologies targeting those releases list each type.

@@ -964,7 +964,7 @@ they are subscribable like any other type.
 | `system.shutdown` | Engine shutting down (SDKs handle internally) |
 | `system.shutdown.requested` | Shutdown signal received, before drain |
 
-**After engine 0.10.10 a terminal wildcard routes.** `system.error.*` reaches
+**From 0.14.0 a terminal wildcard routes.** `system.error.*` reaches
 every primitive's failure event, including primitives added later. On 0.10.10
 and earlier it was accepted and delivered nothing, so name each type when the
 topology has to run on an older engine:
@@ -982,7 +982,7 @@ publishes = ["triage.degraded"]
 This makes the system reflexive: the topology can respond to its own health the
 same way it responds to domain data. Remember what the engine does not do by
 default. It restarts a primitive only when that primitive's block sets `restart`
-(after 0.10.10), so without one `triage.degraded` is a page, not a self-heal.
+(from 0.14.0), so without one `triage.degraded` is a page, not a self-heal.
 With one, subscribe to `system.restarted.<name>` as well, and treat
 `"Restarts exhausted"` on `system.error.<name>` as the page.
 
@@ -1008,7 +1008,7 @@ covers the gap.
 
 Combined with a feedback edge, this is the ouroboros: the loop seeds itself on
 startup and then sustains itself. Startup order (Sinks, then Handlers, then
-Sources) spawns the consumers before anything is published. After engine 0.10.10
+Sources) spawns the consumers before anything is published. From 0.14.0
 the engine also waits for each tier to reach it over IPC before starting the
 next, bounded by `[engine].startup_ready_timeout_ms`, so a slow-starting
 consumer no longer misses a source's first event. On 0.10.10 and earlier there
@@ -1065,7 +1065,7 @@ publishes = ["issue.found"]
 
 `--host` defaults to `0.0.0.0`. An injection endpoint is an actuator, so bind it
 to loopback. The payload is `{method, path, query, headers, body, remote_addr}`
-(`query` after primitives 0.11.0); the
+(`query` from primitives 0.12.0); the
 handler above unwraps `.body` into whatever type you want to simulate.
 
 This is also how you replay. The engine has no replay command, so replaying an

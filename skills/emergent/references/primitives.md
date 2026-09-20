@@ -2,7 +2,7 @@
 
 Install with `emergent marketplace install <name>...` (accepts multiple names;
 so does `remove`). Everything lands in `~/.local/share/emergent/primitives/bin/`.
-After engine 0.10.10 the catalog is fetched over HTTPS from the
+From 0.14.0 the catalog is fetched over HTTPS from the
 emergent-primitives release and cached, so `list` and `info` answer offline and
 git is not needed; `--version X.Y.Z` installs from that release, reading its
 manifest and its checksums. On 0.10.10 and earlier the engine cloned the
@@ -252,13 +252,13 @@ publishes = ["http.request"]
 `--secret <SECRET>` for signature validation. Each reads an environment
 variable: `HTTP_SOURCE_PORT`, `HTTP_SOURCE_HOST`, `HTTP_SOURCE_PATH`,
 `HTTP_SOURCE_SECRET`. Prefer the variable for the secret so it stays out of
-`emergent.toml`. After primitives 0.11.0 there is also `--trust-forwarded-for`
+`emergent.toml`. From primitives 0.12.0 there is also `--trust-forwarded-for`
 (off), described below.
 
 `--path` is an exact axum route, not a prefix: `--path /inject` answers
 `/inject` and returns `404` for `/inject/extra`. Captures use braces,
 `/hook/{id}` or a final `/files/{*rest}`, and the published `path` is the
-concrete requested path. After primitives 0.11.0 an invalid value (no leading
+concrete requested path. From primitives 0.12.0 an invalid value (no leading
 `/`, the old `:id` or `*rest` syntax, a wildcard that is not last) prints one
 line naming the value and the rule and exits 1. On 0.11.0 and earlier the same
 value panics at startup, which the engine reports as exit status 101. A `?` or
@@ -331,12 +331,12 @@ publishes = ["ws.connected", "ws.frame", "ws.closed", "ws.disconnected", "ws.err
 | Topic | Payload |
 |---|---|
 | `{prefix}.connected` | `{url}` |
-| `{prefix}.frame` | `{data}`. A text frame is JSON-parsed, falling back to the raw string. A binary frame is base64 after primitives 0.11.0; on 0.11.0 and earlier it arrived as the literal string `[object Blob]` |
+| `{prefix}.frame` | `{data}`. A text frame is JSON-parsed, falling back to the raw string. A binary frame is base64 from primitives 0.12.0; on 0.11.0 and earlier it arrived as the literal string `[object Blob]` |
 | `{prefix}.closed` | The handler was asked to end the connection. Payload below |
-| `{prefix}.disconnected` | The connection ended and nobody asked. After primitives 0.11.0 only. Payload below |
+| `{prefix}.disconnected` | The connection ended and nobody asked. From primitives 0.12.0 only. Payload below |
 | `{prefix}.error` | `{url, error}`. Diagnostic, never terminal |
 
-After primitives 0.11.0 every connection publishes exactly one terminal event,
+From primitives 0.12.0 every connection publishes exactly one terminal event,
 decided by intent rather than by close code:
 
 | Event | `cause` | Reconnect? |
@@ -394,7 +394,7 @@ publishes = ["work.item", "batch.complete"]
 ```
 
 As with `exec-handler`, the `publishes` array overrides the topic flags by
-position: keep it `[item, end]`, or after primitives 0.11.0
+position: keep it `[item, end]`, or from primitives 0.12.0
 `[item, end, rejected, timed out]`.
 
 **Flags**
@@ -620,14 +620,14 @@ subscribes = ["monitor.metric"]
 `--allow-host <NAME>` (repeatable, none by default).
 **Endpoints:** `GET /events`, and `GET /health` returning `{ok, clients}`.
 
-After primitives 0.11.0 the sink listens on loopback only. A browser on another
+From primitives 0.12.0 the sink listens on loopback only. A browser on another
 machine needs `--host 0.0.0.0` (or a reverse proxy), and the stream has no
 authentication, so expose it deliberately. An unknown flag or a malformed
 `--port` is an error, and a busy or invalid address prints one line and exits 1.
 On 0.11.0 and earlier it bound every interface, had no `--host`, and ignored
 flags it did not know.
 
-After primitives 0.11.0 a page served from another origin cannot read the
+From primitives 0.12.0 a page served from another origin cannot read the
 stream unless that origin is named: `--allow-origin http://localhost:3000`,
 once per origin. Scheme, host and port all count, `--allow-origin '*'` opens it
 to every page again, and a value that could never match (a path, a wildcard
@@ -637,7 +637,7 @@ way. On 0.11.0 and earlier every response carried
 `Access-Control-Allow-Origin: *`, so any page open in a local browser could
 read every event.
 
-After primitives 0.11.0 the sink also looks at the host each request names and
+From primitives 0.12.0 the sink also looks at the host each request names and
 answers `421 Misdirected Request` unless it is an IP address, `localhost`, the
 name given to `--host`, or a name listed with `--allow-host`, once per name; the
 port is not compared. That is what stops DNS rebinding, where a page on
@@ -676,7 +676,7 @@ subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
 **Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`),
 `--allow-host <NAME>` (repeatable, none by default). Open `/` in a browser. The loopback default, `--host 0.0.0.0` for remote browsers, and
 the strict flag parsing are the same as for sse-sink above, with the same
-version boundary. After primitives 0.11.0 the viewer sends no
+version boundary. From primitives 0.12.0 the viewer sends no
 `Access-Control-Allow-Origin` header at all and has no flag to add one: its
 page and its API share an origin, so only its own page reads them. A dashboard
 on another origin should read the engine through an sse-sink with
@@ -688,14 +688,14 @@ reverse proxy that forwards its public name, list that name.
 | Route | Returns |
 |---|---|
 | `GET /api/topology` | `{nodes, edges, health}` as the viewer currently holds it |
-| `POST /api/refresh` | After primitives 0.11.0. One re-read of the engine topology, then the same body. `200` when the engine answered, `502` with the held state and the reason when it did not, `405` for other methods |
+| `POST /api/refresh` | From primitives 0.12.0. One re-read of the engine topology, then the same body. `200` when the engine answered, `502` with the held state and the reason when it did not, `405` for other methods |
 | `GET /events` | The SSE stream the page uses: `topology:full`, `node:updated`, `edges:updated`, `health:updated` |
 
-After primitives 0.11.0 the viewer reads the engine's own
+From primitives 0.12.0 the viewer reads the engine's own
 `GET /api/topology` (on `EMERGENT_API_PORT`, which the engine sets) when it
 starts and every 5 seconds, so the graph is complete whatever the viewer missed
 while starting. Its wildcard subscriptions carry the live updates in between;
-they need an engine after 0.10.10 and a viewer built on an SDK that sends
+they need an engine from 0.14.0 and a viewer built on an SDK that sends
 wildcards, and without them the graph is still right within 5 seconds. `health`
 says whether the graph can be trusted: `ok`, `pending` (no answer yet), `empty`
 (the engine reported nothing but itself) or `degraded` (the engine could not be
@@ -714,7 +714,7 @@ curl -s 127.0.0.1:<api_port>/api/topology | jq '.primitives[] | {name, kind, pub
 
 On engine 0.10.10 and earlier, ignore `state` and `pid` in that response:
 managed primitives always report `"configured"` and `null`, even while running
-(Govcraft/emergent#40). After 0.10.10 both are live, so adding `state` and `pid`
+(Govcraft/emergent#40). From 0.14.0 both are live, so adding `state` and `pid`
 to that filter tells you what is actually running.
 
 Worth checking during design. Seeing the graph makes an under-decomposed topology
@@ -801,5 +801,5 @@ space before the closing `'''` when its last character is a single quote.
 
 Leave `[engine] wire_format` unset. The key parses (`"messagepack"` or
 `"json"`) but selects nothing: IPC is always MessagePack. On engine 0.10.10 and
-earlier it was silently inert; after 0.10.10 setting it earns a warning at
+earlier it was silently inert; from 0.14.0 setting it earns a warning at
 startup. For human-readable inspection, read the event store's JSON logs.
