@@ -5,7 +5,7 @@
 //! engine waits for the tier it just started, and the only thing it can wait on
 //! is what it can actually observe.
 //!
-//! # What the engine can observe
+//! # What the engine could observe before acton-reactive 9.4.0
 //!
 //! acton-reactive 9.3.0 has no client name anywhere: `IpcEnvelope` carries no
 //! sender, and `ConnectionInfo` in its subscription manager holds only a push
@@ -34,6 +34,42 @@
 //! is the real thing: the connection is subscribed, so the primitive is ready
 //! with no settle to wait out.
 //!
+//! # The signal acton-reactive 9.4.0 added
+//!
+//! 9.4.0 takes an optional `IpcSecurityPolicy` and calls its `authorize` with
+//! `IpcOperation::Subscribe(&request.message_types)` at `listener.rs:1570`,
+//! immediately before `ctx.subscription_manager.subscribe(conn_id, ...)` at
+//! `listener.rs:1591`. Nothing is awaited between the two, so a subscribe the
+//! policy authorized is a subscribe that registers: this is the "subscription
+//! confirmed" signal 9.3.0 did not have, and it needs no settle window. The
+//! pattern form authorizes at `listener.rs:1497` and registers at
+//! `listener.rs:1504`, but behind `rate_limiter.try_acquire()`, so an
+//! authorized pattern subscribe can still be rate limited away; the deadline
+//! below is what covers that.
+//!
+//! `authorize` (`listener.rs:938-950`) only reaches the policy when a policy is
+//! installed and the connection has an authenticated context, and returns
+//! `Ok(())` otherwise, so this signal exists only once the engine's policy is
+//! wired in.
+//!
+//! The policy names the subscriber with a `ConnectionIdentity`. Until
+//! Govcraft/emergent#24 teaches the engine to resolve a peer to a primitive,
+//! every identity is `Unmanaged`, carrying the kernel's peer credentials and
+//! nothing else. [`attribute`] joins the pid in those credentials against the
+//! pids of the children the engine spawned, which is exact for a primitive the
+//! engine launched directly. A peer with no pid, or a pid belonging to a
+//! descendant rather than the spawned process (a `uv` launcher's `python3`),
+//! stays unattributed and falls through to the deadline. acton reports the pid
+//! through tokio's `UnixStream::peer_cred` (`listener.rs:782-793`) and treats a
+//! platform that declines to report one as `None`
+//! (`subscription_manager.rs:161-167`), so the join is Linux-solid and
+//! degrades to the deadline elsewhere.
+//!
+//! [`StartupObserver::note_subscribe`] is called from inside acton's
+//! connection task. It filters and forwards on an unbounded channel, and does
+//! nothing else, because blocking there would stall the very subscribe it is
+//! reporting.
+//!
 //! # Why a settle window closes the gap
 //!
 //! Between `system.request.subscriptions` and the real SUBSCRIBE frame the SDK
@@ -58,8 +94,10 @@
 //! [`ActonSubscriberProbe`] and the polling loop in
 //! [`crate::process_manager`] gather the observations; these decide.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
+
+use tokio::sync::{Mutex, mpsc};
 
 /// How long after a primitive's first IPC contact the engine treats its
 /// subscription as live.
@@ -175,6 +213,145 @@ pub fn evaluate_tier(members: &[TierMember]) -> TierVerdict {
     TierVerdict {
         ready: waiting_on.is_empty(),
         waiting_on,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The 9.4.0 signal: a SUBSCRIBE the policy authorized
+// ---------------------------------------------------------------------------
+
+/// Who the policy said was subscribing, reduced to what readiness can act on.
+///
+/// The policy hands the observer a `ConnectionIdentity`; this is that enum with
+/// everything readiness does not use dropped, so the decision below stays free
+/// of the identity module and can be table tested on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObservedSubscriber {
+    /// The policy named the primitive, so no inference is needed.
+    Named(String),
+    /// The policy had only the kernel's peer credentials, and they carried a
+    /// pid. Every connection looks like this until Govcraft/emergent#24 lands.
+    Pid(u32),
+    /// Neither a name nor a pid. Nothing readiness can attribute.
+    Anonymous,
+}
+
+/// Name the primitive behind an observed subscribe (pure).
+///
+/// `children` maps the pid of each process the engine spawned to its configured
+/// name. A pid that is not in it belongs to something the engine did not spawn,
+/// or to a descendant of something it did (a `uv` launcher's `python3`, say),
+/// and cannot be named until #24 resolves ancestry.
+#[must_use]
+pub fn attribute(
+    subscriber: &ObservedSubscriber,
+    children: &HashMap<u32, String>,
+) -> Option<String> {
+    match subscriber {
+        ObservedSubscriber::Named(name) => Some(name.clone()),
+        ObservedSubscriber::Pid(pid) => children.get(pid).cloned(),
+        ObservedSubscriber::Anonymous => None,
+    }
+}
+
+/// How many unattributable observations are kept for a later retry.
+///
+/// Only a subscribe whose pid the engine does not yet recognise lands here, and
+/// only during startup, so the cap is a guard against a pathological client
+/// rather than a working limit.
+pub const UNATTRIBUTED_CAP: usize = 64;
+
+/// Every subscribe readiness has been told about, folded into names.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Ledger {
+    /// Primitives whose subscribe the policy authorized and readiness could
+    /// name. Sorted, because it is logged.
+    pub confirmed: BTreeSet<String>,
+    /// Observations that named nobody, kept in case the pid becomes known.
+    pub unattributed: Vec<ObservedSubscriber>,
+}
+
+/// Fold new observations into the ledger (pure).
+///
+/// Unattributable observations are retried on the next fold: a child's pid is
+/// recorded when it is spawned and a subscribe can only follow that, but a
+/// restart can reorder the two, and retrying costs a map lookup.
+#[must_use]
+pub fn absorb(
+    ledger: Ledger,
+    observed: impl IntoIterator<Item = ObservedSubscriber>,
+    children: &HashMap<u32, String>,
+) -> Ledger {
+    let Ledger {
+        mut confirmed,
+        unattributed,
+    } = ledger;
+    let mut still_unattributed = Vec::new();
+    for subscriber in unattributed.into_iter().chain(observed) {
+        match attribute(&subscriber, children) {
+            Some(name) => {
+                confirmed.insert(name);
+            }
+            None if still_unattributed.len() < UNATTRIBUTED_CAP => {
+                still_unattributed.push(subscriber);
+            }
+            None => {}
+        }
+    }
+    Ledger {
+        confirmed,
+        unattributed: still_unattributed,
+    }
+}
+
+/// The sending half of the readiness signal, handed to the engine's policy.
+///
+/// `note_subscribe` runs inside acton's connection task, so it does no work
+/// beyond one cheap filter and an unbounded send, which never blocks and never
+/// awaits.
+#[derive(Debug, Clone)]
+pub struct StartupObserver {
+    tx: mpsc::UnboundedSender<ObservedSubscriber>,
+}
+
+/// The receiving half, drained by the startup wait.
+#[derive(Debug)]
+pub struct SubscribeSignals {
+    rx: Mutex<mpsc::UnboundedReceiver<ObservedSubscriber>>,
+}
+
+impl StartupObserver {
+    /// Build both halves of the signal.
+    #[must_use]
+    pub fn channel() -> (Self, SubscribeSignals) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self { tx }, SubscribeSignals { rx: Mutex::new(rx) })
+    }
+
+    /// Record an authorized subscribe. Called from the policy; must not block.
+    ///
+    /// A connection holding nothing but the discovery topic is the SDK asking
+    /// what it is configured to subscribe to, not a primitive that has
+    /// subscribed, so it is dropped here rather than travelling.
+    pub fn note_subscribe(&self, subscriber: ObservedSubscriber, topics: &[String]) {
+        if !is_primitive_subscription(topics) {
+            return;
+        }
+        // The receiver lives as long as the startup wait. After it, sends fail
+        // and are meant to: nothing is waiting on them.
+        let _ = self.tx.send(subscriber);
+    }
+}
+
+impl SubscribeSignals {
+    /// Take everything observed since the last drain.
+    pub async fn drain(&self) -> Vec<ObservedSubscriber> {
+        let mut rx = self.rx.lock().await;
+        let mut observed = Vec::new();
+        while let Ok(subscriber) = rx.try_recv() {
+            observed.push(subscriber);
+        }
+        observed
     }
 }
 
@@ -490,5 +667,131 @@ mod tests {
                 assert_eq!(verdict.ready, verdict.waiting_on.is_empty());
             }
         }
+    }
+
+    fn children(pairs: &[(u32, &str)]) -> HashMap<u32, String> {
+        pairs
+            .iter()
+            .map(|(pid, name)| (*pid, (*name).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_subscriber_is_named_by_the_policy_or_by_its_pid() {
+        let spawned = children(&[(41, "console"), (42, "log")]);
+        let cases = [
+            (
+                "the policy already knew the name",
+                ObservedSubscriber::Named("console".to_string()),
+                Some("console"),
+            ),
+            (
+                "a spawned child's pid names it",
+                ObservedSubscriber::Pid(42),
+                Some("log"),
+            ),
+            (
+                "a pid the engine did not spawn names nobody",
+                ObservedSubscriber::Pid(999),
+                None,
+            ),
+            (
+                "no name and no pid names nobody",
+                ObservedSubscriber::Anonymous,
+                None,
+            ),
+        ];
+        for (case, subscriber, expected) in cases {
+            assert_eq!(
+                attribute(&subscriber, &spawned).as_deref(),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn absorbing_observations_confirms_what_it_can_name_and_keeps_the_rest() {
+        let spawned = children(&[(41, "console")]);
+        let ledger = absorb(
+            Ledger::default(),
+            [
+                ObservedSubscriber::Pid(41),
+                ObservedSubscriber::Named("log".to_string()),
+                ObservedSubscriber::Pid(77),
+                ObservedSubscriber::Anonymous,
+            ],
+            &spawned,
+        );
+        assert_eq!(
+            ledger.confirmed.iter().cloned().collect::<Vec<_>>(),
+            vec!["console".to_string(), "log".to_string()],
+            "both nameable subscribes are confirmed, in sorted order"
+        );
+        assert_eq!(
+            ledger.unattributed,
+            vec![ObservedSubscriber::Pid(77), ObservedSubscriber::Anonymous],
+            "the rest is kept for a later fold"
+        );
+    }
+
+    #[test]
+    fn an_unattributed_observation_is_named_once_its_pid_is_known() {
+        let early = absorb(
+            Ledger::default(),
+            [ObservedSubscriber::Pid(41)],
+            &children(&[]),
+        );
+        assert!(early.confirmed.is_empty(), "nothing to name it with yet");
+
+        let later = absorb(early, [], &children(&[(41, "console")]));
+        assert_eq!(
+            later.confirmed.iter().cloned().collect::<Vec<_>>(),
+            vec!["console".to_string()],
+            "the retry names it once the child is known"
+        );
+        assert!(later.unattributed.is_empty(), "and the backlog clears");
+    }
+
+    #[test]
+    fn the_unattributed_backlog_is_capped() {
+        let noise = (0..UNATTRIBUTED_CAP * 2).map(|_| ObservedSubscriber::Anonymous);
+        let ledger = absorb(Ledger::default(), noise, &children(&[]));
+        assert_eq!(ledger.unattributed.len(), UNATTRIBUTED_CAP);
+    }
+
+    #[tokio::test]
+    async fn an_authorized_subscribe_reaches_the_startup_wait() {
+        let (observer, signals) = StartupObserver::channel();
+        observer.note_subscribe(
+            ObservedSubscriber::Pid(41),
+            &["timer.tick".to_string(), "system.shutdown".to_string()],
+        );
+        assert_eq!(signals.drain().await, vec![ObservedSubscriber::Pid(41)]);
+        assert!(
+            signals.drain().await.is_empty(),
+            "a drained signal is not delivered twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_discovery_only_subscribe_is_not_signalled() {
+        let (observer, signals) = StartupObserver::channel();
+        observer.note_subscribe(
+            ObservedSubscriber::Pid(41),
+            &[DISCOVERY_RESPONSE_TOPIC.to_string()],
+        );
+        observer.note_subscribe(ObservedSubscriber::Pid(41), &[]);
+        assert!(
+            signals.drain().await.is_empty(),
+            "asking what to subscribe to is not subscribing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_observer_outliving_the_startup_wait_does_not_panic() {
+        let (observer, signals) = StartupObserver::channel();
+        drop(signals);
+        observer.note_subscribe(ObservedSubscriber::Pid(41), &["timer.tick".to_string()]);
     }
 }
