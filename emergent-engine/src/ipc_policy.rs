@@ -25,6 +25,10 @@
 //! falls back to it: mistakes are caught, lies are not. While
 //! [`crate::ipc_identity::StubResolver`] is installed that is every connection.
 //! See [`effective_name`], where the choice is made and tested.
+//!
+//! A subscribe frame carries no `source`, so there is nothing to fall back to
+//! and subscribe enforcement is dormant until a resolver names connections.
+//! The engine says so at startup rather than refusing every handler and sink.
 
 use std::sync::Arc;
 
@@ -264,21 +268,28 @@ impl EnginePolicy {
         identity: &ConnectionIdentity,
         topics: &[String],
     ) -> Result<(), IpcAccessDenied> {
-        // A subscribe frame carries no `source`, so an unmanaged connection
-        // offers no name at all here and is judged as unauthenticated.
+        // A subscribe frame carries no `source`, so unlike a publish there is
+        // no claim to fall back to. While the stub resolver is installed every
+        // connection lands here, which is why subscribe enforcement is dormant
+        // and says so at startup. Refusing instead would kill every handler
+        // and sink the moment strict mode was turned on, for want of an
+        // identity the engine has not learned how to establish yet.
         let effective = effective_name(identity, None);
+        let Some(name) = effective.name else {
+            debug!(
+                identity = %identity,
+                topics = topics.len(),
+                "Subscription not checked: the connection has no name to check it against"
+            );
+            self.observer.on_subscribed(identity, topics);
+            return Ok(());
+        };
         for topic in topics {
             let checked = self
                 .declarations
-                .check(effective.name, Operation::Subscribe, topic);
+                .check(Some(name), Operation::Subscribe, topic);
             if checked.verdict.is_violation() {
-                self.record(
-                    identity,
-                    checked,
-                    effective.name,
-                    Operation::Subscribe,
-                    topic,
-                )?;
+                self.record(identity, checked, Some(name), Operation::Subscribe, topic)?;
             }
         }
         self.observer.on_subscribed(identity, topics);
@@ -648,21 +659,49 @@ mod tests {
     }
 
     #[test]
-    fn an_unmanaged_connection_may_only_take_the_protocol_subscriptions() {
-        // A subscribe frame carries no name to fall back to, so while every
-        // connection is unmanaged a primitive keeps only what the SDK needs.
-        // This is the sharpest edge of the stub resolver and is documented.
-        let (policy, _) = policy(EnforcementMode::Strict);
+    fn an_unmanaged_connection_has_its_subscriptions_let_through_unchecked() {
+        // The documented consequence of the stub resolver, stated as a test so
+        // that it fails the day #24 starts naming connections and subscribe
+        // enforcement turns on by itself.
+        let (policy, recorder) = policy(EnforcementMode::Strict);
         assert!(
             policy
-                .authorize_subscribe(&unmanaged(), &["system.shutdown".to_owned()])
+                .authorize_subscribe(&unmanaged(), &["secrets.all".to_owned()])
+                .is_ok(),
+            "there is no name on a subscribe frame to check the topic against"
+        );
+        assert!(recorder.seen().is_empty());
+    }
+
+    #[test]
+    fn a_subscription_the_engine_could_not_check_still_reaches_the_observer() {
+        // Issue #66 uses on_subscribed as its readiness signal, so it has to
+        // fire whether or not the topics could be judged.
+        #[derive(Default)]
+        struct Ready(Mutex<Vec<String>>);
+        impl PolicyObserver for Ready {
+            fn on_subscribed(&self, _identity: &ConnectionIdentity, topics: &[String]) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend_from_slice(topics);
+            }
+        }
+        let ready = Arc::new(Ready::default());
+        let policy = EnginePolicy::new(
+            declarations(EnforcementMode::Strict),
+            Arc::new(StubResolver),
+            Some(ready.clone()),
+        );
+        assert!(
+            policy
+                .authorize_subscribe(&unmanaged(), &["timer.tick".to_owned()])
                 .is_ok()
         );
-        let denied = denial(
-            policy.authorize_subscribe(&unmanaged(), &["timer.tick".to_owned()]),
-            "an unmanaged connection cannot prove it may subscribe to a topic",
+        assert_eq!(
+            ready.0.lock().unwrap_or_else(|e| e.into_inner()).as_slice(),
+            ["timer.tick"]
         );
-        assert!(denied.contains("could not tie"), "{denied}");
     }
 
     // ========================================================================

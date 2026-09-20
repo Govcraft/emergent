@@ -592,6 +592,14 @@ async fn main() -> Result<()> {
             declarations.mode(),
             declarations.len()
         );
+        // The stub resolver below names nobody, so a publish is checked
+        // against the source the client writes itself and a subscribe cannot
+        // be checked at all. Saying it here is the difference between an
+        // operator who knows what the mode is worth and one who does not.
+        warn!(
+            "Declarations are checked against self-reported names: \
+             publishes are held to the source on the message, subscribes are not checked"
+        );
     }
 
     // Rejections are reported from a task of their own. `authorize` runs on
