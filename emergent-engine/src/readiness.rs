@@ -36,18 +36,20 @@
 //!
 //! # The signal acton-reactive 9.4.0 added
 //!
-//! 9.4.0 takes an optional `IpcSecurityPolicy` and calls its `authorize` with
+//! Line references below are against 9.4.1, the version this workspace pins.
+//!
+//! acton takes an optional `IpcSecurityPolicy` and calls its `authorize` with
 //! `IpcOperation::Subscribe(&request.message_types)` at `listener.rs:1570`,
 //! immediately before `ctx.subscription_manager.subscribe(conn_id, ...)` at
-//! `listener.rs:1591`. Nothing is awaited between the two, so a subscribe the
+//! `listener.rs:1592`. Nothing is awaited between the two, so a subscribe the
 //! policy authorized is a subscribe that registers: this is the "subscription
 //! confirmed" signal 9.3.0 did not have, and it needs no settle window. The
 //! pattern form authorizes at `listener.rs:1497` and registers at
-//! `listener.rs:1504`, but behind `rate_limiter.try_acquire()`, so an
+//! `listener.rs:1505`, but behind `rate_limiter.try_acquire()`, so an
 //! authorized pattern subscribe can still be rate limited away; the deadline
 //! below is what covers that.
 //!
-//! `authorize` (`listener.rs:938-950`) only reaches the policy when a policy is
+//! `authorize` (`listener.rs:938-951`) only reaches the policy when a policy is
 //! installed and the connection has an authenticated context, and returns
 //! `Ok(())` otherwise, so this signal exists only once the engine's policy is
 //! wired in.
@@ -60,7 +62,7 @@
 //! engine launched directly. A peer with no pid, or a pid belonging to a
 //! descendant rather than the spawned process (a `uv` launcher's `python3`),
 //! stays unattributed and falls through to the deadline. acton reports the pid
-//! through tokio's `UnixStream::peer_cred` (`listener.rs:782-793`) and treats a
+//! through tokio's `UnixStream::peer_cred` (`listener.rs:782-794`) and treats a
 //! platform that declines to report one as `None`
 //! (`subscription_manager.rs:161-167`), so the join is Linux-solid and
 //! degrades to the deadline elsewhere.

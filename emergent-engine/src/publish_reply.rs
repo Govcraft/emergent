@@ -5,7 +5,8 @@
 //! fire and forget waits for nothing, and acton-reactive still leaves the
 //! broker holding an envelope that looks repliable.
 //!
-//! The difference is in the reply address, and acton sets it in two places.
+//! The difference is in the reply address, and acton sets it in two places
+//! (line references against acton-reactive 9.4.1).
 //! `ActorHandle::try_send_boxed` (`common/actor_handle.rs:956-966`), the fire
 //! and forget path, builds the envelope with `create_envelope(Some(self
 //! .reply_address()))`, so the reply address is the broker's own.
