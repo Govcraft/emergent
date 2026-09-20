@@ -267,7 +267,7 @@ func TestOperationErrorsWithoutACause(t *testing.T) {
 // refusedSocket is the path of a socket file nothing listens on any more.
 func refusedSocket(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "r.sock")
+	path := filepath.Join(socketDir(t), "r.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatalf("listen failed: %v", err)

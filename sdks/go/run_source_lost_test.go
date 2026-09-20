@@ -13,7 +13,7 @@ import (
 func engineListener(t *testing.T) *net.UnixListener {
 	t.Helper()
 	t.Setenv("EMERGENT_LOG", "off")
-	path := filepath.Join(t.TempDir(), "e.sock")
+	path := filepath.Join(socketDir(t), "e.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatalf("listen failed: %v", err)

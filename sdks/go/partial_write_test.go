@@ -15,7 +15,7 @@ import (
 // single write system call.
 func slowUnixPair(t *testing.T) (client *net.UnixConn, server net.Conn) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "w.sock")
+	path := filepath.Join(socketDir(t), "w.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen failed: %v", err)
