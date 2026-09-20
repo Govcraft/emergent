@@ -631,10 +631,19 @@ impl ConnectionRegistry {
             );
             return 0;
         };
-        ids.iter()
+        let held = ids.len();
+        let closed = ids
+            .iter()
             .filter(|id| revoker.revoke(**id))
             .inspect(|id| debug!(primitive = name, connection = **id, "Revoked a connection"))
-            .count()
+            .count();
+        debug!(
+            primitive = name,
+            held,
+            closed,
+            "Revoking the connections held for {name}: {closed} of {held} were still open"
+        );
+        closed
     }
 }
 
