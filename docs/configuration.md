@@ -258,9 +258,9 @@ INFO  Revoked 1 IPC connection(s) after orphan (pid 63708) exited
 **Where process ancestry is not available.** The walk reads `/proc`. On a
 platform without it the first step still works, since a primitive that connects
 directly is matched by pid against the engine's own children, but a primitive
-behind a forking wrapper cannot be named. There the engine falls back to the
-pre-0.10.10 behavior for a connection it could not name, taking the `source` on
-the message as the name to check, and says so at startup when enforcement is on:
+behind a forking wrapper cannot be named. There, for a connection it could not
+name, the engine takes the `source` on the message as the name to check, and
+says so at startup when enforcement is on:
 
 ```
 WARN This platform does not report process ancestry, so a connection the engine
