@@ -84,6 +84,7 @@ api_port = 8891                # HTTP API port (0 to disable)
 max_connections = 1024         # Concurrent IPC connections the engine accepts
 shutdown_drain_ms = 500        # Voluntary-exit window per shutdown phase
 shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
+startup_ready_timeout_ms = 5000 # Deadline for one startup tier to reach the engine
 enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
 ```
 
@@ -95,7 +96,32 @@ enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
 | `max_connections` | unset | Maximum concurrent IPC connections. Leave it out to keep what acton-reactive resolves. |
 | `shutdown_drain_ms` | `500` | How long a shutdown phase waits for its primitives to exit on the `system.shutdown` broadcast alone, before SIGTERM. Sources skip this window because they cannot subscribe. |
 | `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
+| `startup_ready_timeout_ms` | `5000` | How long startup waits for one tier of primitives to reach the engine before starting the next. `0` disables the wait. |
 | `enforce_declarations` | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it. `"off"`, `"warn"` or `"strict"`. |
+
+**Startup timing:** `startup_ready_timeout_ms` is a deadline, not a sleep. The
+engine leaves a tier the moment every primitive in it that declares `subscribes`
+has reached it over IPC, which for an all-Rust topology is a few milliseconds.
+Only a primitive that never connects costs the full deadline, and at the
+deadline the engine names it in a warning and starts the next tier anyway. Raise
+it for a runtime that is genuinely slow to start; set it to `0` to skip the wait
+entirely and accept that early events can be missed.
+
+What the engine waits for is a subscribe it saw authorized, not a guess. The
+engine's IPC security policy is told about every subscribe before acton
+registers it, and startup uses that as its readiness signal, so a primitive
+counts as ready whether it asks the engine for its configured `subscribes` or
+passes its topics in code. Registering that observer is enough on its own to
+install the policy, so this works with `enforce_declarations = "off"`.
+
+Naming the primitive behind a subscribe is the part that is still incomplete.
+Until the engine can resolve a peer to the process it spawned, the policy
+reports only the peer's kernel pid, and startup matches that against the pids
+of its own children. That is exact for a primitive the engine launched
+directly. A primitive running behind a wrapper that forks (`uv run`, for
+instance) connects from a grandchild whose pid the engine does not know, so it
+cannot be named and costs its tier the deadline. So does one whose platform
+reports no pid at all.
 
 **Shutdown timing:** both windows are deadlines, not sleeps. A phase moves on the
 moment every one of its primitives has exited, so a topology of well-behaved
@@ -541,6 +567,10 @@ The engine starts primitives in this order:
 3. **Sources** -- started last so they produce messages only when the pipeline is ready
 
 Within each tier, primitives start in the order they appear in the configuration file. This matters when one primitive depends on another's `system.started.*` event -- the subscriber must appear before the publisher in the config.
+
+After engine 0.10.10 the engine waits for a tier before starting the next one: it holds until every primitive in the tier that declares `subscribes` has reached it over IPC, then moves on. A primitive that declares no `subscribes`, every source among them, is never waited on. `startup_ready_timeout_ms` bounds the wait; at the deadline the engine logs a warning naming the primitives it never heard from and carries on, so one broken primitive cannot hang startup. A primitive that exits or fails during the wait releases its tier at once.
+
+On 0.10.10 and earlier the engine slept a fixed 50 ms after each primitive and started the next tier regardless, so anything slower than that to subscribe missed the first events (Govcraft/emergent#66). That included every Deno and Python primitive on a cold start.
 
 At shutdown, the order reverses: Sources stop first (no new messages), then Handlers drain, then Sinks consume remaining messages.
 

@@ -101,10 +101,12 @@ use emergent_engine::config::EmergentConfig;
 use emergent_engine::declarations::{RejectionReport, rejection_event_type};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
 use emergent_engine::ipc_identity::StubResolver;
-use emergent_engine::ipc_policy::{EnginePolicy, policy_is_needed};
+use emergent_engine::ipc_policy::{EnginePolicy, PolicyObserver, policy_is_needed};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
-use emergent_engine::process_manager::{ProcessManager, ShutdownTimings};
+use emergent_engine::process_manager::{ProcessManager, ShutdownTimings, StartupReadiness};
+use emergent_engine::publish_reply::should_reply;
+use emergent_engine::readiness::StartupObserver;
 use emergent_engine::retention;
 use emergent_engine::topology::build_topology_payload;
 
@@ -127,6 +129,22 @@ struct IpcEmergentMessage {
 /// back after storing and forwarding the message, providing backpressure.
 #[acton_message]
 struct PublishAck;
+
+/// Send the broker's `PublishAck` if anybody other than the broker is waiting
+/// for it.
+///
+/// acton addresses a fire-and-forget publish's reply at the recipient itself,
+/// so replying unconditionally posts an ack into the broker's own bounded inbox
+/// for every publish. See [`emergent_engine::publish_reply::should_reply`].
+fn ack_publish(reply_envelope: &OutboundEnvelope) {
+    let recipient = reply_envelope
+        .recipient()
+        .as_ref()
+        .map(MessageAddress::name);
+    if should_reply(reply_envelope.reply_to().name(), recipient) {
+        let _ = reply_envelope.reply(PublishAck);
+    }
+}
 
 impl From<EmergentMessage> for IpcEmergentMessage {
     fn from(msg: EmergentMessage) -> Self {
@@ -614,10 +632,21 @@ async fn main() -> Result<()> {
     // Unmanaged and enforcement falls back to the `source` a client writes
     // itself. Swapping the stub for a real resolver is the whole of that
     // change here.
-    let listener_handle = if policy_is_needed(declarations.mode(), false) {
+    // Startup readiness observes the subscribes the policy authorizes, which is
+    // the only way the engine learns that a tier is listening. Registering an
+    // observer is itself enough to install the policy, so this works with
+    // enforcement off.
+    let (startup_observer, startup_signals) = StartupObserver::channel();
+    let startup_observer: Arc<dyn PolicyObserver> = Arc::new(startup_observer);
+
+    let listener_handle = if policy_is_needed(declarations.mode(), true) {
         let policy = Arc::new(
-            EnginePolicy::new(declarations.clone(), Arc::new(StubResolver), None)
-                .reporting_to(rejections_tx),
+            EnginePolicy::new(
+                declarations.clone(),
+                Arc::new(StubResolver),
+                Some(startup_observer),
+            )
+            .reporting_to(rejections_tx),
         );
         runtime
             .start_ipc_listener_with_policy(ipc_config, policy)
@@ -687,6 +716,7 @@ async fn main() -> Result<()> {
         if msg.inner.message_type.as_str() == "system.request.subscriptions" {
             let pm = pm_for_subscriptions.clone();
             let inner = msg.inner.clone();
+            let reply_envelope = envelope.reply_envelope();
 
             return Reply::pending(async move {
                 // Extract the name from the payload
@@ -722,6 +752,11 @@ async fn main() -> Result<()> {
                     serde_json::to_value(&response).unwrap_or_default(),
                 );
                 sub_mgr.forward_to_subscribers(&notification);
+
+                // A request is a publish like any other, so it gets the same
+                // acknowledgement. Without it a client that used publish_ack is
+                // told its request failed although the engine just served it.
+                ack_publish(&reply_envelope);
             });
         }
 
@@ -732,6 +767,7 @@ async fn main() -> Result<()> {
         if msg.inner.message_type.as_str() == "system.request.topology" {
             let pm = pm_for_topology.clone();
             let inner = msg.inner.clone();
+            let reply_envelope = envelope.reply_envelope();
 
             return Reply::pending(async move {
                 let payload = build_topology_payload(std::process::id(), pm.list_all().await);
@@ -753,6 +789,11 @@ async fn main() -> Result<()> {
                     serde_json::to_value(&response).unwrap_or_default(),
                 );
                 sub_mgr.forward_to_subscribers(&notification);
+
+                // A request is a publish like any other, so it gets the same
+                // acknowledgement. Without it a client that used publish_ack is
+                // told its request failed although the engine just served it.
+                ack_publish(&reply_envelope);
             });
         }
 
@@ -774,10 +815,11 @@ async fn main() -> Result<()> {
 
         sub_mgr.forward_to_subscribers(&notification);
 
-        // Send ACK reply for request-response publishers (backpressure support).
-        // For fire-and-forget publishers this is a no-op (reply goes nowhere).
-        let reply_envelope = envelope.reply_envelope();
-        let _ = reply_envelope.reply(PublishAck);
+        // Acknowledge the publish for a client that is waiting on one. A
+        // fire-and-forget publish is not: acton addressed its reply back at the
+        // broker, and delivering it would cost a task and an inbox slot for a
+        // message no handler accepts.
+        ack_publish(&envelope.reply_envelope());
 
         Reply::ready()
     });
@@ -882,6 +924,12 @@ async fn main() -> Result<()> {
     let total_primitives = enabled_sinks.len() + enabled_handlers.len() + enabled_sources.len();
     info!("Starting {} primitive(s)...", total_primitives);
 
+    // Startup waits for each tier to reach the engine before starting the next.
+    let startup_readiness = StartupReadiness {
+        timeout: config.engine.startup_ready_timeout(),
+        signals: Some(startup_signals),
+    };
+
     // Start all registered processes in order: Sinks → Handlers → Sources
     // Each primitive is started by its actor in after_start, which broadcasts system.started.*
     if total_primitives > 0
@@ -891,6 +939,7 @@ async fn main() -> Result<()> {
                 &enabled_sinks,
                 &enabled_handlers,
                 &enabled_sources,
+                &startup_readiness,
             )
             .await
     {

@@ -1008,9 +1008,12 @@ covers the gap.
 
 Combined with a feedback edge, this is the ouroboros: the loop seeds itself on
 startup and then sustains itself. Startup order (Sinks, then Handlers, then
-Sources) spawns the consumers before anything is published, with a fixed 50 ms
-pause between primitives and no readiness handshake. A slow-starting consumer
-can therefore miss a source's very first event.
+Sources) spawns the consumers before anything is published. After engine 0.10.10
+the engine also waits for each tier to reach it over IPC before starting the
+next, bounded by `[engine].startup_ready_timeout_ms`, so a slow-starting
+consumer no longer misses a source's first event. On 0.10.10 and earlier there
+was only a fixed 50 ms pause between primitives and no wait, so it could
+(Govcraft/emergent#66).
 
 ## Stateful accumulators
 

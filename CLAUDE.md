@@ -65,6 +65,21 @@ Emergent is an **event-driven workflow engine** built on **acton-reactive** (a R
 - **Startup**: Sinks → Handlers → Sources (consumers ready before producers)
 - **Shutdown**: Sources (SIGTERM) → Handlers (`system.shutdown` broadcast) → Sinks (`system.shutdown` broadcast)
 
+After engine 0.10.10 startup waits for each tier before starting the next: it
+holds until every primitive in the tier that declares `subscribes` has reached
+the engine over IPC, bounded by `[engine].startup_ready_timeout_ms` (default
+5000). At the deadline the engine logs a WARN naming the primitives it never
+heard from and carries on; a primitive that exits or fails during the wait
+releases its tier; one with no `subscribes` is never waited on, so the source
+tier does not wait. The decision is a pure function in
+`emergent-engine/src/readiness.rs`. The signal is a subscribe the engine's IPC
+policy authorized, reported through `PolicyObserver::on_subscribed`; until
+issue #24 lands the connection is attributed to a primitive by matching the
+peer's pid against the engine's own children, so a primitive connecting from a
+grandchild process cannot be named and costs its tier the deadline. On 0.10.10 and earlier the
+engine slept a fixed 50 ms per primitive and started the next tier regardless,
+so a slow-starting subscriber missed the first events (Govcraft/emergent#66).
+
 ### The Three Primitives
 
 | Primitive | Capabilities | Purpose |
@@ -90,6 +105,7 @@ Emergent is an **event-driven workflow engine** built on **acton-reactive** (a R
 - `process_manager.rs` — Actor-based lifecycle for primitives
 - `primitive_actor.rs` — Per-primitive actor (spawns child process, monitors, broadcasts system events, owns the primitive's live state)
 - `lifecycle.rs`: pure state machine mapping a lifecycle event to a primitive's next state, pid and error
+- `readiness.rs` — pure decision for "is this startup tier ready, and who is still missing", plus the policy observer that feeds it
 - `declarations.rs` — pure decisions for declaration enforcement: modes, verdicts, the per-primitive topic table
 - `ipc_policy.rs`: the `IpcSecurityPolicy` that holds each connection to those decisions
 - `ipc_identity.rs`: `ConnectionIdentity` and the resolver admission asks who a peer is; the resolver that ships names nobody (issue #24)
