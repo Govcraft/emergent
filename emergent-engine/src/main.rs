@@ -105,6 +105,7 @@ use emergent_engine::ipc_policy::{EnginePolicy, PolicyObserver, policy_is_needed
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::{ProcessManager, ShutdownTimings, StartupReadiness};
+use emergent_engine::publish_reply::should_reply;
 use emergent_engine::readiness::StartupObserver;
 use emergent_engine::retention;
 use emergent_engine::topology::build_topology_payload;
@@ -128,6 +129,22 @@ struct IpcEmergentMessage {
 /// back after storing and forwarding the message, providing backpressure.
 #[acton_message]
 struct PublishAck;
+
+/// Send the broker's `PublishAck` if anybody other than the broker is waiting
+/// for it.
+///
+/// acton addresses a fire-and-forget publish's reply at the recipient itself,
+/// so replying unconditionally posts an ack into the broker's own bounded inbox
+/// for every publish. See [`emergent_engine::publish_reply::should_reply`].
+fn ack_publish(reply_envelope: &OutboundEnvelope) {
+    let recipient = reply_envelope
+        .recipient()
+        .as_ref()
+        .map(MessageAddress::name);
+    if should_reply(reply_envelope.reply_to().name(), recipient) {
+        let _ = reply_envelope.reply(PublishAck);
+    }
+}
 
 impl From<EmergentMessage> for IpcEmergentMessage {
     fn from(msg: EmergentMessage) -> Self {
@@ -739,7 +756,7 @@ async fn main() -> Result<()> {
                 // A request is a publish like any other, so it gets the same
                 // acknowledgement. Without it a client that used publish_ack is
                 // told its request failed although the engine just served it.
-                let _ = reply_envelope.reply(PublishAck);
+                ack_publish(&reply_envelope);
             });
         }
 
@@ -776,7 +793,7 @@ async fn main() -> Result<()> {
                 // A request is a publish like any other, so it gets the same
                 // acknowledgement. Without it a client that used publish_ack is
                 // told its request failed although the engine just served it.
-                let _ = reply_envelope.reply(PublishAck);
+                ack_publish(&reply_envelope);
             });
         }
 
@@ -798,10 +815,11 @@ async fn main() -> Result<()> {
 
         sub_mgr.forward_to_subscribers(&notification);
 
-        // Send ACK reply for request-response publishers (backpressure support).
-        // For fire-and-forget publishers this is a no-op (reply goes nowhere).
-        let reply_envelope = envelope.reply_envelope();
-        let _ = reply_envelope.reply(PublishAck);
+        // Acknowledge the publish for a client that is waiting on one. A
+        // fire-and-forget publish is not: acton addressed its reply back at the
+        // broker, and delivering it would cost a task and an inbox slot for a
+        // message no handler accepts.
+        ack_publish(&envelope.reply_envelope());
 
         Reply::ready()
     });
