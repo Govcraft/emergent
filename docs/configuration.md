@@ -81,6 +81,7 @@ subscribes = ["timer.filtered", "filter.processed", "system.started.*"]
 name = "emergent"              # Instance name (used in socket path)
 socket_path = "auto"           # Socket location
 api_port = 8891                # HTTP API port (0 to disable)
+api_allowed_hosts = []         # Extra host names the HTTP API answers to
 max_connections = 1024         # Concurrent IPC connections the engine accepts
 shutdown_drain_ms = 500        # Voluntary-exit window per shutdown phase
 shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
@@ -92,6 +93,7 @@ enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
 | `name` | `"emergent"` | Engine instance name |
 | `socket_path` | `"auto"` | `"auto"` for XDG-compliant path, or explicit path like `"/tmp/emergent.sock"` |
 | `api_port` | `8891` | HTTP API port for topology queries. Set to `0` to disable. |
+| `api_allowed_hosts` | `[]` | After 0.10.10. Host names the HTTP API answers to, beyond an IP literal and `localhost`. |
 | `max_connections` | unset | Maximum concurrent IPC connections. Leave it out to keep what acton-reactive resolves. |
 | `shutdown_drain_ms` | `500` | How long a shutdown phase waits for its primitives to exit on the `system.shutdown` broadcast alone, before SIGTERM. Sources skip this window because they cannot subscribe. |
 | `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
@@ -240,6 +242,57 @@ A sink already subscribed to `system.error.*` sees rejections without
 subscribing to anything new. A rejection on a message that named no source has
 no primitive to attribute an event to, so it stays in the log, where the peer
 pid is.
+
+**Which hosts the HTTP API answers to:** the API binds `127.0.0.1` and sends no
+`Access-Control-Allow-Origin`, which keeps other machines and other origins out.
+Neither stops DNS rebinding. A page on `attacker.example` re-resolves its own
+name to `127.0.0.1`, and from then on the browser treats the API as that page's
+own origin and hands it the reply: every primitive's name, kind, state, pid and
+declared topics. Up to engine 0.10.10 this worked, and the demonstration was one
+line:
+
+```
+$ curl -H 'Host: attacker.example' http://127.0.0.1:8891/api/topology
+200  {"primitives":[{"name":"emergent-engine", ...
+```
+
+The one thing an attacker cannot choose is the name the browser puts in the
+request. So after 0.10.10 the API answers only when every host the request names
+is one of:
+
+- an IP literal, such as `127.0.0.1`, `192.168.1.20` or `[::1]`, because a
+  browser sends the address it connected to and an address cannot be rebound
+- `localhost`
+- a name in `[engine].api_allowed_hosts`
+
+Anything else gets `421 Misdirected Request` with a body naming the key, and a
+WARN line in the engine log. The port is never compared, so a port forward or a
+container published as `http://localhost:8891` keeps working unchanged.
+
+```toml
+[engine]
+api_allowed_hosts = ["emergent.internal"]
+```
+
+That list is for a reverse proxy that forwards its own public name. Write a host
+name and nothing else: a value with a scheme, a port, a path or a `*` is a load
+error naming the value, because it would sit in the list and never match. A name
+is stored the way a browser sends it, so `APP.Example.` and `münchen.example`
+match the `app.example` and `xn--mnchen-3ya.example` that arrive.
+
+A request that names no host at all is refused, as is one that names two: hyper
+hands over a duplicate `Host` header unjoined, and it does not reconcile an
+absolute-form request line with the `Host` beside it. `axum::serve` also speaks
+HTTP/2 over cleartext, where there is no `Host` header and the authority is a
+pseudo-header, so `curl --http2-prior-knowledge` is checked by the same rule as
+everything else.
+
+This is the rule the `sse-sink` and `topology-viewer` primitives already apply
+(Govcraft/emergent-primitives#16), and the engine's table test mirrors theirs row
+for row so the two cannot drift apart.
+
+The API is read-only, so what this protects is disclosure, not control. Treat
+access to the port as the outer boundary.
 
 **Publish rate limit:** the same acton-reactive layer also rate limits each IPC
 connection to 100 messages per second with a burst of 50, and there is no

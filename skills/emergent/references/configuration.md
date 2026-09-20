@@ -32,6 +32,10 @@ socket_path = "auto"
 # Serves GET /api/topology on 127.0.0.1: every enabled primitive with its kind, publishes, subscribes
 api_port = 8891
 
+# Extra host names the HTTP API answers to, beyond an IP literal and localhost.
+# For a reverse proxy that forwards its own name. Anything else gets a 421.
+api_allowed_hosts = []
+
 # =============================================================================
 # Event Store Settings
 # =============================================================================
@@ -114,6 +118,7 @@ subscribes = ["system.started.ticker", "system.stopped.ticker", "system.error.ti
 | `name` | String | `"emergent"` | Engine instance name |
 | `socket_path` | String | `"auto"` | Unix socket path (`"auto"` for XDG default) |
 | `api_port` | Integer | `8891` | HTTP API port (`0` to disable) |
+| `api_allowed_hosts` | Array | `[]` | After 0.10.10. Host names the HTTP API answers to, beyond an IP literal and `localhost` |
 | `max_connections` | Integer | unset | After 0.10.10. Maximum concurrent IPC connections. Unset keeps what acton-reactive resolves, from `$XDG_CONFIG_HOME/acton/ipc.toml` or its own default. Setting it overrides both |
 | `shutdown_drain_ms` | Integer | `500` | After 0.10.10. How long a shutdown phase waits for its handlers or sinks to exit on the `system.shutdown` broadcast before SIGTERM. Sources skip it |
 | `shutdown_grace_ms` | Integer | `2000` | After 0.10.10. How long a phase waits after SIGTERM before it SIGKILLs whatever is still running |
@@ -161,6 +166,20 @@ separately (Govcraft/emergent#24); enforcement is already written against that
 binding, so it starts using it with no configuration change. Access to the Unix
 socket is the outer trust boundary, and enforcement is what keeps a topology
 honest inside it.
+
+The HTTP API has no authentication, and binding `127.0.0.1` does not keep a
+browser out: a page can re-resolve its own name to `127.0.0.1` and the browser
+then treats the API as that page's origin. Up to engine 0.10.10
+`curl -H 'Host: attacker.example' http://127.0.0.1:8891/api/topology` returned
+the whole topology. After 0.10.10 the API answers only when every host the
+request names is an IP literal, `localhost`, or a name in `api_allowed_hosts`,
+and returns `421 Misdirected Request` otherwise. The port is never compared, so
+a port forward or a container opened as `localhost` is unaffected. Use
+`api_allowed_hosts` for a reverse proxy that forwards its own public name; write
+a bare host name, since a value with a scheme, port, path or `*` is a load error.
+A request naming no host, naming two, or arriving over HTTP/2 with only an
+authority is decided by the same rule. It is the rule the `sse-sink` and
+`topology-viewer` primitives apply, and the engine mirrors their table test.
 
 Every enabled primitive holds one IPC connection for the life of its process,
 so the connection ceiling is a hard cap on topology size. On engine 0.10.10 and
