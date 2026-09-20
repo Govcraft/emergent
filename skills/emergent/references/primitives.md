@@ -267,6 +267,15 @@ because the query string is never part of the route (it is published in the
 `query` field) and a fragment never reaches the server; on 0.11.0 and earlier
 such a route loads, reports `running`, and answers `404` to everything.
 
+The same refusal covers literal text a request can only carry percent-encoded:
+a space, a control character, `<`, `>`, a backtick, or anything non-ASCII. The
+router compares the route with the request path as it arrived, so write the
+encoded form the client sends, `--path /hook%20with%20space` or
+`--path /h%C3%BCk`; the error line prints that spelling for you. Escapes match
+byte for byte (`%C3%BC` is not `%c3%bc`), so when clients may differ use a
+capture (`/hook/{name}`) and compare the published `path` downstream. Capture
+names are never part of a request and may be written as you like.
+
 With a secret set, a request must carry an `X-Signature` header holding the hex
 HMAC-SHA256 of the raw body, with an optional `sha256=` prefix. A missing or
 wrong signature gets `401`. A published request gets `202`.
@@ -606,7 +615,8 @@ args = ["--port", "8081"]
 subscribes = ["monitor.metric"]
 ```
 
-**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`).
+**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`),
+`--allow-origin <ORIGIN>` (repeatable, none by default).
 **Endpoints:** `GET /events`, and `GET /health` returning `{ok, clients}`.
 
 After primitives 0.11.0 the sink listens on loopback only. A browser on another
@@ -616,9 +626,23 @@ authentication, so expose it deliberately. An unknown flag or a malformed
 On 0.11.0 and earlier it bound every interface, had no `--host`, and ignored
 flags it did not know.
 
+After primitives 0.11.0 a page served from another origin cannot read the
+stream unless that origin is named: `--allow-origin http://localhost:3000`,
+once per origin. Scheme, host and port all count, `--allow-origin '*'` opens it
+to every page again, and a value that could never match (a path, a wildcard
+host, a scheme other than http or https) prints one line and exits 1. The
+header binds browsers only; `curl` and other primitives read the stream either
+way. On 0.11.0 and earlier every response carried
+`Access-Control-Allow-Origin: *`, so any page open in a local browser could
+read every event.
+
+```toml
+args = ["--port", "8081", "--allow-origin", "http://localhost:3000"]
+```
+
 Each event is sent as an unnamed `data:` line holding
-`{id, type, source, timestamp, payload}`, with CORS open to `*`. With no
-`subscribes` in the config it subscribes to `*`.
+`{id, type, source, timestamp, payload}`. With no `subscribes` in the config it
+subscribes to `*`.
 
 ---
 
@@ -637,7 +661,11 @@ subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
 **Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`). Open `/`
 in a browser. The loopback default, `--host 0.0.0.0` for remote browsers, and
 the strict flag parsing are the same as for sse-sink above, with the same
-version boundary.
+version boundary. After primitives 0.11.0 the viewer sends no
+`Access-Control-Allow-Origin` header at all and has no flag to add one: its
+page and its API share an origin, so only its own page reads them. A dashboard
+on another origin should read the engine through an sse-sink with
+`--allow-origin` instead.
 
 | Route | Returns |
 |---|---|
