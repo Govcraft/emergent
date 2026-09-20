@@ -205,6 +205,16 @@ Retention: from 0.14.0 `retention_days` is enforced by a prune at startup and on
 
 Two repos are released, in this order: the SDKs, then emergent-primitives, then the engine. The primitives build against the published Rust SDK, and the engine's marketplace reads its catalog from the primitives release, so each step needs the one before it.
 
+### Step 0: The docs gate, before any tag
+
+A release is not ready until the docs describe what it ships. Green CI and closed issues do not cover this, and 0.14.0 was tagged without it. Before the first tag, on the branches being tagged:
+
+1. Name the headline features of the release, in one line each. Anything a user would upgrade for counts, including a new marketplace primitive.
+2. For each one, confirm it appears in the engine `README.md` (a section, not only a table row), in `docs/` (its own page or section, plus pointers from `getting-started.md`, `examples.md` and the README's Documentation list), and in the emergent-primitives `README.md` when it is a primitive. A new primitive also gets a runnable topology under `config/examples/`, run once before it is documented.
+3. Run every command and config the new docs show. A docs example that was never run is a guess.
+4. Merge each release branch into `main` in both repos. GitHub renders the README from the default branch, so a tag on an unmerged branch publishes a release whose repo page does not mention it.
+5. Put the drafted release notes on the GitHub release. `generate_release_notes` alone produces a changelog link and nothing else.
+
 ### Step 1: Release emergent (SDKs, then engine)
 
 ```bash
