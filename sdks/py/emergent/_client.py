@@ -483,7 +483,13 @@ class BaseClient:
 
         # Create stream and register close callback
         stream = MessageStream(on_close=lambda: self._on_stream_close(stream))
+        replaced = self._message_stream
         self._message_stream = stream
+
+        # A client feeds one stream. Nothing would ever end the earlier one
+        # once it is unregistered, so it ends here and its consumer stops.
+        if replaced is not None:
+            replaced.close()
 
         # Add system.shutdown to subscriptions (SDK handles it internally)
         all_types = list(exact_types)

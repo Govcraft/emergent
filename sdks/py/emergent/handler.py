@@ -112,6 +112,11 @@ class EmergentHandler(BaseClient):
 
         Supports both array and variadic arguments for convenience.
 
+        A client has one live stream, so pass every topic to one call. A
+        second call ends the earlier stream and returns a new one. The engine
+        keeps the earlier subscriptions, so the new stream receives the
+        earlier topics too.
+
         Args:
             types_or_first: Either a list of types or the first type
             rest: Additional types when using variadic style
