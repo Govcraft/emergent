@@ -835,7 +835,7 @@ async fn main() -> Result<()> {
     if config.engine.api_enabled() {
         let pm_for_http = process_manager.clone();
         let allowed_hosts = Arc::new(config.allowed_api_hosts());
-        let described = config.allowed_api_hosts();
+        let described = Arc::clone(&allowed_hosts);
         tokio::spawn(async move {
             let app = Router::new()
                 .route(
@@ -862,8 +862,7 @@ async fn main() -> Result<()> {
                 // domain can rebind that domain to 127.0.0.1 and read the
                 // whole topology from the browser.
                 .layer(axum::middleware::from_fn(move |request, next| {
-                    let allowed = allowed_hosts.clone();
-                    guard_host(allowed, request, next)
+                    guard_host(Arc::clone(&allowed_hosts), request, next)
                 }));
 
             let bind_addr = format!("127.0.0.1:{api_port}");
