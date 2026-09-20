@@ -159,12 +159,34 @@ pub const fn enforcement_for(mode: EnforcementMode, verdict: Verdict) -> Enforce
 /// publishes on. They are protocol rather than topology: no primitive lists
 /// them in `publishes`, every SDK sends the first one before it can subscribe
 /// to anything, and the answers come from the engine, never from a primitive.
-pub const PROTOCOL_TOPICS: [&str; 2] = ["system.request.subscriptions", "system.request.topology"];
+pub const PROTOCOL_PUBLISHES: [&str; 2] =
+    ["system.request.subscriptions", "system.request.topology"];
+
+/// Message types every connected primitive may subscribe to whatever it declared.
+///
+/// The counterpart of [`PROTOCOL_PUBLISHES`], plus the one message the engine
+/// sends unasked. Every SDK adds all three to the list it was configured with,
+/// before the primitive's own code runs: the two responses carry the answers to
+/// the two requests, and `system.shutdown` is how a primitive learns to stop.
+/// Holding a primitive to its TOML here would refuse every primitive at
+/// startup, and a primitive that could not be told to shut down would have to
+/// be killed.
+pub const PROTOCOL_SUBSCRIBES: [&str; 3] = [
+    "system.shutdown",
+    "system.response.subscriptions",
+    "system.response.topology",
+];
 
 /// Whether a message type is engine protocol rather than topology.
+///
+/// Protocol is per operation: a primitive may publish a request and subscribe
+/// to the response, not the other way round.
 #[must_use]
-pub fn is_protocol_topic(message_type: &str) -> bool {
-    PROTOCOL_TOPICS.contains(&message_type)
+pub fn is_protocol_topic(operation: Operation, message_type: &str) -> bool {
+    match operation {
+        Operation::Publish => PROTOCOL_PUBLISHES.contains(&message_type),
+        Operation::Subscribe => PROTOCOL_SUBSCRIBES.contains(&message_type),
+    }
 }
 
 /// A primitive's declared topics for one operation, prepared for lookup.
@@ -272,7 +294,7 @@ pub fn decide(
     operation: Operation,
     message_type: &str,
 ) -> Verdict {
-    if is_protocol_topic(message_type) {
+    if is_protocol_topic(operation, message_type) {
         return Verdict::Protocol;
     }
     let Some(declarations) = declarations else {
@@ -465,7 +487,7 @@ impl DeclarationTable {
             // A client the engine cannot identify may still ask the engine the
             // questions every SDK asks, which is how a CLI or a topology viewer
             // reaches `system.request.topology` over the same socket.
-            None if is_protocol_topic(message_type) => Verdict::Protocol,
+            None if is_protocol_topic(operation, message_type) => Verdict::Protocol,
             None => Verdict::Unauthenticated,
             Some(name) => decide(self.primitives.get(name), operation, message_type),
         };
@@ -743,7 +765,7 @@ mod tests {
 
         // But protocol questions stay open, so a CLI or topology viewer that
         // the engine did not spawn keeps working under strict.
-        for topic in PROTOCOL_TOPICS {
+        for topic in PROTOCOL_PUBLISHES {
             let checked = table.check(None, Operation::Publish, topic);
             assert_eq!(checked.verdict, Verdict::Protocol, "{topic}");
             assert_eq!(checked.enforcement, Enforcement::Accept, "{topic}");
@@ -772,17 +794,50 @@ mod tests {
     }
 
     #[test]
-    fn every_protocol_topic_is_allowed_to_an_unknown_client() {
-        for topic in PROTOCOL_TOPICS {
-            assert!(is_protocol_topic(topic), "{topic}");
+    fn protocol_topics_are_allowed_to_anyone_on_the_operation_they_belong_to() {
+        for topic in PROTOCOL_PUBLISHES {
+            assert!(is_protocol_topic(Operation::Publish, topic), "{topic}");
             assert_eq!(
                 decide(None, Operation::Publish, topic),
                 Verdict::Protocol,
                 "{topic}"
             );
+            // A primitive publishes a request; it does not subscribe to one.
+            assert!(!is_protocol_topic(Operation::Subscribe, topic), "{topic}");
         }
-        assert!(!is_protocol_topic("system.response.topology"));
-        assert!(!is_protocol_topic("system.request.somethingelse"));
+        for topic in PROTOCOL_SUBSCRIBES {
+            assert!(is_protocol_topic(Operation::Subscribe, topic), "{topic}");
+            assert_eq!(
+                decide(None, Operation::Subscribe, topic),
+                Verdict::Protocol,
+                "{topic}"
+            );
+            assert!(!is_protocol_topic(Operation::Publish, topic), "{topic}");
+        }
+        assert!(!is_protocol_topic(
+            Operation::Publish,
+            "system.request.somethingelse"
+        ));
+        assert!(!is_protocol_topic(
+            Operation::Subscribe,
+            "system.shutdown.requested"
+        ));
+    }
+
+    #[test]
+    fn a_primitive_keeps_the_protocol_subscriptions_every_sdk_adds_for_it() {
+        // Every SDK appends these to the configured list before the
+        // primitive's own code runs, so holding a primitive to its TOML here
+        // would refuse every primitive at startup.
+        let table = DeclarationTable::new(
+            EnforcementMode::Strict,
+            [("console".to_string(), sink(&["timer.tick"]))],
+        );
+        for topic in PROTOCOL_SUBSCRIBES {
+            let checked = table.check(Some("console"), Operation::Subscribe, topic);
+            assert_eq!(checked.verdict, Verdict::Protocol, "{topic}");
+            assert_eq!(checked.enforcement, Enforcement::Accept, "{topic}");
+        }
     }
 
     #[test]

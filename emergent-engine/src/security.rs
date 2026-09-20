@@ -20,7 +20,7 @@
 //! gives up at the engine itself.
 //!
 //! [`resolve_identity`] is pure and takes the parent lookup as an argument.
-//! [`ProcParents`] is the real one, and reads `/proc`. See its docs for what
+//! [`proc_parent_of`] is the real one, and reads `/proc`. See its docs for what
 //! happens where `/proc` does not exist.
 
 use std::collections::HashMap;
@@ -52,6 +52,13 @@ pub enum PrimitiveIdentity {
 }
 
 impl PrimitiveIdentity {
+    /// How an unidentified connection is named in a log line or a report.
+    ///
+    /// Deliberately not a name any primitive could have: `<` and `>` are not
+    /// legal in a primitive name, so nothing a client controls can collide
+    /// with it and nothing derived from it forms a valid message type.
+    pub const UNAUTHENTICATED: &'static str = "<unauthenticated>";
+
     /// The primitive's name, when one was established.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
@@ -72,7 +79,7 @@ impl std::fmt::Display for PrimitiveIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Named(name) => f.write_str(name),
-            Self::Unauthenticated => f.write_str("<unauthenticated>"),
+            Self::Unauthenticated => f.write_str(Self::UNAUTHENTICATED),
         }
     }
 }
@@ -83,6 +90,31 @@ impl std::fmt::Display for PrimitiveIdentity {
 /// or a shell to a binary). The bound is what keeps a `/proc` that reports a
 /// cycle, or a pid recycled mid-walk, from spinning.
 pub const MAX_ANCESTRY_DEPTH: usize = 16;
+
+/// What the ancestry walk found, which is more than just the identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// The connection belongs to this primitive.
+    Primitive(String),
+    /// The walk reached the engine without passing a pid the engine has
+    /// recorded, so the peer is a child of the engine that the process table
+    /// does not name yet. Another look shortly is worth taking.
+    UnrecordedChild,
+    /// The walk left the engine's process tree, or could not start. Nothing
+    /// about this peer will change by looking again.
+    Foreign,
+}
+
+impl Resolution {
+    /// The identity this resolution establishes.
+    #[must_use]
+    pub fn identity(self) -> PrimitiveIdentity {
+        match self {
+            Self::Primitive(name) => PrimitiveIdentity::Named(name),
+            Self::UnrecordedChild | Self::Foreign => PrimitiveIdentity::Unauthenticated,
+        }
+    }
+}
 
 /// Tie a connecting process to the primitive the engine spawned for it.
 ///
@@ -97,24 +129,27 @@ pub fn resolve_identity(
     engine_pid: u32,
     spawned: &HashMap<u32, String>,
     parent_of: &dyn Fn(u32) -> Option<u32>,
-) -> PrimitiveIdentity {
+) -> Resolution {
     let Some(mut pid) = peer_pid else {
-        return PrimitiveIdentity::Unauthenticated;
+        return Resolution::Foreign;
     };
 
     for _ in 0..MAX_ANCESTRY_DEPTH {
         if let Some(name) = spawned.get(&pid) {
-            return PrimitiveIdentity::Named(name.clone());
+            return Resolution::Primitive(name.clone());
         }
-        if pid <= 1 || pid == engine_pid {
-            return PrimitiveIdentity::Unauthenticated;
+        if pid == engine_pid {
+            return Resolution::UnrecordedChild;
+        }
+        if pid <= 1 {
+            return Resolution::Foreign;
         }
         match parent_of(pid) {
             Some(parent) => pid = parent,
-            None => return PrimitiveIdentity::Unauthenticated,
+            None => return Resolution::Foreign,
         }
     }
-    PrimitiveIdentity::Unauthenticated
+    Resolution::Foreign
 }
 
 /// Reads a process's parent from `/proc`, where `/proc` exists.
@@ -122,7 +157,7 @@ pub fn resolve_identity(
 /// On Linux this is `/proc/<pid>/stat` field 4. Everywhere else it reports no
 /// parent, which collapses the walk to a direct pid match: a primitive the
 /// engine exec'd itself still resolves, and one behind a wrapper such as `uv`
-/// resolves as [`PrimitiveIdentity::Unauthenticated`].
+/// resolves as [`Resolution::Foreign`].
 #[must_use]
 pub fn proc_parent_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -237,19 +272,22 @@ impl EnginePolicy {
     /// records the pid on its own task, so the first look can miss a fast
     /// primitive. Each retry costs a read of the process table, and only a
     /// connection that has not been identified yet ever retries.
-    async fn identify(&self, peer_pid: Option<u32>) -> PrimitiveIdentity {
-        let mut identity = PrimitiveIdentity::Unauthenticated;
+    async fn identify(&self, peer_pid: Option<u32>) -> (PrimitiveIdentity, u32) {
         for attempt in 0..self.admission_attempts {
             let spawned = self.pids.snapshot().await;
-            identity = resolve_identity(peer_pid, self.engine_pid, &spawned, &|pid| {
+            let resolution = resolve_identity(peer_pid, self.engine_pid, &spawned, &|pid| {
                 proc_parent_of(pid)
             });
-            if identity.is_named() || attempt + 1 == self.admission_attempts {
-                break;
+            // Only a child of the engine that the table does not name yet is
+            // worth waiting for. A client from outside the engine's process
+            // tree will never appear there, so it is admitted at once and a
+            // topology query from a CLI pays nothing for enforcement.
+            if resolution != Resolution::UnrecordedChild || attempt + 1 == self.admission_attempts {
+                return (resolution.identity(), attempt + 1);
             }
             tokio::time::sleep(self.admission_backoff).await;
         }
-        identity
+        (PrimitiveIdentity::Unauthenticated, self.admission_attempts)
     }
 
     /// The Emergent message type a publish request carries, if it carries one.
@@ -358,13 +396,14 @@ impl IpcSecurityPolicy for EnginePolicy {
     fn admit(&self, connection: IpcConnectionInfo) -> IpcAdmission<'_> {
         Box::pin(async move {
             let peer = connection.peer_credentials().and_then(|p| p.pid());
-            let identity = self.identify(peer).await;
+            let (identity, looks) = self.identify(peer).await;
 
             if identity.is_named() {
                 debug!(
                     primitive = %identity,
                     peer.pid = ?peer,
                     connection = connection.connection_id(),
+                    looks,
                     "Admitted an IPC connection"
                 );
             } else {
@@ -374,6 +413,7 @@ impl IpcSecurityPolicy for EnginePolicy {
                 debug!(
                     peer.pid = ?peer,
                     connection = connection.connection_id(),
+                    looks,
                     "Admitted an IPC connection the engine could not tie to a primitive"
                 );
             }
@@ -436,7 +476,7 @@ mod tests {
         let parents = tree(&[(100, 10)]);
         assert_eq!(
             resolve_identity(Some(100), 10, &children, &|pid| parents.get(&pid).copied()),
-            PrimitiveIdentity::Named("timer".to_string())
+            Resolution::Primitive("timer".to_string())
         );
     }
 
@@ -448,7 +488,7 @@ mod tests {
         let parents = tree(&[(201, 200), (200, 10)]);
         assert_eq!(
             resolve_identity(Some(201), 10, &children, &|pid| parents.get(&pid).copied()),
-            PrimitiveIdentity::Named("webhook".to_string())
+            Resolution::Primitive("webhook".to_string())
         );
     }
 
@@ -458,7 +498,7 @@ mod tests {
         let parents = tree(&[(203, 202), (202, 201), (201, 200), (200, 10)]);
         assert_eq!(
             resolve_identity(Some(203), 10, &children, &|pid| parents.get(&pid).copied()),
-            PrimitiveIdentity::Named("webhook".to_string())
+            Resolution::Primitive("webhook".to_string())
         );
     }
 
@@ -469,7 +509,7 @@ mod tests {
         let parents = tree(&[(500, 400), (400, 1)]);
         assert_eq!(
             resolve_identity(Some(500), 10, &children, &|pid| parents.get(&pid).copied()),
-            PrimitiveIdentity::Unauthenticated
+            Resolution::Foreign
         );
     }
 
@@ -477,16 +517,16 @@ mod tests {
     fn the_walk_stops_at_the_engine_rather_than_claiming_it() {
         let children = spawned(&[(100, "timer")]);
         let parents = tree(&[(300, 10), (10, 1)]);
-        // A process the engine spawned but never registered, such as one still
-        // starting, is unauthenticated rather than borrowing another name.
-        assert_eq!(
-            resolve_identity(Some(300), 10, &children, &|pid| parents.get(&pid).copied()),
-            PrimitiveIdentity::Unauthenticated
-        );
+        // A process the engine spawned but has not recorded yet, such as one
+        // still starting, borrows no name. It is reported as the one case
+        // worth looking at again in a moment.
+        let pending = resolve_identity(Some(300), 10, &children, &|pid| parents.get(&pid).copied());
+        assert_eq!(pending, Resolution::UnrecordedChild);
+        assert_eq!(pending.identity(), PrimitiveIdentity::Unauthenticated);
         // And the engine's own connection resolves to nothing.
         assert_eq!(
             resolve_identity(Some(10), 10, &children, &|pid| parents.get(&pid).copied()),
-            PrimitiveIdentity::Unauthenticated
+            Resolution::UnrecordedChild
         );
     }
 
@@ -495,7 +535,7 @@ mod tests {
         let children = spawned(&[(100, "timer")]);
         assert_eq!(
             resolve_identity(None, 10, &children, &|_| None),
-            PrimitiveIdentity::Unauthenticated
+            Resolution::Foreign
         );
     }
 
@@ -505,11 +545,11 @@ mod tests {
         let children = spawned(&[(100, "timer"), (200, "webhook")]);
         assert_eq!(
             resolve_identity(Some(100), 10, &children, &|_| None),
-            PrimitiveIdentity::Named("timer".to_string())
+            Resolution::Primitive("timer".to_string())
         );
         assert_eq!(
             resolve_identity(Some(201), 10, &children, &|_| None),
-            PrimitiveIdentity::Unauthenticated
+            Resolution::Foreign
         );
     }
 
@@ -519,7 +559,7 @@ mod tests {
         let parents = tree(&[(500, 501), (501, 500)]);
         assert_eq!(
             resolve_identity(Some(500), 10, &children, &|pid| parents.get(&pid).copied()),
-            PrimitiveIdentity::Unauthenticated
+            Resolution::Foreign
         );
     }
 
@@ -529,7 +569,7 @@ mod tests {
         let parents = tree(&[(2, 1)]);
         assert_eq!(
             resolve_identity(Some(2), 10, &children, &|pid| parents.get(&pid).copied()),
-            PrimitiveIdentity::Unauthenticated
+            Resolution::Foreign
         );
     }
 
@@ -560,7 +600,7 @@ mod tests {
 
     #[test]
     fn identity_reports_its_name_and_prints_readably() {
-        let named = PrimitiveIdentity::Named("timer".to_string());
+        let named = Resolution::Primitive("timer".to_string()).identity();
         assert_eq!(named.name(), Some("timer"));
         assert!(named.is_named());
         assert_eq!(named.to_string(), "timer");
@@ -569,6 +609,15 @@ mod tests {
         assert_eq!(anon.name(), None);
         assert!(!anon.is_named());
         assert_eq!(anon.to_string(), "<unauthenticated>");
+        assert_eq!(anon.to_string(), PrimitiveIdentity::UNAUTHENTICATED);
+        assert_eq!(
+            Resolution::UnrecordedChild.identity(),
+            PrimitiveIdentity::Unauthenticated
+        );
+        assert_eq!(
+            Resolution::Foreign.identity(),
+            PrimitiveIdentity::Unauthenticated
+        );
     }
 
     // ========================================================================
@@ -815,22 +864,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admission_waits_for_a_pid_the_engine_has_not_recorded_yet() {
+    async fn admission_waits_for_a_child_the_engine_has_not_recorded_yet() {
+        // The test process stands in for a child whose pid the engine records
+        // late: the walk reaches the engine at once, which is the one case
+        // worth another look.
+        let late = std::process::id();
         let pids = Arc::new(ScriptedPids(Mutex::new(vec![
             HashMap::new(),
             HashMap::new(),
-            table(&[(4242, "timer")]),
+            table(&[(late, "timer")]),
         ])));
         let policy = EnginePolicy::new(declarations(EnforcementMode::Strict), pids, None)
             .with_admission_retry(5, Duration::from_millis(1));
         assert_eq!(
-            policy.identify(Some(4242)).await,
-            PrimitiveIdentity::Named("timer".to_owned())
+            policy.identify(Some(late)).await,
+            (PrimitiveIdentity::Named("timer".to_owned()), 3),
+            "the third look is the one that finds it"
         );
     }
 
     #[tokio::test]
-    async fn admission_gives_up_on_a_pid_that_never_appears() {
+    async fn admission_spends_every_attempt_on_a_child_that_never_appears() {
         let policy = EnginePolicy::new(
             declarations(EnforcementMode::Strict),
             Arc::new(ScriptedPids::steady(&[])),
@@ -838,8 +892,25 @@ mod tests {
         )
         .with_admission_retry(2, Duration::from_millis(1));
         assert_eq!(
+            policy.identify(Some(std::process::id())).await,
+            (PrimitiveIdentity::Unauthenticated, 2),
+        );
+    }
+
+    #[tokio::test]
+    async fn admission_does_not_wait_for_a_client_from_outside_the_engines_tree() {
+        // A CLI or a topology viewer is never going to appear in the process
+        // table, so enforcement must not add latency to its connection.
+        let policy = EnginePolicy::new(
+            declarations(EnforcementMode::Strict),
+            Arc::new(ScriptedPids::steady(&[])),
+            None,
+        )
+        .with_admission_retry(5, Duration::from_secs(30));
+        assert_eq!(
             policy.identify(Some(1)).await,
-            PrimitiveIdentity::Unauthenticated
+            (PrimitiveIdentity::Unauthenticated, 1),
+            "one look settles a peer outside the engine's process tree"
         );
     }
 }

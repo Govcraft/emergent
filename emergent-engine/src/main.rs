@@ -105,7 +105,9 @@ use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::{ProcessManager, ShutdownTimings};
 use emergent_engine::retention;
-use emergent_engine::security::{EnginePolicy, PolicyObserver, SpawnedPids, policy_is_needed};
+use emergent_engine::security::{
+    EnginePolicy, PolicyObserver, PrimitiveIdentity, SpawnedPids, policy_is_needed,
+};
 use emergent_engine::topology::build_topology_payload;
 
 // ============================================================================
@@ -230,7 +232,17 @@ struct RejectionChannel(tokio::sync::mpsc::UnboundedSender<RejectionReport>);
 
 impl PolicyObserver for RejectionChannel {
     fn on_violation(&self, report: &RejectionReport, enforcement: Enforcement) {
-        if enforcement == Enforcement::Reject && self.0.send(report.clone()).is_err() {
+        if enforcement != Enforcement::Reject {
+            return;
+        }
+        // `system.error.<name>` is attributed to a primitive, and a connection
+        // the engine could not identify is not one. There is no name to
+        // attribute the report to, so it stays in the log, which is where the
+        // pid that would identify the client is anyway.
+        if report.primitive == PrimitiveIdentity::UNAUTHENTICATED {
+            return;
+        }
+        if self.0.send(report.clone()).is_err() {
             debug!("Rejection report dropped: the reporting task has stopped");
         }
     }
