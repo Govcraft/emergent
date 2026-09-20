@@ -56,7 +56,7 @@ pub use primitives::{PrimitiveKind, PrimitiveState};
 pub use publish_reply::should_reply;
 pub use readiness::{
     Evidence, Ledger, ObservedSubscriber, StartupObserver, SubscribeSignals, TierMember,
-    TierVerdict, absorb, attribute, classify, evaluate_tier,
+    TierVerdict, absorb, attribute, classify, evaluate_tier, observed_subscriber,
 };
 pub use supervision::{
     ExitOutcome, RestartDecision, RestartLimits, RestartPolicy, backoff_delay, decide_restart,

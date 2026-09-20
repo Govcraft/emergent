@@ -101,11 +101,11 @@ use emergent_engine::config::EmergentConfig;
 use emergent_engine::declarations::{RejectionReport, rejection_event_type};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
 use emergent_engine::ipc_identity::StubResolver;
-use emergent_engine::ipc_policy::{EnginePolicy, policy_is_needed};
+use emergent_engine::ipc_policy::{EnginePolicy, PolicyObserver, policy_is_needed};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::{ProcessManager, ShutdownTimings, StartupReadiness};
-use emergent_engine::readiness::ActonSubscriberProbe;
+use emergent_engine::readiness::StartupObserver;
 use emergent_engine::retention;
 use emergent_engine::topology::build_topology_payload;
 
@@ -615,10 +615,21 @@ async fn main() -> Result<()> {
     // Unmanaged and enforcement falls back to the `source` a client writes
     // itself. Swapping the stub for a real resolver is the whole of that
     // change here.
-    let listener_handle = if policy_is_needed(declarations.mode(), false) {
+    // Startup readiness observes the subscribes the policy authorizes, which is
+    // the only way the engine learns that a tier is listening. Registering an
+    // observer is itself enough to install the policy, so this works with
+    // enforcement off.
+    let (startup_observer, startup_signals) = StartupObserver::channel();
+    let startup_observer: Arc<dyn PolicyObserver> = Arc::new(startup_observer);
+
+    let listener_handle = if policy_is_needed(declarations.mode(), true) {
         let policy = Arc::new(
-            EnginePolicy::new(declarations.clone(), Arc::new(StubResolver), None)
-                .reporting_to(rejections_tx),
+            EnginePolicy::new(
+                declarations.clone(),
+                Arc::new(StubResolver),
+                Some(startup_observer),
+            )
+            .reporting_to(rejections_tx),
         );
         runtime
             .start_ipc_listener_with_policy(ipc_config, policy)
@@ -886,10 +897,7 @@ async fn main() -> Result<()> {
     // Startup waits for each tier to reach the engine before starting the next.
     let startup_readiness = StartupReadiness {
         timeout: config.engine.startup_ready_timeout(),
-        peers: Some(Arc::new(ActonSubscriberProbe::new(
-            subscription_manager.clone(),
-            listener_handle.stats.clone(),
-        ))),
+        signals: Some(startup_signals),
     };
 
     // Start all registered processes in order: Sinks → Handlers → Sources

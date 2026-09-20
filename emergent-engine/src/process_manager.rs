@@ -16,11 +16,11 @@ use crate::primitive_actor::{
     create_shutdown_event, sigkill_process_group, wait_for_children_exit,
 };
 use crate::primitives::{PrimitiveInfo, PrimitiveKind, PrimitiveState};
-use crate::readiness::{SETTLE, SubscribedPeers, TierMember, classify, evaluate_tier};
+use crate::readiness::{Ledger, SubscribeSignals, TierMember, absorb, classify, evaluate_tier};
 use acton_reactive::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
@@ -67,32 +67,33 @@ impl ShutdownTimings {
 
 /// What startup waits on between tiers.
 ///
-/// `timeout` bounds the wait; `peers` is the optional view of live IPC
-/// connections that turns an inference into a confirmation. Without it the wait
-/// falls back to IPC traffic by name alone.
+/// `timeout` bounds the wait; `signals` is the stream of subscribes the
+/// engine's IPC policy observed. Without it nothing can ever be confirmed, so
+/// every tier that declares subscriptions runs to its deadline.
 pub struct StartupReadiness {
     /// Deadline for one tier, from `[engine].startup_ready_timeout_ms`.
     pub timeout: Duration,
-    /// How to see which processes hold a subscribed IPC connection.
-    pub peers: Option<Arc<dyn SubscribedPeers>>,
+    /// Subscribes the policy authorized, as [`crate::readiness`] describes.
+    pub signals: Option<SubscribeSignals>,
 }
 
 impl StartupReadiness {
-    /// Readiness with no view of IPC connections, for tests and for a process
-    /// manager driven without a listener.
+    /// Readiness with no subscribe signal, for tests and for a process manager
+    /// driven without an IPC policy.
     #[must_use]
     pub const fn unobserved(timeout: Duration) -> Self {
         Self {
             timeout,
-            peers: None,
+            signals: None,
         }
     }
 
-    /// The processes currently holding a subscribed IPC connection.
-    fn subscribed_pids(&self) -> HashSet<u32> {
-        self.peers
-            .as_ref()
-            .map_or_else(HashSet::new, |p| p.subscribed_pids())
+    /// Everything the policy has observed since the last call.
+    async fn drain(&self) -> Vec<crate::readiness::ObservedSubscriber> {
+        match self.signals.as_ref() {
+            Some(signals) => signals.drain().await,
+            None => Vec::new(),
+        }
     }
 }
 
@@ -153,12 +154,6 @@ pub struct ProcessManager {
     api_port: u16,
     /// Actor handles by name.
     actors: Arc<RwLock<HashMap<String, ActorEntry>>>,
-    /// When the engine first heard from each primitive over IPC, by name. This
-    /// is the only readiness signal it can attribute to a name; see
-    /// [`crate::readiness`]. Written from the broker's message handler, which
-    /// is synchronous, so it uses a std lock rather than the async one the
-    /// actor map uses. The critical section holds no await.
-    first_contact: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl ProcessManager {
@@ -169,36 +164,7 @@ impl ProcessManager {
             socket_path,
             api_port,
             actors: Arc::new(RwLock::new(HashMap::new())),
-            first_contact: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    /// Record that the engine has received IPC traffic from `name`.
-    ///
-    /// Called for every message the broker receives, from the message's
-    /// `source`. Only the first contact matters, so later calls are cheap
-    /// no-ops. A poisoned lock is ignored: losing a readiness observation costs
-    /// at worst a tier that waits to its deadline, which is not worth failing
-    /// the engine over.
-    pub fn note_primitive_contact(&self, name: &str) {
-        let Ok(mut contacts) = self.first_contact.lock() else {
-            return;
-        };
-        if !contacts.contains_key(name) {
-            contacts.insert(name.to_string(), Instant::now());
-        }
-    }
-
-    /// How long ago the engine first heard from each named primitive.
-    fn contact_ages(&self) -> HashMap<String, Duration> {
-        let Ok(contacts) = self.first_contact.lock() else {
-            return HashMap::new();
-        };
-        let now = Instant::now();
-        contacts
-            .iter()
-            .map(|(name, at)| (name.clone(), now.saturating_duration_since(*at)))
-            .collect()
     }
 
     /// Register a source from configuration.
@@ -390,11 +356,9 @@ impl ProcessManager {
     /// costs the tier its deadline, not the engine its startup.
     ///
     /// The decision is [`evaluate_tier`]; this is the loop that feeds it. The
-    /// signal it feeds on is "the engine has received IPC traffic from this
-    /// primitive", which is the strongest thing acton-reactive 9.3.0 lets the
-    /// engine attribute to a name. [`crate::readiness`] documents why, and why
-    /// a short settle after that signal stands in for the subscription
-    /// confirmation the engine cannot see.
+    /// signal it feeds on is a subscribe the engine's IPC policy authorized,
+    /// reported through [`crate::readiness::StartupObserver`] and attributed to
+    /// a name by [`absorb`]. [`crate::readiness`] documents what that rests on.
     async fn wait_for_tier(&self, kind: PrimitiveKind, readiness: &StartupReadiness) {
         let timeout = readiness.timeout;
         // A zero deadline is an operator opting out, not a tier that failed to
@@ -403,9 +367,11 @@ impl ProcessManager {
             return;
         }
         let started = Instant::now();
+        let mut ledger = Ledger::default();
         loop {
-            let subscribed = readiness.subscribed_pids();
-            let members = self.tier_members(kind, SETTLE, &subscribed).await;
+            let observed = readiness.drain().await;
+            ledger = absorb(ledger, observed, &self.child_names_by_pid().await);
+            let members = self.tier_members(kind, &ledger.confirmed).await;
             let verdict = evaluate_tier(&members);
             if verdict.ready {
                 if !members.is_empty() {
@@ -435,14 +401,24 @@ impl ProcessManager {
         }
     }
 
+    /// The pid of every child the engine has spawned, by primitive name.
+    ///
+    /// This is what turns an `Unmanaged` peer's pid into a name while
+    /// Govcraft/emergent#24 is outstanding; see [`crate::readiness::attribute`].
+    async fn child_names_by_pid(&self) -> HashMap<u32, String> {
+        let actors = self.actors.read().await;
+        actors
+            .iter()
+            .filter_map(|(name, e)| e.pid_rx.borrow().map(|pid| (pid, name.clone())))
+            .collect()
+    }
+
     /// Snapshot the primitives of one kind as the readiness decision sees them.
     async fn tier_members(
         &self,
         kind: PrimitiveKind,
-        settle: Duration,
-        subscribed_pids: &HashSet<u32>,
+        confirmed: &BTreeSet<String>,
     ) -> Vec<TierMember> {
-        let ages = self.contact_ages();
         let actors = self.actors.read().await;
         actors
             .values()
@@ -451,13 +427,9 @@ impl ProcessManager {
                 let info = e.info();
                 let running =
                     !matches!(info.state, PrimitiveState::Stopped | PrimitiveState::Failed);
-                let confirmed = e
-                    .pid_rx
-                    .borrow()
-                    .is_some_and(|pid| subscribed_pids.contains(&pid));
                 TierMember {
                     declares_subscriptions: !info.subscribes.is_empty(),
-                    evidence: classify(running, confirmed, ages.get(&info.name).copied(), settle),
+                    evidence: classify(running, confirmed.contains(&info.name)),
                     name: info.name,
                 }
             })
@@ -639,6 +611,7 @@ fn still_running(watched: &[(String, watch::Receiver<Option<u32>>)]) -> Vec<(Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::readiness::{DISCOVERY_RESPONSE_TOPIC, ObservedSubscriber, StartupObserver};
 
     /// Build a source config for a real executable.
     fn source_config(name: &str, path: &str, args: &[&str]) -> SourceConfig {
@@ -894,33 +867,86 @@ mod tests {
         manager.graceful_shutdown(&runtime.broker(), timings).await;
     }
 
-    /// The readiness signal is the message's `source`, which is what the broker
-    /// hands over for every message it receives.
+    /// A subscribe the policy reported releases the tier at once, instead of
+    /// the tier running to its deadline as it would with no signal at all.
     #[tokio::test]
-    async fn noted_contact_is_recorded_once_and_ages() {
-        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-66-contact.sock"), 0);
-        assert!(manager.contact_ages().is_empty());
+    async fn an_observed_subscribe_releases_its_tier() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager = ProcessManager::new(PathBuf::from("/tmp/emergent-issue-66-observed.sock"), 0);
 
-        manager.note_primitive_contact("console");
-        let first = manager
-            .contact_ages()
-            .get("console")
-            .copied()
-            .unwrap_or_default();
+        let (observer, signals) = StartupObserver::channel();
+        let readiness = StartupReadiness {
+            timeout: Duration::from_secs(30),
+            signals: Some(signals),
+        };
 
-        tokio::time::sleep(Duration::from_millis(15)).await;
-        // A later message must not reset the clock, or a chatty primitive would
-        // never settle.
-        manager.note_primitive_contact("console");
-        let later = manager
-            .contact_ages()
-            .get("console")
-            .copied()
-            .unwrap_or_default();
+        // The policy reports the subscribe before the tier is waited on, which
+        // is the ordering the channel exists to tolerate.
+        observer.note_subscribe(
+            ObservedSubscriber::Named("mute".to_string()),
+            &["burst.event".to_string(), "system.shutdown".to_string()],
+        );
 
-        assert!(later > first, "contact age did not advance: {later:?}");
-        assert!(later >= Duration::from_millis(15));
-        assert_eq!(manager.contact_ages().len(), 1);
+        let mute = sink_config("mute", "/bin/sleep", &["30"], &["burst.event"]);
+
+        let started = Instant::now();
+        assert!(
+            manager
+                .start_all(&mut runtime, &[&mute], &[], &[], &readiness)
+                .await
+                .is_ok()
+        );
+        let waited = started.elapsed();
+
+        assert!(
+            waited < Duration::from_secs(5),
+            "the tier waited although its subscribe was observed: {waited:?}"
+        );
+
+        let timings = ShutdownTimings {
+            drain: Duration::ZERO,
+            grace: Duration::from_secs(2),
+        };
+        manager.graceful_shutdown(&runtime.broker(), timings).await;
+    }
+
+    /// The discovery connection is not a subscription, so it must not release
+    /// a tier that has not really subscribed.
+    #[tokio::test]
+    async fn a_discovery_only_report_does_not_release_its_tier() {
+        let mut runtime = ActonApp::launch_async().await;
+        let manager =
+            ProcessManager::new(PathBuf::from("/tmp/emergent-issue-66-discovery.sock"), 0);
+
+        let (observer, signals) = StartupObserver::channel();
+        let readiness = StartupReadiness {
+            timeout: Duration::from_millis(200),
+            signals: Some(signals),
+        };
+        observer.note_subscribe(
+            ObservedSubscriber::Named("mute".to_string()),
+            &[DISCOVERY_RESPONSE_TOPIC.to_string()],
+        );
+
+        let mute = sink_config("mute", "/bin/sleep", &["30"], &["burst.event"]);
+
+        let started = Instant::now();
+        assert!(
+            manager
+                .start_all(&mut runtime, &[&mute], &[], &[], &readiness)
+                .await
+                .is_ok()
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "a discovery-only report released the tier"
+        );
+
+        let timings = ShutdownTimings {
+            drain: Duration::ZERO,
+            grace: Duration::from_secs(2),
+        };
+        manager.graceful_shutdown(&runtime.broker(), timings).await;
     }
 
     #[tokio::test]

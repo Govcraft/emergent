@@ -97,6 +97,7 @@ enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
 | `shutdown_drain_ms` | `500` | How long a shutdown phase waits for its primitives to exit on the `system.shutdown` broadcast alone, before SIGTERM. Sources skip this window because they cannot subscribe. |
 | `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
 | `startup_ready_timeout_ms` | `5000` | How long startup waits for one tier of primitives to reach the engine before starting the next. `0` disables the wait. |
+| `enforce_declarations` | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it. `"off"`, `"warn"` or `"strict"`. |
 
 **Startup timing:** `startup_ready_timeout_ms` is a deadline, not a sleep. The
 engine leaves a tier the moment every primitive in it that declares `subscribes`
@@ -106,14 +107,21 @@ deadline the engine names it in a warning and starts the next tier anyway. Raise
 it for a runtime that is genuinely slow to start; set it to `0` to skip the wait
 entirely and accept that early events can be missed.
 
-What the engine is waiting for is IPC contact, not a subscription
-acknowledgement: acton-reactive exposes no per-connection identity or subscribe
-callback, so the engine infers readiness from traffic carrying the primitive's
-name and from a subscribed connection whose peer pid is the primitive's child.
-Either is enough. A primitive that neither publishes nor defers its topics to
-the config, and whose process is not the one that connects (a wrapper such as
-`uv run` that forks), can still be missed and will cost its tier the deadline.
-| `enforce_declarations` | `"off"` | After 0.10.10. Whether a primitive's `publishes` and `subscribes` lists bind it. `"off"`, `"warn"` or `"strict"`. |
+What the engine waits for is a subscribe it saw authorized, not a guess. The
+engine's IPC security policy is told about every subscribe before acton
+registers it, and startup uses that as its readiness signal, so a primitive
+counts as ready whether it asks the engine for its configured `subscribes` or
+passes its topics in code. Registering that observer is enough on its own to
+install the policy, so this works with `enforce_declarations = "off"`.
+
+Naming the primitive behind a subscribe is the part that is still incomplete.
+Until the engine can resolve a peer to the process it spawned, the policy
+reports only the peer's kernel pid, and startup matches that against the pids
+of its own children. That is exact for a primitive the engine launched
+directly. A primitive running behind a wrapper that forks (`uv run`, for
+instance) connects from a grandchild whose pid the engine does not know, so it
+cannot be named and costs its tier the deadline. So does one whose platform
+reports no pid at all.
 
 **Shutdown timing:** both windows are deadlines, not sleeps. A phase moves on the
 moment every one of its primitives has exited, so a topology of well-behaved
