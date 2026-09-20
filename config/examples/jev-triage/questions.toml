@@ -1,0 +1,33 @@
+# Questions for the jev-triage example.
+#
+# Every question is asked about every message, in one request. The map key is
+# the question id: the answer comes back under the same key, and the routers in
+# emergent.toml select on it as `.answers.<id>`.
+
+# noul: a yes/no judgment. The answer is a bare probability of "yes" from 0 to 1.
+[questions.lure]
+type = "noul"
+instructions = "Does this message try to get the reader to click a link, open an attachment, or reply with information?"
+criteria = { "true" = "There is something concrete to act on: a link, an attachment, or a request for a reply.", "false" = "The message is informational only." }
+
+# choice: one option out of a defined set, with a confidence and the full
+# probability distribution.
+[questions.kind]
+type = "choice"
+instructions = "What kind of message is this?"
+
+[questions.kind.criteria]
+phish = "An attempt to obtain credentials, payment, or sensitive information under a false identity."
+cold_pitch = "An unsolicited sales or partnership approach from a real sender."
+vendor_notice = "A legitimate operational notice from a service the organisation already uses."
+personal = "Ordinary correspondence from a known individual."
+
+# score: a position along an ordered rubric. The answer may land between levels.
+[questions.pressure]
+type = "score"
+instructions = "How much time pressure does the message apply to the reader?"
+criteria = [
+  "No deadline or urgency of any kind is expressed.",
+  "A soft deadline or mild encouragement to respond promptly.",
+  "Explicit urgency: act now or lose access, face a penalty, or miss out.",
+]

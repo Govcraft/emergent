@@ -50,6 +50,10 @@ The exec primitives (exec-source, exec-handler, exec-sink) are the primary integ
 
 This means any tool that reads stdin and writes stdout participates in the pipeline: `jq`, `claude -p`, `curl`, `python3 predict.py`, `awk`, `wc`, a compiled Go binary, a Rust CLI -- anything.
 
+### Judgment Primitives: Answers You Can Route On
+
+Some steps decide rather than transform: is this unwanted, which category fits, how urgent is it. The marketplace `jev-handler` asks [TypeSafe System One](https://docs.typesafe.ai) a fixed set of typed questions about each event and publishes the answers with calibrated confidence. It follows the same rule as every other primitive: it publishes what it learned and makes no decision. Thresholds, confidence bands and failure handling are `exec-handler` routers running `jq` selectors over its output, so the policy lives in the topology where you can read it and change it. See the [jev-handler guide](primitives/jev-handler.md).
+
 ### Custom Primitives: The Escape Hatch
 
 When exec primitives are not enough -- persistent state across messages, custom protocols, high-performance processing -- write a custom primitive using the SDK in Rust, TypeScript, Python, or Go. The SDKs expose identical patterns. See the [SDK documentation](sdks/) for details.
