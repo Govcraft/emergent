@@ -360,7 +360,7 @@ async fn handle_update(
 }
 
 async fn handle_info(registry: &Registry, name: String, json: bool) -> Result<()> {
-    let manifest = registry.get_manifest(&name).await?;
+    let manifest = registry.get_manifest(&name, None).await?;
 
     if json {
         let json_str = format_json(&manifest)?;
@@ -369,6 +369,12 @@ async fn handle_info(registry: &Registry, name: String, json: bool) -> Result<()
         println!("Name: {}", manifest.primitive.name);
         println!("Version: {}", manifest.primitive.version);
         println!("Kind: {}", manifest.primitive.kind);
+        if !manifest.primitive.description.is_empty() {
+            println!("Description: {}", manifest.primitive.description);
+        }
+        if let Some(runtime) = &manifest.primitive.runtime {
+            println!("Runtime: {runtime}");
+        }
         println!();
         if !manifest.messages.publishes.is_empty() {
             println!("Publishes:");
@@ -388,8 +394,11 @@ async fn handle_info(registry: &Registry, name: String, json: bool) -> Result<()
             for arg in &manifest.args {
                 let required = if arg.required { " (required)" } else { "" };
                 println!("  --{}{}", arg.long, required);
-                if !arg.env.is_empty() {
-                    println!("    env: {}", arg.env);
+                if !arg.description.is_empty() {
+                    println!("    {}", arg.description);
+                }
+                if let Some(env) = &arg.env {
+                    println!("    env: {env}");
                 }
             }
         }

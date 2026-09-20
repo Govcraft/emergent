@@ -19,19 +19,54 @@ pub struct MarketplaceStorage {
     data_dir: PathBuf,
 }
 
+/// Base URL of the registry the marketplace reads.
+///
+/// The emergent-primitives release publishes index.toml and manifests.toml as
+/// release assets, and `latest/download/` and `download/v<version>/` under this
+/// URL are plain redirects to them.
+pub const DEFAULT_REGISTRY_URL: &str = "https://github.com/Govcraft/emergent-primitives/releases";
+
+/// The git URL engine 0.10.10 and earlier cloned the registry from.
+///
+/// That repository is archived, not deleted, because those engines have this
+/// URL compiled in and every marketplace command would fail without it.
+const LEGACY_REGISTRY_URL: &str = "https://github.com/govcraft/emergent-registry";
+
 /// Configuration for the marketplace.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct MarketplaceConfig {
-    /// URL of the registry repository
+    /// Base URL serving the registry's index.toml and manifests.toml
     pub registry_url: String,
 }
 
 impl Default for MarketplaceConfig {
     fn default() -> Self {
         Self {
-            registry_url: "https://github.com/Govcraft/emergent-registry".to_string(),
+            registry_url: DEFAULT_REGISTRY_URL.to_string(),
         }
     }
+}
+
+/// The current URL for a stored `registry_url`, when it names the old registry.
+///
+/// A config written by an older engine points at a git repository nothing
+/// fetches any more. Leaving it alone would break every marketplace command
+/// for a user who never chose that URL, so it is replaced with the default,
+/// once, in the open. A `registry_url` the user set to anything else is their
+/// own and is left alone.
+#[must_use]
+pub fn migrated_registry_url(stored: &str) -> Option<&'static str> {
+    let normalized = stored
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .to_ascii_lowercase();
+    let legacy = [
+        LEGACY_REGISTRY_URL.to_string(),
+        LEGACY_REGISTRY_URL.replace("https://github.com/", "git@github.com:"),
+        LEGACY_REGISTRY_URL.replace("https://", "http://"),
+    ];
+    legacy.contains(&normalized).then_some(DEFAULT_REGISTRY_URL)
 }
 
 /// Metadata about an installed primitive.
@@ -122,11 +157,25 @@ impl MarketplaceStorage {
         }
 
         let content = std::fs::read_to_string(&path)?;
-        let config: MarketplaceConfig =
+        let mut config: MarketplaceConfig =
             toml::from_str(&content).map_err(|e| MarketplaceError::TomlParse {
                 path: path.display().to_string(),
                 source: e,
             })?;
+
+        if let Some(current) = migrated_registry_url(&config.registry_url) {
+            eprintln!(
+                "Note: registry_url pointed at the retired emergent-registry repository; \
+                 using {current} instead."
+            );
+            config.registry_url = current.to_string();
+            // Persisting it keeps the note from repeating. A read-only config
+            // directory is not a reason to fail the command.
+            if let Err(e) = self.save_config(&config) {
+                eprintln!("Warning: could not rewrite {}: {e}", path.display());
+            }
+        }
+
         Ok(config)
     }
 
@@ -311,6 +360,56 @@ mod tests {
         } else {
             panic!("Failed to load manifest");
         }
+    }
+
+    #[test]
+    fn the_old_registry_git_url_migrates_to_the_release_url() {
+        for stored in [
+            "https://github.com/Govcraft/emergent-registry",
+            "https://github.com/govcraft/emergent-registry.git",
+            "https://github.com/Govcraft/emergent-registry/",
+            "  https://github.com/Govcraft/emergent-registry  ",
+            "git@github.com:Govcraft/emergent-registry.git",
+        ] {
+            assert_eq!(
+                migrated_registry_url(stored),
+                Some(DEFAULT_REGISTRY_URL),
+                "{stored}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_url_the_user_chose_is_left_alone() {
+        for stored in [
+            DEFAULT_REGISTRY_URL,
+            "https://registry.example.invalid",
+            "https://github.com/someone/their-registry",
+            "https://github.com/Govcraft/emergent-registry-mirror",
+        ] {
+            assert_eq!(migrated_registry_url(stored), None, "{stored}");
+        }
+    }
+
+    #[test]
+    fn loading_a_config_with_the_old_url_rewrites_it() {
+        let (_temp, storage) = create_temp_storage();
+        let stale = MarketplaceConfig {
+            registry_url: "https://github.com/Govcraft/emergent-registry".to_string(),
+        };
+        if let Err(e) = storage.save_config(&stale) {
+            panic!("Failed to save config: {e}");
+        }
+
+        let Ok(loaded) = storage.load_config() else {
+            panic!("Failed to load config");
+        };
+        assert_eq!(loaded.registry_url, DEFAULT_REGISTRY_URL);
+
+        let Ok(reloaded) = storage.load_config() else {
+            panic!("Failed to reload config");
+        };
+        assert_eq!(reloaded, loaded, "the migration should be persisted");
     }
 
     #[test]

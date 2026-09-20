@@ -53,8 +53,12 @@ pub enum MarketplaceError {
     /// Invalid manifest format
     InvalidManifest { reason: String },
 
-    /// Git operation failed
-    GitError { message: String },
+    /// The registry host refused to serve an asset
+    RegistryUnavailable {
+        file: String,
+        url: String,
+        status: u16,
+    },
 
     /// One or more items in a batch operation failed
     BatchFailed { succeeded: usize, failed: usize },
@@ -101,7 +105,13 @@ impl fmt::Display for MarketplaceError {
                 )
             }
             Self::InvalidManifest { reason } => write!(f, "Invalid manifest: {reason}"),
-            Self::GitError { message } => write!(f, "Git error: {message}"),
+            Self::RegistryUnavailable { file, url, status } => {
+                write!(
+                    f,
+                    "{}",
+                    super::registry::unavailable_message(file, url, *status)
+                )
+            }
             Self::BatchFailed { succeeded, failed } => {
                 write!(
                     f,

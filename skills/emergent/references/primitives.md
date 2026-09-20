@@ -2,6 +2,12 @@
 
 Install with `emergent marketplace install <name>...` (accepts multiple names;
 so does `remove`). Everything lands in `~/.local/share/emergent/primitives/bin/`.
+After engine 0.10.10 the catalog is fetched over HTTPS from the
+emergent-primitives release and cached, so `list` and `info` answer offline and
+git is not needed; `--version X.Y.Z` installs from that release, reading its
+manifest and its checksums. On 0.10.10 and earlier the engine cloned the
+emergent-registry repository with git, and a pinned install asked the old
+release for a filename only the current one has.
 
 These primitives exist so that most topologies need no custom code at all. Before
 writing a primitive with an SDK, check whether a composition of these expresses
@@ -255,7 +261,11 @@ variable: `HTTP_SOURCE_PORT`, `HTTP_SOURCE_HOST`, `HTTP_SOURCE_PATH`,
 concrete requested path. After primitives 0.11.0 an invalid value (no leading
 `/`, the old `:id` or `*rest` syntax, a wildcard that is not last) prints one
 line naming the value and the rule and exits 1. On 0.11.0 and earlier the same
-value panics at startup, which the engine reports as exit status 101.
+value panics at startup, which the engine reports as exit status 101. A `?` or
+`#` in the literal part of the path is refused the same way after 0.11.0,
+because the query string is never part of the route (it is published in the
+`query` field) and a fragment never reaches the server; on 0.11.0 and earlier
+such a route loads, reports `running`, and answers `404` to everything.
 
 With a secret set, a request must carry an `X-Signature` header holding the hex
 HMAC-SHA256 of the raw body, with an optional `sha256=` prefix. A missing or
@@ -596,8 +606,15 @@ args = ["--port", "8081"]
 subscribes = ["monitor.metric"]
 ```
 
-**Flags:** `--port <PORT>` (8080). **Endpoints:** `GET /events`, and
-`GET /health` returning `{ok, clients}`.
+**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`).
+**Endpoints:** `GET /events`, and `GET /health` returning `{ok, clients}`.
+
+After primitives 0.11.0 the sink listens on loopback only. A browser on another
+machine needs `--host 0.0.0.0` (or a reverse proxy), and the stream has no
+authentication, so expose it deliberately. An unknown flag or a malformed
+`--port` is an error, and a busy or invalid address prints one line and exits 1.
+On 0.11.0 and earlier it bound every interface, had no `--host`, and ignored
+flags it did not know.
 
 Each event is sent as an unnamed `data:` line holding
 `{id, type, source, timestamp, payload}`, with CORS open to `*`. With no
@@ -617,7 +634,10 @@ args = ["--port", "8009"]
 subscribes = ["system.started.*", "system.stopped.*", "system.error.*"]
 ```
 
-**Flags:** `--port <PORT>` (8080). Open `/` in a browser.
+**Flags:** `-p, --port <PORT>` (8080), `--host <HOST>` (`127.0.0.1`). Open `/`
+in a browser. The loopback default, `--host 0.0.0.0` for remote browsers, and
+the strict flag parsing are the same as for sse-sink above, with the same
+version boundary.
 
 | Route | Returns |
 |---|---|

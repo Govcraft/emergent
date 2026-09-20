@@ -240,20 +240,31 @@ set to an empty string.
 ## Error Handling
 
 All SDK errors implement the `EmergentError` interface with a `Code()` method
-for machine-readable classification. Use type switches for precise control:
+for machine-readable classification. A failed subscribe, publish or discover
+returns a `SubscriptionError`, `PublishError` or `DiscoveryError` that wraps
+its cause, so reach for the cause with `errors.As`:
 
 ```go
-err := source.Publish(msg)
+stream, err := sink.Subscribe(ctx, []string{"timer.tick"})
 
-switch e := err.(type) {
-case *emergent.SocketNotFoundError:
-    fmt.Printf("Engine not running at: %s\n", e.Path)
-case *emergent.TimeoutError:
-    fmt.Printf("Timed out after %s\n", e.Dur)
-case *emergent.ConnectionError:
-    fmt.Printf("Connection failed: %s\n", e.Msg)
+var timeoutErr *emergent.TimeoutError
+var connErr *emergent.ConnectionError
+var subErr *emergent.SubscriptionError
+switch {
+case errors.As(err, &timeoutErr):
+    fmt.Printf("Timed out after %s\n", timeoutErr.Dur)
+case errors.As(err, &connErr):
+    fmt.Printf("Connection failed: %s\n", connErr.Msg)
+case errors.As(err, &subErr):
+    fmt.Printf("Engine rejected %v: %s\n", subErr.MessageTypes, subErr.Msg)
 }
 ```
+
+After SDK release 0.13.1 the three wrapping errors have an `Err` field and an
+`Unwrap` method. `Err` is nil when the engine rejected the request. On 0.13.1
+and earlier the cause was flattened into `Msg`, so neither `errors.As` nor a
+type switch could find a `TimeoutError` behind a subscribe, publish or
+discover, and `errors.Is(err, context.Canceled)` was always false.
 
 ### Error Types
 
@@ -263,9 +274,9 @@ case *emergent.ConnectionError:
 | `SocketNotFoundError` | `SOCKET_NOT_FOUND`    | `Path`           |
 | `TimeoutError`        | `TIMEOUT`             | `Msg`, `Dur`     |
 | `ProtocolError`       | `PROTOCOL_ERROR`      | `Msg`            |
-| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `Msg`, `MessageTypes` |
-| `PublishError`        | `PUBLISH_FAILED`      | `Msg`, `MessageType`  |
-| `DiscoveryError`      | `DISCOVERY_FAILED`    | `Msg`            |
+| `SubscriptionError`   | `SUBSCRIPTION_FAILED` | `Msg`, `MessageTypes`, `Err` |
+| `PublishError`        | `PUBLISH_FAILED`      | `Msg`, `MessageType`, `Err`  |
+| `DiscoveryError`      | `DISCOVERY_FAILED`    | `Msg`, `Err`     |
 | `DisposedError`       | `DISPOSED`            | `ClientType`     |
 | `ValidationError`     | `VALIDATION_ERROR`    | `Msg`, `Field`   |
 
