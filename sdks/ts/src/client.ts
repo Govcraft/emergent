@@ -587,7 +587,8 @@ export class BaseClient {
       ? exact
       : [...exact, "system.shutdown"];
 
-    const response = await this.#sendRequest<IpcSubscribeRequest>(
+    const response = await this.#subscribeRequest<IpcSubscribeRequest>(
+      stream,
       MSG_TYPE_SUBSCRIBE,
       {
         correlation_id: correlationId,
@@ -613,9 +614,10 @@ export class BaseClient {
       // separate index for them. A connection matching a message through both
       // indexes still receives one copy.
       const patternCorrelationId = generateCorrelationId("psub");
-      const patternResponse = await this.#sendRequest<
+      const patternResponse = await this.#subscribeRequest<
         IpcPatternSubscribeRequest
       >(
+        stream,
         MSG_TYPE_SUBSCRIBE_PATTERNS,
         {
           correlation_id: patternCorrelationId,
@@ -1113,6 +1115,26 @@ export class BaseClient {
     return written;
   }
 
+  /**
+   * Send one request of a subscribe.
+   *
+   * When the request throws, the caller never receives the stream, so it is
+   * closed here, which also unregisters it.
+   */
+  async #subscribeRequest<T>(
+    stream: MessageStream,
+    msgType: number,
+    payload: T,
+    correlationId: string,
+  ): Promise<IpcResponse> {
+    try {
+      return await this.#sendRequest(msgType, payload, correlationId);
+    } catch (err) {
+      stream.close();
+      throw err;
+    }
+  }
+
   #sendRequest<T>(
     msgType: number,
     payload: T,
@@ -1190,6 +1212,15 @@ export class BaseClient {
     } finally {
       this.#readLoopRunning = false;
     }
+  }
+
+  /**
+   * The stream pushed messages are delivered to, or null when there is none.
+   *
+   * @internal
+   */
+  protected get registeredStream(): MessageStream | null {
+    return this.#messageStream;
   }
 
   /**
