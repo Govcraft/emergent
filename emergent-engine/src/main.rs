@@ -12,7 +12,6 @@ use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get};
 use clap::{Parser, Subcommand};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -99,15 +98,14 @@ enum Command {
 }
 
 use emergent_engine::config::EmergentConfig;
-use emergent_engine::declarations::{Enforcement, RejectionReport, rejection_event_type};
+use emergent_engine::declarations::{RejectionReport, rejection_event_type};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
+use emergent_engine::ipc_identity::StubResolver;
+use emergent_engine::ipc_policy::{EnginePolicy, policy_is_needed};
 use emergent_engine::messages::EmergentMessage;
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::{ProcessManager, ShutdownTimings};
 use emergent_engine::retention;
-use emergent_engine::security::{
-    EnginePolicy, PolicyObserver, PrimitiveIdentity, SpawnedPids, policy_is_needed,
-};
 use emergent_engine::topology::build_topology_payload;
 
 // ============================================================================
@@ -200,53 +198,6 @@ impl EventStoreWrapper {
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/// Lets the security policy read the engine's live process table.
-///
-/// Admission asks for this once per connection, so the cost is a read lock on
-/// the process manager at connect time and nothing at all per message.
-struct SpawnedPrimitives(ProcessManager);
-
-impl SpawnedPids for SpawnedPrimitives {
-    fn snapshot(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HashMap<u32, String>> + Send + '_>>
-    {
-        Box::pin(async move {
-            self.0
-                .list_all()
-                .await
-                .into_iter()
-                .filter_map(|info| info.pid.map(|pid| (pid, info.name)))
-                .collect()
-        })
-    }
-}
-
-/// Hands a rejected operation to the task that reports it.
-///
-/// A warning is already logged by the policy, so only a rejection is worth an
-/// event. The send is on an unbounded channel and never awaits, which is what
-/// keeps `authorize` off the blocking list.
-struct RejectionChannel(tokio::sync::mpsc::UnboundedSender<RejectionReport>);
-
-impl PolicyObserver for RejectionChannel {
-    fn on_violation(&self, report: &RejectionReport, enforcement: Enforcement) {
-        if enforcement != Enforcement::Reject {
-            return;
-        }
-        // `system.error.<name>` is attributed to a primitive, and a connection
-        // the engine could not identify is not one. There is no name to
-        // attribute the report to, so it stays in the log, which is where the
-        // pid that would identify the client is anyway.
-        if report.primitive == PrimitiveIdentity::UNAUTHENTICATED {
-            return;
-        }
-        if self.0.send(report.clone()).is_err() {
-            debug!("Rejection report dropped: the reporting task has stopped");
-        }
-    }
-}
 
 /// Store and forward the `system.error.<name>` event a strict rejection owes.
 ///
@@ -649,13 +600,17 @@ async fn main() -> Result<()> {
     // policy only hands the report over and returns.
     let (rejections_tx, mut rejections_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    // Start the IPC listener first to get the subscription manager
+    // Start the IPC listener first to get the subscription manager.
+    //
+    // The resolver is the stub one: until issue #24 lands, every peer is
+    // Unmanaged and enforcement falls back to the `source` a client writes
+    // itself. Swapping the stub for a real resolver is the whole of that
+    // change here.
     let listener_handle = if policy_is_needed(declarations.mode(), false) {
-        let policy = Arc::new(EnginePolicy::new(
-            declarations.clone(),
-            Arc::new(SpawnedPrimitives(process_manager.clone())),
-            Some(Arc::new(RejectionChannel(rejections_tx))),
-        ));
+        let policy = Arc::new(
+            EnginePolicy::new(declarations.clone(), Arc::new(StubResolver), None)
+                .reporting_to(rejections_tx),
+        );
         runtime
             .start_ipc_listener_with_policy(ipc_config, policy)
             .await
