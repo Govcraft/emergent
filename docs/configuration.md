@@ -87,6 +87,7 @@ shutdown_drain_ms = 500        # Voluntary-exit window per shutdown phase
 shutdown_grace_ms = 2000       # Post-SIGTERM window before SIGKILL
 startup_ready_timeout_ms = 5000 # Deadline for one startup tier to reach the engine
 enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
+authenticate_connections = "off" # Peers the engine did not spawn: off, warn, strict
 ```
 
 | Option | Default | Description |
@@ -100,6 +101,7 @@ enforce_declarations = "off"   # Whether declarations bind: off, warn, strict
 | `shutdown_grace_ms` | `2000` | How long a shutdown phase waits after SIGTERM before sending SIGKILL to whatever is still running. |
 | `startup_ready_timeout_ms` | `5000` | How long startup waits for one tier of primitives to reach the engine before starting the next. `0` disables the wait. |
 | `enforce_declarations` | `"off"` | From 0.14.0. Whether a primitive's `publishes` and `subscribes` lists bind it. `"off"`, `"warn"` or `"strict"`. |
+| `authenticate_connections` | `"off"` | From 0.14.0. What to do about an IPC connection from a process the engine did not spawn. `"off"`, `"warn"` or `"strict"`. |
 
 **Startup timing:** `startup_ready_timeout_ms` is a deadline, not a sleep. The
 engine leaves a tier the moment every primitive in it that declares `subscribes`
@@ -116,14 +118,16 @@ counts as ready whether it asks the engine for its configured `subscribes` or
 passes its topics in code. Registering that observer is enough on its own to
 install the policy, so this works with `enforce_declarations = "off"`.
 
-Naming the primitive behind a subscribe is the part that is still incomplete.
-Until the engine can resolve a peer to the process it spawned, the policy
-reports only the peer's kernel pid, and startup matches that against the pids
-of its own children. That is exact for a primitive the engine launched
-directly. A primitive running behind a wrapper that forks (`uv run`, for
-instance) connects from a grandchild whose pid the engine does not know, so it
-cannot be named and costs its tier the deadline. So does one whose platform
-reports no pid at all.
+The primitive behind a subscribe is named from the peer's process ancestry.
+The policy takes the peer's kernel pid and walks it up until it reaches a
+process the engine spawned, so a primitive launched directly is matched on its
+own pid and one running behind a wrapper that forks (`uv run`, for instance) is
+matched on the wrapper's. A `uv`-launched sink now releases its tier in a few
+hundred milliseconds instead of costing the full deadline. On engine 0.10.10 and
+earlier only the exact pid was tried, so such a primitive could not be named and
+waited out the whole deadline (Govcraft/emergent#24). A peer that belongs to no
+primitive at all, or whose platform reports no pid, still cannot be named and is
+not waited for.
 
 **Shutdown timing:** both windows are deadlines, not sleeps. A phase moves on the
 moment every one of its primitives has exited, so a topology of well-behaved
@@ -173,7 +177,7 @@ bind:
 |-------|--------|
 | `"off"` (default) | Nothing is checked. Exactly the 0.10.10 behavior, and the engine does not install a security policy at all. |
 | `"warn"` | An operation outside the declarations logs at WARN, naming the primitive, the operation and the message type. It still goes through. |
-| `"strict"` | The same log line, and the publish is refused: it is neither stored nor forwarded, `publish_ack` fails with an `ACCESS_DENIED` error carrying the engine's explanation, and the engine emits `system.error.<name>` describing the rejection. Subscriptions are checked in neither mode yet, for the reason under "Which name a check is made against" below. |
+| `"strict"` | The same log line, and the publish is refused: it is neither stored nor forwarded, `publish_ack` fails with an `ACCESS_DENIED` error carrying the engine's explanation, and the engine emits `system.error.<name>` describing the rejection. A subscribe to an undeclared topic is refused the same way. |
 
 The default is `"off"` because turning enforcement on can stop messages a
 working topology depends on. The shipped example configurations are clean under
@@ -205,42 +209,92 @@ primitive learns to stop. Holding a primitive to its TOML on those would refuse
 every primitive at startup. The engine's own `system.*` lifecycle events are
 produced by the engine, not by a primitive, and are never checked.
 
-**Which name a check is made against.** A message carries a `source` field, and
-that is the name the engine checks it under. The client writes that field
-itself, so a check catches every honest mistake, which is what a drifted
-declaration is, and catches no lie at all. The engine says so at startup
-whenever enforcement is on:
+**Which name a check is made against.** The engine decides who a connection
+belongs to when it accepts it, from the kernel and its own process table, and
+every later check is made under that name. acton-reactive reports the peer's pid
+with the connection; the engine walks that pid upward until it reaches a process
+it spawned, and the primitive that child was started for is the connection's
+identity for as long as the connection lasts. A primitive launched directly
+matches on its own pid, and one launched behind a wrapper that forks, `uv run`
+or `sh -c` for instance, matches a step or two up. The walk is bounded at 16
+generations, and a peer the engine cannot tie to a live child of its own is
+unmanaged.
+
+A message still carries a `source` field and the client still writes it, but it
+is no longer the name a check is made under:
+
+- A publish whose `source` names a different primitive than the connection does
+  is a violation in its own right: logged in `"warn"`, refused in `"strict"`. It
+  is attributed to the primitive that actually sent it, so `system.error.<name>`
+  no longer names a primitive that did nothing wrong.
+- A connection the engine could not tie to a primitive may use the protocol
+  topics in the table above and nothing else. It cannot borrow a configured
+  primitive's name by writing that name into `source`.
+- Subscriptions are checked too, in both modes, because the name comes from the
+  connection and does not have to be in the frame.
+
+On engine 0.10.10 and earlier none of this held: publishes were checked against
+whatever name the client put on the message, subscriptions were not checked at
+all, and the engine warned at startup that it was so. That warning is gone.
+
+A pid is a primitive only while the engine holds that child as live. The pid is
+cleared in the same step in which the child is reaped, and a child the engine
+has not yet reaped is a zombie whose pid the kernel will not hand out, so a
+recycled pid cannot inherit a dead primitive's name.
+
+**Revoking a dead primitive's connections.** When a child exits, every
+connection the engine admitted under that primitive's name is revoked and its
+socket closed. Usually there is nothing left to close, because a primitive that
+holds its own connection takes it down with it. The case that matters is the
+wrapper: if `sh` or `uv` exits while the process it forked keeps running, that
+process is left holding a connection the engine admitted under a name it now
+considers stopped, and revocation is what ends it.
 
 ```
-WARN Declarations are checked against self-reported names: publishes are held
-     to the source on the message, subscribes are not checked
+DEBUG Revoked a connection primitive="orphan" connection=6
+INFO  Revoked 1 IPC connection(s) after orphan (pid 63708) exited
 ```
 
-Three consequences follow, and all three are worth knowing before you rely on
-`"strict"`:
+**Where process ancestry is not available.** The walk reads `/proc`. On a
+platform without it the first step still works, since a primitive that connects
+directly is matched by pid against the engine's own children, but a primitive
+behind a forking wrapper cannot be named. There the engine falls back to the
+pre-0.10.10 behavior for a connection it could not name, taking the `source` on
+the message as the name to check, and says so at startup when enforcement is on:
 
-- A client can publish under any configured primitive's name, and the engine
-  will hold it to that primitive's declarations rather than refuse it.
-- A refusal is attributed to the name on the message, so `system.error.<name>`
-  can name a primitive that did nothing wrong. The WARN line beside it carries
-  the peer pid and `identity.trusted=false`, which is the tell.
-- A subscribe frame carries no `source` at all, so there is no name to check a
-  subscription under and subscriptions go through unchecked. Refusing them
-  instead would stop every handler and sink at startup.
+```
+WARN This platform does not report process ancestry, so a connection the engine
+     cannot name is checked against the source on the message
+```
 
-Binding a connection to the primitive that opened it, which closes all three, is
-tracked separately (Govcraft/emergent#24). Enforcement is written against that
-binding already: when it lands, the checks above start using the engine's own
-answer instead of the client's, and subscriptions start being checked, without
-a configuration change.
+**Denying peers the engine did not spawn.** Identity resolution runs whatever
+`authenticate_connections` says, because declaration enforcement and startup
+readiness both need the name. The key decides only what becomes of a peer that
+is not one of the engine's own primitives:
+
+| Value | Effect |
+|-------|--------|
+| `"off"` (default) | Admitted, without a log line. |
+| `"warn"` | Admitted, with a WARN naming the peer's pid and uid. |
+| `"strict"` | Admitted if it runs as the same user as the engine. Refused if it runs as another user, or if the platform reports no peer credentials at all. |
+
+The default is `"off"`, and even `"strict"` admits a same-user peer, because at
+admission an `emergent` CLI query, the topology viewer, a primitive you are
+running by hand and an impostor all look the same to the kernel: your user, no
+parent the engine knows. Refusing them would break every one of those and buy
+nothing, since anything that can open the socket already runs as you. What
+`"strict"` does buy is the other account: the socket is created mode `0660`, so a
+second user in the engine's group can reach it, and `"strict"` is what keeps that
+user out. The impostor is handled by attribution instead, in every mode: an
+unmanaged connection gets the protocol topics and no primitive's name.
 
 **What enforcement is for.** It keeps the TOML an accurate description of the
 system: a topic the code uses but the declaration never mentioned is named in a
 log line, and in `"strict"` it stops working, which is what makes anyone fix it.
 It is not an authentication boundary and does not try to be one. A client the
-engine did not spawn is admitted, and under `"strict"` it is held to the same
-declarations as anything else claiming that name; claiming no name at all leaves
-it only the protocol questions, which is enough for a CLI or a topology viewer.
+engine did not spawn is admitted under `authenticate_connections = "off"`, and
+what it gets is the protocol questions, which is enough for a CLI or a topology
+viewer, and no primitive's declarations.
 
 Treat access to the Unix socket as the outer trust boundary. Enforcement is what
 keeps a topology honest inside it.
@@ -252,9 +306,8 @@ engine's own sentence:
 publish_ack ERR   'proof' tried to publish 'proof.undeclared', which is not in its declared publishes list
 ```
 
-A subscribe request, once it is checked, is applied all or nothing, so a batch
-containing one undeclared topic is refused whole and the denial names that
-topic.
+A subscribe request is applied all or nothing, so a batch containing one
+undeclared topic is refused whole and the denial names that topic.
 
 The same sentence is in the engine log and in the `system.error.<name>` payload:
 
@@ -265,9 +318,9 @@ The same sentence is in the engine log and in the `system.error.<name>` payload:
 ```
 
 A sink already subscribed to `system.error.*` sees rejections without
-subscribing to anything new. A rejection on a message that named no source has
-no primitive to attribute an event to, so it stays in the log, where the peer
-pid is.
+subscribing to anything new. A rejection on a connection the engine could not tie to a
+primitive has no primitive to attribute an event to, so it stays in the log,
+where the peer pid is.
 
 **Which hosts the HTTP API answers to:** the API binds `127.0.0.1` and sends no
 `Access-Control-Allow-Origin`, which keeps other machines and other origins out.

@@ -11,6 +11,7 @@
 //! - Graceful termination in `before_stop`
 
 use crate::config::{EngineConfig, HandlerConfig, RestartConfig, SinkConfig, SourceConfig};
+use crate::ipc_identity::{ChildExitObserver, SpawnedChildren};
 use crate::primitive_actor::{
     ChildPidWatch, EngineShuttingDown, PrimitiveActorConfig, StopPrimitive, build_primitive_actor,
     create_shutdown_event, sigkill_process_group, wait_for_children_exit,
@@ -154,6 +155,8 @@ pub struct ProcessManager {
     api_port: u16,
     /// Actor handles by name.
     actors: Arc<RwLock<HashMap<String, ActorEntry>>>,
+    /// Told whenever a primitive's child exits, if anything asked to be.
+    child_exits: Option<Arc<dyn ChildExitObserver>>,
 }
 
 impl ProcessManager {
@@ -164,7 +167,19 @@ impl ProcessManager {
             socket_path,
             api_port,
             actors: Arc::new(RwLock::new(HashMap::new())),
+            child_exits: None,
         }
+    }
+
+    /// Report every child exit to this observer.
+    ///
+    /// The engine's connection registry uses it to revoke the IPC connections
+    /// a primitive held, so that a name the engine vouched for dies with the
+    /// process it was vouching for.
+    #[must_use]
+    pub fn observing_child_exits(mut self, observer: Arc<dyn ChildExitObserver>) -> Self {
+        self.child_exits = Some(observer);
+        self
     }
 
     /// Register a source from configuration.
@@ -280,6 +295,8 @@ impl ProcessManager {
         // Start the actor - this triggers after_start which spawns the process
         let handle = actor.start().await;
 
+        self.watch_child_exits(&name, pid_rx.clone());
+
         // Store the entry
         let entry = ActorEntry {
             handle,
@@ -370,7 +387,7 @@ impl ProcessManager {
         let mut ledger = Ledger::default();
         loop {
             let observed = readiness.drain().await;
-            ledger = absorb(ledger, observed, &self.child_names_by_pid().await);
+            ledger = absorb(ledger, observed, &self.live_child_pids().await);
             let members = self.tier_members(kind, &ledger.confirmed).await;
             let verdict = evaluate_tier(&members);
             if verdict.ready {
@@ -401,11 +418,37 @@ impl ProcessManager {
         }
     }
 
+    /// Tell the child-exit observer whenever this primitive's child goes away.
+    ///
+    /// The pid watch is cleared by the monitor task the moment `Child::wait`
+    /// returns, before the exit is reported to the actor and long before any
+    /// restart backoff elapses, so a revocation driven from here cannot reach
+    /// the connections of a replacement child. The task ends when the actor
+    /// drops its sender.
+    fn watch_child_exits(&self, name: &str, mut pid_rx: watch::Receiver<Option<u32>>) {
+        let Some(observer) = self.child_exits.clone() else {
+            return;
+        };
+        let name = name.to_owned();
+        tokio::spawn(async move {
+            let mut live = *pid_rx.borrow_and_update();
+            while pid_rx.changed().await.is_ok() {
+                let current = *pid_rx.borrow_and_update();
+                if let (Some(pid), None) = (live, current) {
+                    observer.on_child_exit(&name, pid);
+                }
+                live = current;
+            }
+        });
+    }
+
     /// The pid of every child the engine has spawned, by primitive name.
     ///
-    /// This is what turns an `Unmanaged` peer's pid into a name while
-    /// Govcraft/emergent#24 is outstanding; see [`crate::readiness::attribute`].
-    async fn child_names_by_pid(&self) -> HashMap<u32, String> {
+    /// One table, read by two callers: [`crate::readiness::attribute`] turns a
+    /// subscriber's pid into a name with it, and
+    /// [`crate::ipc_identity::AncestryResolver`] walks a connecting peer's
+    /// ancestry into it.
+    pub async fn live_child_pids(&self) -> HashMap<u32, String> {
         let actors = self.actors.read().await;
         actors
             .iter()
@@ -606,6 +649,13 @@ fn still_running(watched: &[(String, watch::Receiver<Option<u32>>)]) -> Vec<(Str
         .iter()
         .filter_map(|(name, rx)| rx.borrow().map(|pid| (name.clone(), pid)))
         .collect()
+}
+
+#[async_trait::async_trait]
+impl SpawnedChildren for ProcessManager {
+    async fn child_names_by_pid(&self) -> HashMap<u32, String> {
+        self.live_child_pids().await
+    }
 }
 
 #[cfg(test)]
