@@ -2,7 +2,7 @@
 
 `jev-handler` is a marketplace handler that asks [TypeSafe System One](https://docs.typesafe.ai) (Jev) a fixed set of typed questions about each event and publishes the answers with calibrated confidence. Use it when a step in your pipeline is a judgment rather than a transformation: is this message unwanted, which of these folders fits, how urgent is it.
 
-It ships in emergent-primitives 0.12.0 and needs engine 0.14.0 or later.
+It ships in emergent-primitives 0.12.0. Installing it from the marketplace needs engine 0.14.0 or later, because older engines read the frozen emergent-registry catalog, which stops at primitives 0.11.0.
 
 ## Why a Judge Instead of an LLM Call
 
