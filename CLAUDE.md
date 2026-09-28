@@ -34,6 +34,9 @@ emergent scaffold -t handler -n my_filter -l rust -S timer.tick -p timer.filtere
 # Initialize a new config file
 emergent init
 
+# Check a config with the startup checks, without starting anything
+emergent validate --config ./config/emergent.toml [--json] [--skip-path-check]
+
 # Marketplace commands
 emergent marketplace list
 emergent marketplace install http-source
@@ -102,7 +105,9 @@ so a slow-starting subscriber missed the first events (Govcraft/emergent#66).
 
 ### Engine Modules
 
-- `config.rs` — TOML config loading, path expansion, validation
+- `config.rs` — TOML config loading, path expansion, validation (each rule reports a located `ConfigIssue`)
+- `preflight.rs` — the one call startup and `emergent validate` both make before anything is spawned: config issues, connection capacity, warnings, and the `validate --json` report
+- `logging.rs` — pure decision for where engine logs go (file, `--verbose`, `--log-stdout` / `EMERGENT_LOG_STDOUT`)
 - `process_manager.rs` — Actor-based lifecycle for primitives
 - `primitive_actor.rs` — Per-primitive actor (spawns child process, monitors, broadcasts system events, owns the primitive's live state)
 - `lifecycle.rs`: pure state machine mapping a lifecycle event to a primitive's next state, pid and error
@@ -191,6 +196,12 @@ using `[timeouts] admission_timeout_ms` (default 60000) and
 `subscription_read_timeout_ms`. The engine owns the unsubscribed idle lifetime.
 
 Connection limit: every enabled primitive holds one IPC connection for the life of its process. The ceiling comes from acton-reactive, resolved from `$XDG_CONFIG_HOME/acton/ipc.toml` (`[limits] max_connections`) or its own default; `[engine].max_connections` overrides both, and leaving the key out keeps whatever acton resolved. From 0.14.0 the engine refuses to start when that limit cannot cover every enabled primitive plus `RESERVED_IPC_CONNECTIONS` (4: one for a restart overlap, three for CLI and topology-viewer queries), with an error naming both numbers. On 0.10.10 and earlier there was no check, so an oversized topology started with some primitives silently dropped at the accept semaphore while `/api/topology` still reported them running. The decision lives in `emergent-engine/src/config.rs` as `check_connection_capacity`, a pure function.
+
+Pre-flight: startup and `emergent validate` run the same checks through `emergent_engine::preflight::preflight`, after `EmergentConfig::read` (parse and resolve, no validation). Startup refuses on the first error before creating the socket, the log file or the event store; `validate` reports every error, with a stable `code` and a config `path` such as `sinks[0].publishes`, and exits 1. `--skip-path-check` drops only the primitive-path check. A new pre-spawn rule belongs in `EmergentConfig::issues` or `preflight`, never in `main.rs`, so the two cannot drift.
+
+Logging: the engine logs to `~/.local/share/emergent/<name>/emergent.log` by default, to the terminal with `--verbose`, and to stdout without ANSI codes (unless stdout is a TTY) with `--log-stdout` or `EMERGENT_LOG_STDOUT=1`, for containers. The decision is `emergent_engine::logging::log_destination`.
+
+Event store: the SQLite database opens in WAL mode with `synchronous = NORMAL`, so an external reader never blocks an insert. `NORMAL` can lose the last commits on power loss, not on an engine crash; the JSON log is not fsynced per event either.
 
 Marketplace: from 0.14.0 the registry is two files fetched over HTTPS,
 `index.toml` and `manifests.toml`, published as assets of the emergent-primitives

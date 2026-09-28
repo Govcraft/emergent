@@ -81,6 +81,7 @@ docker images emergent:local
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUST_LOG` | `info` | Log level (trace, debug, info, warn, error) |
+| `EMERGENT_LOG_STDOUT` | unset | Set to `1` to log to stdout, where `docker logs` sees it, instead of `emergent.log` inside the container (same as `--log-stdout`) |
 
 ## GitHub Container Registry
 
@@ -106,6 +107,7 @@ healthcheck:
 
 **Engine won't start:**
 - Verify config file exists at `config/emergent.toml`
+- Check it without starting the engine: `docker run --rm -v ./config:/etc/emergent:ro emergent:local validate --config /etc/emergent/emergent.toml --skip-path-check`
 - Check logs: `docker-compose logs`
 
 **Socket permission issues:**

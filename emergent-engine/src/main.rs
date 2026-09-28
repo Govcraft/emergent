@@ -7,7 +7,7 @@
 //! - Manages Source, Handler, and Sink processes via actors
 //! - Handles graceful shutdown
 
-use acton_reactive::ipc::{IpcConfig, IpcPushNotification, SubscriptionManager};
+use acton_reactive::ipc::{IpcPushNotification, SubscriptionManager};
 use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get};
@@ -38,6 +38,15 @@ Examples:
 
   # Start with verbose logging
   emergent --config ./config/emergent.toml --verbose
+
+  # Start in a container, logging to stdout instead of emergent.log
+  emergent --config /etc/emergent/emergent.toml --log-stdout
+
+  # Check a config without starting anything
+  emergent validate --config ./config/emergent.toml
+
+  # Check it on a host where the primitives are not installed, as JSON
+  emergent validate --config ./emergent.toml --skip-path-check --json
 
   # Scaffold a new primitive (interactive wizard)
   emergent scaffold
@@ -79,6 +88,12 @@ struct Args {
     #[arg(short, long, global = true, help_heading = "Global Options")]
     verbose: bool,
 
+    /// Log to stdout instead of ~/.local/share/emergent/<name>/emergent.log,
+    /// for containers and supervisors that collect stdout. Also set by
+    /// EMERGENT_LOG_STDOUT=1
+    #[arg(long)]
+    log_stdout: bool,
+
     /// Subcommand to run
     #[command(subcommand)]
     command: Option<Command>,
@@ -95,10 +110,39 @@ enum Command {
     Marketplace(emergent_engine::marketplace::MarketplaceArgs),
     /// Update emergent to the latest release
     Update(emergent_engine::update::UpdateArgs),
+    /// Check a configuration with the engine's startup checks, without starting it
+    Validate(ValidateArgs),
+}
+
+/// Arguments for `emergent validate`.
+///
+/// The file comes from the global `--config`, then `./emergent.toml`, then the
+/// XDG config directory, exactly as when starting the engine.
+#[derive(clap::Args, Debug)]
+#[command(after_long_help = "\
+Runs the checks the engine runs before it spawns anything: the TOML schema
+(unknown keys are errors), primitive names, duplicate names, restart policies,
+subscription topics, [engine].api_allowed_hosts, that every enabled primitive's
+path exists, and that the IPC connection limit covers every enabled primitive.
+Every problem is reported, not only the first. Exits 0 when the engine would
+start and 1 when it would not.
+
+--json prints {\"ok\", \"engine_version\", \"errors\", \"warnings\"}, where each
+issue has a \"code\", a \"message\" and, when it has one, a \"path\" such as
+\"sinks[2].publishes\".")]
+struct ValidateArgs {
+    /// Print the result as JSON on stdout
+    #[arg(long)]
+    json: bool,
+
+    /// Do not check that each enabled primitive's path exists, for a host
+    /// where the primitives are installed elsewhere
+    #[arg(long)]
+    skip_path_check: bool,
 }
 
 use emergent_engine::api_host::{describe_allowed_hosts, guard_host};
-use emergent_engine::config::EmergentConfig;
+use emergent_engine::config::{ConfigError, ConfigIssue, EmergentConfig, IssueCode, PathCheck};
 use emergent_engine::declarations::{RejectionReport, rejection_event_type};
 use emergent_engine::event_store::{EventStore, EventStoreError, JsonEventLog, SqliteEventStore};
 use emergent_engine::ipc_identity::{
@@ -107,7 +151,9 @@ use emergent_engine::ipc_identity::{
 use emergent_engine::ipc_policy::{
     EnginePolicy, Observers, PolicyObserver, UnmanagedNames, policy_is_needed,
 };
+use emergent_engine::logging::{LOG_STDOUT_ENV, LogDestination, log_destination};
 use emergent_engine::messages::EmergentMessage;
+use emergent_engine::preflight::{self, Findings, ValidationReport};
 use emergent_engine::primitive_actor::IpcSystemEvent;
 use emergent_engine::process_manager::{ProcessManager, ShutdownTimings, StartupReadiness};
 use emergent_engine::publish_reply::should_reply;
@@ -356,9 +402,10 @@ fn start_retention(event_store: &Arc<EventStoreWrapper>, config: &EmergentConfig
     });
 }
 
-/// Load configuration from the given path or default locations.
-fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
-    let config_path = if let Some(p) = path {
+/// Find the configuration file: the given path, else `./emergent.toml`, else
+/// the XDG config directory.
+fn resolve_config_path(path: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(p) = path {
         if !p.exists() {
             anyhow::bail!(
                 "Configuration file not found: {}\n\n\
@@ -368,70 +415,59 @@ fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
                 p.display()
             );
         }
-        p
-    } else {
-        // Check for config in current directory first
-        let local = PathBuf::from("emergent.toml");
-        if local.exists() {
-            local
-        } else if let Some(dirs) = directories::ProjectDirs::from("ai", "govcraft", "emergent") {
-            let xdg_config = dirs.config_dir().join("emergent.toml");
-            if xdg_config.exists() {
-                xdg_config
-            } else {
-                anyhow::bail!(
-                    "No configuration file found.\n\n\
-                     Searched:\n  \
-                     ./emergent.toml\n  \
-                     {}\n\n\
-                     To get started, create a config file:\n  \
-                     emergent init\n  \
-                     emergent --config path/to/emergent.toml",
-                    xdg_config.display()
-                );
-            }
-        } else {
-            anyhow::bail!(
-                "No configuration file found.\n\n\
-                 Searched:\n  \
-                 ./emergent.toml\n\n\
-                 To get started, create a config file:\n  \
-                 emergent init\n  \
-                 emergent --config path/to/emergent.toml"
-            );
-        }
-    };
-
-    info!("Loading configuration from {}", config_path.display());
-    EmergentConfig::load(&config_path)
-        .with_context(|| format!("Failed to load {}", config_path.display()))
-}
-
-/// Create IPC configuration from the engine config.
-///
-/// [`IpcConfig::load`] resolves acton-reactive's own defaults and
-/// `$XDG_CONFIG_HOME/acton/ipc.toml` first. The socket path always comes from
-/// `[engine]`. `max_connections` overrides the resolved limit only when
-/// `[engine].max_connections` is set, so leaving the key out keeps whatever
-/// acton resolved. Idle reads are disabled for long-lived publish-only primitives;
-/// the independent policy admission and subscription deadlines remain unchanged.
-fn create_ipc_config(socket_path: &std::path::Path, max_connections: Option<usize>) -> IpcConfig {
-    apply_engine_ipc_overrides(IpcConfig::load(), socket_path, max_connections)
-}
-
-/// Apply engine-owned settings without changing admission or subscription deadlines.
-fn apply_engine_ipc_overrides(
-    mut ipc_config: IpcConfig,
-    socket_path: &std::path::Path,
-    max_connections: Option<usize>,
-) -> IpcConfig {
-    // A source can legitimately wait indefinitely between external events.
-    ipc_config.timeouts.read = 0;
-    ipc_config.socket.path = Some(socket_path.to_path_buf());
-    if let Some(limit) = max_connections {
-        ipc_config.limits.max_connections = limit;
+        return Ok(p);
     }
-    ipc_config
+
+    // Check for config in current directory first
+    let local = PathBuf::from("emergent.toml");
+    if local.exists() {
+        return Ok(local);
+    }
+    if let Some(dirs) = directories::ProjectDirs::from("ai", "govcraft", "emergent") {
+        let xdg_config = dirs.config_dir().join("emergent.toml");
+        if xdg_config.exists() {
+            return Ok(xdg_config);
+        }
+        anyhow::bail!(
+            "No configuration file found.\n\n\
+             Searched:\n  \
+             ./emergent.toml\n  \
+             {}\n\n\
+             To get started, create a config file:\n  \
+             emergent init\n  \
+             emergent --config path/to/emergent.toml",
+            xdg_config.display()
+        );
+    }
+    anyhow::bail!(
+        "No configuration file found.\n\n\
+         Searched:\n  \
+         ./emergent.toml\n\n\
+         To get started, create a config file:\n  \
+         emergent init\n  \
+         emergent --config path/to/emergent.toml"
+    );
+}
+
+/// Refuse to start on the first pre-flight error, returning the warnings
+/// otherwise.
+///
+/// The checks are the ones `emergent validate` runs, through the same
+/// [`preflight::preflight`] call; startup names the first problem and points
+/// at `validate` when there are more.
+fn refuse_on_errors(findings: Findings, config_path: &Path) -> Result<Vec<ConfigIssue>> {
+    let more = findings.errors.len().saturating_sub(1);
+    findings.into_result().map_err(|e| {
+        let context = if more > 0 {
+            format!(
+                "Failed to load {path} ({more} more problem(s): run `emergent validate --config {path}` to list them all)",
+                path = config_path.display()
+            )
+        } else {
+            format!("Failed to load {}", config_path.display())
+        };
+        anyhow::Error::new(e).context(context)
+    })
 }
 
 /// Check for a stale socket file and clean it up if no listener is active.
@@ -485,6 +521,57 @@ async fn check_and_cleanup_stale_socket(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Run `emergent validate` and return the process exit code.
+///
+/// Reads the file with [`EmergentConfig::read`] and checks it with
+/// [`preflight::preflight`], which is what startup does, so a config that
+/// passes here is one the engine will start (the socket and the event store
+/// aside, which are only known by trying).
+fn run_validate(config: Option<PathBuf>, args: &ValidateArgs) -> Result<i32> {
+    let paths = if args.skip_path_check {
+        PathCheck::Skip
+    } else {
+        PathCheck::Check
+    };
+
+    let (display_path, report) = match resolve_config_path(config) {
+        Err(e) => (
+            PathBuf::from("emergent.toml"),
+            ValidationReport::failed(ConfigIssue::new(
+                IssueCode::ConfigNotFound,
+                format!("{e:#}"),
+            )),
+        ),
+        Ok(path) => {
+            let report = match std::fs::read_to_string(&path) {
+                Err(e) => ValidationReport::failed(preflight::load_issue(
+                    &ConfigError::ReadError(e),
+                    None,
+                )),
+                Ok(text) => match EmergentConfig::parse_unchecked(&text) {
+                    Err(e) => ValidationReport::failed(preflight::load_issue(&e, Some(&text))),
+                    Ok(config) => {
+                        let max_connections = preflight::effective_max_connections(&config);
+                        ValidationReport::from_findings(preflight::preflight(
+                            &config,
+                            max_connections,
+                            paths,
+                        ))
+                    }
+                },
+            };
+            (path, report)
+        }
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.to_human(&display_path));
+    }
+    Ok(report.exit_code())
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -496,10 +583,15 @@ async fn main() -> Result<()> {
 
     // Handle subcommands first (they don't need full tracing setup)
     if let Some(command) = args.command {
-        // Subcommands use stderr logging at info level
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("info,acton_reactive=off"))
-            .init();
+        // Subcommands log at info level. validate keeps stdout for its result,
+        // so its log lines go to stderr.
+        let subscriber =
+            tracing_subscriber::fmt().with_env_filter(EnvFilter::new("info,acton_reactive=off"));
+        if matches!(command, Command::Validate(_)) {
+            subscriber.with_writer(std::io::stderr).init();
+        } else {
+            subscriber.init();
+        }
 
         match command {
             Command::Init(init_args) => {
@@ -518,62 +610,106 @@ async fn main() -> Result<()> {
                 emergent_engine::update::execute(update_args).await?;
                 return Ok(());
             }
+            Command::Validate(validate_args) => {
+                let code = run_validate(args.config, &validate_args)?;
+                std::process::exit(code);
+            }
         }
     }
 
     // Load configuration (before tracing init so we know the engine name)
-    let mut config = load_config(args.config).context("Failed to load configuration")?;
-
-    // Initialize tracing
-    // --verbose: log to stderr (human-readable)
-    // default: log to file at ~/.local/share/emergent/<engine-name>/emergent.log
-    let log_level = "info,acton_reactive=off";
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
-
-    if args.verbose {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
-    } else {
-        let log_dir = directories::ProjectDirs::from("ai", "govcraft", "emergent")
-            .map(|dirs| dirs.data_dir().join(&config.engine.name))
-            .unwrap_or_else(|| PathBuf::from("."));
-        let _ = std::fs::create_dir_all(&log_dir);
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("emergent.log"));
-        // Without a writable log file, log to stderr rather than lose the logs
-        let writer = match log_file {
-            Ok(file) => BoxMakeWriter::new(std::sync::Mutex::new(file)),
-            Err(e) => {
-                eprintln!(
-                    "Cannot open {}: {e}. Logging to stderr instead.",
-                    log_dir.join("emergent.log").display()
-                );
-                BoxMakeWriter::new(std::io::stderr)
-            }
-        };
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_writer(writer)
-            .with_ansi(false)
-            .init();
-    }
+    let config_path = resolve_config_path(args.config).context("Failed to load configuration")?;
+    let mut config = EmergentConfig::read(&config_path)
+        .with_context(|| format!("Failed to load {}", config_path.display()))
+        .context("Failed to load configuration")?;
 
     // Override socket path if specified
     if let Some(socket) = args.socket {
         config.engine.socket_path = socket.display().to_string();
     }
-    info!("Engine name: {}", config.engine.name);
+    let socket_path = config.socket_path();
 
-    // wire_format is accepted for compatibility and selects nothing
-    if let Some(warning) = emergent_engine::config::wire_format_warning(config.engine.wire_format) {
-        warn!("{}", warning);
+    // Resolve the IPC configuration now: the connection limit it settles on is
+    // one of the pre-flight checks.
+    let ipc_config = preflight::ipc_config(Some(&socket_path), config.engine.max_connections);
+    let max_connections = ipc_config.limits.max_connections;
+
+    // Refuse a config the engine cannot run before anything is created: the
+    // same checks `emergent validate` runs, through the same call. The
+    // capacity check sees the limit acton actually resolved, not just the one
+    // written in emergent.toml; without it the primitives that lose the race
+    // to the accept semaphore are dropped silently, and the engine reports
+    // them as running.
+    let warnings = refuse_on_errors(
+        preflight::preflight(&config, max_connections, PathCheck::Check),
+        &config_path,
+    )
+    .context("Failed to load configuration")?;
+
+    // Initialize tracing
+    // --verbose: log to the terminal
+    // --log-stdout or EMERGENT_LOG_STDOUT=1: log to stdout, for containers
+    // default: log to file at ~/.local/share/emergent/<engine-name>/emergent.log
+    let log_level = "info,acton_reactive=off";
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+    let log_stdout_env = std::env::var(LOG_STDOUT_ENV).ok();
+
+    match log_destination(args.verbose, args.log_stdout, log_stdout_env.as_deref()) {
+        LogDestination::Terminal => {
+            tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        }
+        LogDestination::Stdout => {
+            use std::io::IsTerminal;
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(std::io::stdout)
+                .with_ansi(std::io::stdout().is_terminal())
+                .init();
+        }
+        LogDestination::File => {
+            let log_dir = directories::ProjectDirs::from("ai", "govcraft", "emergent")
+                .map(|dirs| dirs.data_dir().join(&config.engine.name))
+                .unwrap_or_else(|| PathBuf::from("."));
+            let _ = std::fs::create_dir_all(&log_dir);
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_dir.join("emergent.log"));
+            // Without a writable log file, log to stderr rather than lose the logs
+            let writer = match log_file {
+                Ok(file) => BoxMakeWriter::new(std::sync::Mutex::new(file)),
+                Err(e) => {
+                    eprintln!(
+                        "Cannot open {}: {e}. Logging to stderr instead.",
+                        log_dir.join("emergent.log").display()
+                    );
+                    BoxMakeWriter::new(std::io::stderr)
+                }
+            };
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(writer)
+                .with_ansi(false)
+                .init();
+        }
     }
 
-    // Resolve socket path
-    let socket_path = config.socket_path();
+    info!("Loaded configuration from {}", config_path.display());
+    info!("Engine name: {}", config.engine.name);
+
+    // Pre-flight warnings, such as the inert wire_format key
+    for warning in &warnings {
+        warn!("{}", warning.message);
+    }
+
     info!("Socket path: {}", socket_path.display());
+    info!(
+        "IPC connection limit: {} ({} enabled primitive(s) plus {} reserved)",
+        max_connections,
+        config.enabled_primitive_count(),
+        emergent_engine::config::RESERVED_IPC_CONNECTIONS
+    );
 
     // Check for stale socket from a previous unclean shutdown
     check_and_cleanup_stale_socket(&socket_path)
@@ -595,25 +731,6 @@ async fn main() -> Result<()> {
     let connections = Arc::new(ConnectionRegistry::new());
     let process_manager = ProcessManager::new(socket_path.clone(), config.engine.api_port)
         .observing_child_exits(connections.clone());
-
-    // Create IPC configuration with our socket path
-    let ipc_config = create_ipc_config(&socket_path, config.engine.max_connections);
-
-    // Refuse to start a topology that cannot fit under the effective connection
-    // limit. This runs after IpcConfig::load so it sees the limit acton
-    // actually resolved, not just the one written in emergent.toml. Without it
-    // the primitives that lose the race to the accept semaphore are dropped
-    // silently, and the engine reports them as running.
-    let max_connections = ipc_config.limits.max_connections;
-    config
-        .check_connection_capacity(max_connections)
-        .context("Connection capacity pre-flight check failed")?;
-    info!(
-        "IPC connection limit: {} ({} enabled primitive(s) plus {} reserved)",
-        max_connections,
-        config.enabled_primitive_count(),
-        emergent_engine::config::RESERVED_IPC_CONNECTIONS
-    );
 
     // Launch the acton runtime
     let mut runtime = ActonApp::launch_async().await;
@@ -1079,8 +1196,11 @@ mod tests {
 
     #[test]
     fn ipc_idle_override_keeps_default_admission_deadline() {
-        let config =
-            apply_engine_ipc_overrides(IpcConfig::default(), Path::new("engine.sock"), None);
+        let config = preflight::apply_engine_ipc_overrides(
+            IpcConfig::default(),
+            Some(Path::new("engine.sock")),
+            None,
+        );
         assert_eq!(config.read_timeout(), None);
         assert_eq!(
             config.admission_timeout(),
@@ -1097,14 +1217,14 @@ mod tests {
         resolved.timeouts.write = 450;
         resolved.limits.max_connections = 77;
         let socket = Path::new("engine.sock");
-        let config = apply_engine_ipc_overrides(resolved.clone(), socket, None);
+        let config = preflight::apply_engine_ipc_overrides(resolved.clone(), Some(socket), None);
         assert_eq!(config.socket.path.as_deref(), Some(socket));
         assert_eq!(config.read_timeout(), None);
         assert_eq!(config.timeouts.admission, 175);
         assert_eq!(config.timeouts.subscription_read, 350);
         assert_eq!(config.timeouts.write, 450);
         assert_eq!(config.limits.max_connections, 77);
-        let overridden = apply_engine_ipc_overrides(resolved, socket, Some(123));
+        let overridden = preflight::apply_engine_ipc_overrides(resolved, Some(socket), Some(123));
         assert_eq!(overridden.limits.max_connections, 123);
     }
 
@@ -1122,7 +1242,7 @@ mod tests {
         let socket = dir.path().join("idle.sock");
         let mut resolved = IpcConfig::default();
         resolved.timeouts.read = 25;
-        let config = apply_engine_ipc_overrides(resolved, &socket, None);
+        let config = preflight::apply_engine_ipc_overrides(resolved, Some(&socket), None);
         let mut runtime = ActonApp::launch_async().await;
         runtime
             .ipc_registry()

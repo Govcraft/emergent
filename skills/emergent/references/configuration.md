@@ -3,8 +3,15 @@
 Configuration is stored in TOML format, typically `emergent.toml`. The engine
 looks for `--config/-c FILE`, then `./emergent.toml`, then
 `~/.config/emergent/emergent.toml`. `--socket/-s PATH` overrides `socket_path`,
-and `--verbose/-v` logs to stderr instead of
-`~/.local/share/emergent/<engine.name>/emergent.log`.
+and `--verbose/-v` logs to the terminal instead of
+`~/.local/share/emergent/<engine.name>/emergent.log`. `--log-stdout`, or
+`EMERGENT_LOG_STDOUT=1`, logs to stdout without colour codes, for containers.
+
+`emergent validate [--json] [--skip-path-check]` runs every startup check
+(schema, names, restart policies, topics, `api_allowed_hosts`, primitive paths,
+IPC connection capacity) without starting anything, lists every problem with a
+`code` and a `path` such as `sinks[0].publishes`, and exits 1 when the engine
+would refuse the file. Run it after editing a config and before restarting.
 
 On engine 0.10.10 and earlier unknown keys were ignored without a warning, so a
 typo such as `subscribe =` produced a primitive that loaded and received nothing.
@@ -242,8 +249,9 @@ event: `{"timestamp": "<RFC3339>", "message": <envelope>}`.
 
 The SQLite table is `events(id, message_type, source, correlation_id,
 causation_id, timestamp_ms, payload_json, metadata_json, created_at)`, indexed on
-`message_type`, `timestamp_ms`, `source`, and `correlation_id`. Tracing a run is
-one query:
+`message_type`, `timestamp_ms`, `source`, and `correlation_id`. The database is
+in WAL mode, so reading it while the engine runs never blocks an event write.
+Tracing a run is one query:
 
 ```bash
 sqlite3 ~/.local/share/emergent/<engine.name>/events.db \
