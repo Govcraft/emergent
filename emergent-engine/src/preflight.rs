@@ -189,47 +189,67 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
 ///
 /// `[[sinks]]` is an array of tables, so the third one is `sinks[2]`; a
 /// sub-table header such as `[sinks.restart]` belongs to the latest element,
-/// giving `sinks[2].restart`. Returns `None` before any header. This reads
-/// header lines only, which is how every shipped config and every
-/// `emergent init` config is written; inline tables are reported at the table
-/// that holds them.
+/// giving `sinks[2].restart`. The structure comes from `toml_edit`'s parser,
+/// so a header-like line inside a multiline string is not a table and a quoted
+/// name such as `[["sinks"]]` is `sinks`. The table is the one whose header is
+/// the last to start at or before `offset`; toml points an error inside an
+/// array-of-tables element at that element's `[[header]]`, which counts.
+///
+/// Returns `None` before any header, and when the text does not parse, since
+/// then the path cannot be known. Inline tables and dotted keys are reported
+/// at the table that holds them.
 fn table_path_at(text: &str, offset: usize) -> Option<String> {
-    // The line holding the offset counts: toml points an error inside an
-    // array-of-tables element at that element's `[[header]]`.
-    let line_end = text
-        .get(offset..)
-        .and_then(|rest| rest.find('\n'))
-        .map_or(text.len(), |n| offset + n);
-    let before = text.get(..line_end).unwrap_or(text);
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut current: Option<String> = None;
+    let document = toml_edit::ImDocument::parse(text).ok()?;
+    let mut best: Option<(usize, String)> = None;
+    visit_tables(document.as_table(), None, offset, &mut best);
+    best.map(|(_, path)| path)
+}
 
-    for line in before.lines() {
-        let line = line.trim();
-        if let Some(name) = line
-            .strip_prefix("[[")
-            .and_then(|rest| rest.split_once("]]"))
-            .map(|(name, _)| name.trim())
-        {
-            let count = counts.entry(name.to_string()).or_insert(0);
-            current = Some(format!("{name}[{count}]"));
-            *count += 1;
-        } else if let Some(name) = line
-            .strip_prefix('[')
-            .and_then(|rest| rest.split_once(']'))
-            .map(|(name, _)| name.trim())
-        {
-            let (head, tail) = name
-                .split_once('.')
-                .map_or((name, None), |(h, t)| (h, Some(t)));
-            let head = counts.get(head).map_or_else(
-                || head.to_string(),
-                |n| format!("{head}[{}]", n.saturating_sub(1)),
-            );
-            current = Some(tail.map_or_else(|| head.clone(), |tail| format!("{head}.{tail}")));
+/// Record the header table starting latest at or before `offset`, walking
+/// every table under `table` (pure function).
+fn visit_tables(
+    table: &toml_edit::Table,
+    prefix: Option<&str>,
+    offset: usize,
+    best: &mut Option<(usize, String)>,
+) {
+    for (key, item) in table {
+        let path = prefix.map_or_else(|| key.to_string(), |prefix| format!("{prefix}.{key}"));
+        match item {
+            toml_edit::Item::Table(child) => {
+                consider_table(child, &path, offset, best);
+                visit_tables(child, Some(&path), offset, best);
+            }
+            toml_edit::Item::ArrayOfTables(array) => {
+                for (i, child) in array.iter().enumerate() {
+                    let path = format!("{path}[{i}]");
+                    consider_table(child, &path, offset, best);
+                    visit_tables(child, Some(&path), offset, best);
+                }
+            }
+            toml_edit::Item::None | toml_edit::Item::Value(_) => {}
         }
     }
-    current
+}
+
+/// Keep `table` as the answer when its header is the latest one so far that
+/// starts at or before `offset` (pure function). Implicit and dotted tables
+/// have no header of their own.
+fn consider_table(
+    table: &toml_edit::Table,
+    path: &str,
+    offset: usize,
+    best: &mut Option<(usize, String)>,
+) {
+    if table.is_implicit() || table.is_dotted() {
+        return;
+    }
+    if let Some(span) = table.span()
+        && span.start <= offset
+        && best.as_ref().is_none_or(|(start, _)| span.start > *start)
+    {
+        *best = Some((span.start, path.to_string()));
+    }
 }
 
 /// The result `emergent validate --json` prints.
@@ -525,6 +545,39 @@ subscribes = ["x"]
             table_path_at(text, at("x = 1")),
             Some("sinks[1].restart".to_string())
         );
+    }
+
+    #[test]
+    fn a_header_inside_a_multiline_string_is_not_a_table() {
+        let content = "[[sinks]]\nname = \"first\"\npath = \"/bin/sh\"\nargs = [\"\"\"\n[[sinks]]\n\"\"\"]\n[[sinks]]\nname = \"second\"\npath = \"/bin/sh\"\npublishes = [\"x\"]\n";
+        let Err(error) = parsed(content) else {
+            panic!("a sink with publishes must not parse");
+        };
+        let issue = load_issue(&error, Some(content));
+        assert_eq!(issue.code, IssueCode::UnknownField);
+        assert_eq!(issue.path.as_deref(), Some("sinks[1].publishes"));
+    }
+
+    #[test]
+    fn a_quoted_table_name_is_reported_without_its_quotes() {
+        let content = "[[\"sinks\"]]\nname = \"a\"\npath = \"/bin/sh\"\npublishes = [\"x\"]\n";
+        let Err(error) = parsed(content) else {
+            panic!("a sink with publishes must not parse");
+        };
+        let issue = load_issue(&error, Some(content));
+        assert_eq!(issue.code, IssueCode::UnknownField);
+        assert_eq!(issue.path.as_deref(), Some("sinks[0].publishes"));
+    }
+
+    #[test]
+    fn a_table_path_that_cannot_be_known_is_omitted() {
+        // Text that does not parse has no structure to read a path from.
+        assert_eq!(table_path_at("[engine\nname = 1\n", 9), None);
+        let content = "[engine\nname = 1\n";
+        let Err(error) = parsed(content) else {
+            panic!("an unclosed header must not parse");
+        };
+        assert_eq!(load_issue(&error, Some(content)).path, None);
     }
 
     #[test]
