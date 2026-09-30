@@ -24,10 +24,10 @@
 //! messages reach the socket in the order they were published.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use acton_reactive::ipc::{IpcClient, IpcEnvelope};
+use acton_reactive::ipc::{IpcClient, IpcEnvelope, IpcError};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::warn;
@@ -120,8 +120,8 @@ pub(crate) const fn should_log_rejection(
 /// to the caller and is not counted here.
 ///
 /// The counts lag the calls, because `publish` returns before the engine
-/// answers. `accepted + rejected + unanswered` reaches the number of calls once
-/// the queue drains.
+/// answers. `accepted + rejected + unanswered` reaches the number of
+/// successfully queued calls once the queue drains.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PublishStats {
     /// Publishes the engine took: the message reached the broker.
@@ -223,6 +223,8 @@ impl RejectionLog {
 /// task, one queue and one set of counters.
 #[derive(Clone)]
 pub(crate) struct PublishWatcher {
+    client: Arc<IpcClient>,
+    disconnected: Arc<AtomicBool>,
     tx: mpsc::Sender<WatchCommand>,
     counts: Arc<PublishCounts>,
     task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
@@ -233,9 +235,18 @@ impl PublishWatcher {
     pub(crate) fn spawn(client: Arc<IpcClient>, name: String) -> Self {
         let (tx, rx) = mpsc::channel(WATCH_QUEUE_CAPACITY);
         let counts = Arc::new(PublishCounts::default());
-        let task = tokio::spawn(run(client, name, rx, Arc::clone(&counts)));
+        let disconnected = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(run(
+            Arc::clone(&client),
+            name,
+            rx,
+            Arc::clone(&counts),
+            Arc::clone(&disconnected),
+        ));
 
         Self {
+            client,
+            disconnected,
             tx,
             counts,
             task: Arc::new(std::sync::Mutex::new(Some(task))),
@@ -248,15 +259,24 @@ impl PublishWatcher {
         envelope: IpcEnvelope,
         message_type: MessageType,
     ) -> Result<()> {
-        self.tx
-            .send(WatchCommand::Publish {
-                envelope,
-                message_type,
-            })
-            .await
-            .map_err(|_| {
-                ClientError::ConnectionFailed("publish failed: connection closed".to_string())
-            })
+        self.ensure_connected()?;
+        let permit = self.tx.reserve().await.map_err(|_| disconnected_error())?;
+        // Capacity may have been exhausted while the socket failed. Do not
+        // enqueue a message after waiting if that failure is already known.
+        self.ensure_connected()?;
+        permit.send(WatchCommand::Publish {
+            envelope,
+            message_type,
+        });
+        Ok(())
+    }
+
+    fn ensure_connected(&self) -> Result<()> {
+        if self.disconnected.load(Ordering::Acquire) || !self.client.is_connected() {
+            Err(disconnected_error())
+        } else {
+            Ok(())
+        }
     }
 
     /// Wait until every publish queued so far has been answered.
@@ -295,12 +315,24 @@ impl PublishWatcher {
     }
 }
 
+fn disconnected_error() -> ClientError {
+    ClientError::ConnectionFailed("publish failed: connection closed".to_string())
+}
+
+fn is_terminal_transport_error(error: &IpcError) -> bool {
+    matches!(
+        error,
+        IpcError::ConnectionClosed | IpcError::IoError(_) | IpcError::ConnectionLimitReached { .. }
+    )
+}
+
 /// The watcher task: one publish at a time, in the order they were published.
 async fn run(
     client: Arc<IpcClient>,
     name: String,
     mut rx: mpsc::Receiver<WatchCommand>,
     counts: Arc<PublishCounts>,
+    disconnected: Arc<AtomicBool>,
 ) {
     let mut rejection_log = RejectionLog::new();
 
@@ -318,13 +350,23 @@ async fn run(
             WatchCommand::Shutdown => break,
         };
 
-        let outcome = match client.request_with_timeout(envelope, REPLY_TIMEOUT).await {
+        let result = if disconnected.load(Ordering::Acquire) {
+            Err(IpcError::ConnectionClosed)
+        } else {
+            client.request_with_timeout(envelope, REPLY_TIMEOUT).await
+        };
+        let outcome = match result {
             Ok(response) => classify_reply(
                 response.success,
                 response.error_code.as_deref(),
                 response.error.as_deref(),
             ),
-            Err(e) => PublishOutcome::Unanswered(e.to_string()),
+            Err(e) => {
+                if is_terminal_transport_error(&e) {
+                    disconnected.store(true, Ordering::Release);
+                }
+                PublishOutcome::Unanswered(e.to_string())
+            }
         };
 
         match outcome {
@@ -382,6 +424,22 @@ fn report_held_rejections(name: &str, rejection_log: &mut RejectionLog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_fatal_transport_errors_mark_the_connection_dead() {
+        assert!(is_terminal_transport_error(&IpcError::ConnectionClosed));
+        assert!(is_terminal_transport_error(&IpcError::IoError(
+            "broken pipe".to_string()
+        )));
+        assert!(is_terminal_transport_error(
+            &IpcError::ConnectionLimitReached { limit: 1 }
+        ));
+        assert!(!is_terminal_transport_error(&IpcError::Timeout));
+        assert!(!is_terminal_transport_error(&IpcError::TargetBusy));
+        assert!(!is_terminal_transport_error(&IpcError::RateLimited {
+            retry_after_ms: 10
+        }));
+    }
 
     #[test]
     fn classify_reply_table() {

@@ -102,6 +102,14 @@ source.publish(
 ).await?;
 ```
 
+`publish` returns success when the message enters the local queue, before the
+engine acknowledges it. Once the SDK detects a disconnected transport, later
+calls return `ConnectionFailed`. A call racing the disconnect can still return
+success; `publish_stats().unanswered` records queued messages whose delivery
+could not be confirmed. Messages refused before queueing are not counted. There
+is no automatic reconnection or retry. Use `publish_ack` when the caller needs
+the engine's acceptance result.
+
 ### Handler -- subscribe and publish
 
 A Handler subscribes to incoming messages and publishes new ones. Use

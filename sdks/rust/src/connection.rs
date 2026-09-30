@@ -643,7 +643,11 @@ impl EmergentSource {
     /// # What `Ok(())` guarantees
     ///
     /// Only that the message was queued for the engine, in publish order. It
-    /// does **not** mean the engine took it. The engine answers every publish,
+    /// does **not** mean the engine took it. A known disconnected connection
+    /// returns an error instead of accepting more messages. A disconnect racing
+    /// this call can still leave a queued message unanswered; inspect
+    /// [`publish_stats`](Self::publish_stats) for that asynchronous outcome.
+    /// No automatic reconnection or retry occurs. The engine answers every publish,
     /// and the answer can be a refusal: the IPC connection is rate limited to
     /// 100 messages per second with a burst of 50, and the broker can also
     /// refuse a message because its mailbox is full or it is shutting down. A
@@ -1026,7 +1030,11 @@ impl EmergentHandler {
     /// # What `Ok(())` guarantees
     ///
     /// Only that the message was queued for the engine, in publish order. It
-    /// does **not** mean the engine took it. The engine answers every publish,
+    /// does **not** mean the engine took it. A known disconnected connection
+    /// returns an error instead of accepting more messages. A disconnect racing
+    /// this call can still leave a queued message unanswered; inspect
+    /// [`publish_stats`](Self::publish_stats) for that asynchronous outcome.
+    /// No automatic reconnection or retry occurs. The engine answers every publish,
     /// and the answer can be a refusal: the IPC connection is rate limited to
     /// 100 messages per second with a burst of 50, and the broker can also
     /// refuse a message because its mailbox is full or it is shutting down. A
@@ -1853,3 +1861,7 @@ mod tests {
         assert!(!carries_emergent_message(""));
     }
 }
+
+#[cfg(test)]
+#[path = "publish_disconnect_tests.rs"]
+mod publish_disconnect_tests;
