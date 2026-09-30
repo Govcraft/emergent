@@ -32,6 +32,8 @@ rmp-serde = "1"
 
 # Configuration
 toml = "0.8"
+# The parser `toml` itself uses; kept at its version so the lockfile holds one copy.
+toml_edit = "0.22.27"
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }

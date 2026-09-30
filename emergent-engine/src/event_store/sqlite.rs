@@ -27,6 +27,7 @@ impl SqliteEventStore {
     /// Returns an error if the database cannot be opened or initialized.
     pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, EventStoreError> {
         let conn = Connection::open(db_path)?;
+        configure_journal(&conn)?;
 
         // Create tables
         conn.execute_batch(
@@ -201,6 +202,39 @@ impl SqliteEventStore {
     }
 }
 
+/// Put a file-backed connection in write-ahead-log mode.
+///
+/// In SQLite's default rollback-journal mode a reader holds a shared lock on
+/// the whole file, so anything tailing `events.db` (`sqlite3`, a dashboard, a
+/// control plane polling for new events) makes the engine's next insert fail
+/// with `SQLITE_BUSY` for as long as its read lasts. In WAL mode readers see
+/// the last committed snapshot and never block the writer, nor it them.
+///
+/// `synchronous = NORMAL` is the setting SQLite recommends with WAL: a commit
+/// no longer waits for an fsync, only a checkpoint does. The database cannot be
+/// corrupted by a crash or power loss either way; what `NORMAL` gives up is the
+/// last few commits on a power loss or OS crash (not on an engine crash, which
+/// loses nothing). The event store is an audit and replay log written next to
+/// the JSON log, which is not fsynced per event either, so this matches the
+/// durability the engine already offers. `journal_mode` is stored in the
+/// database file and persists; `synchronous` is per connection, which is why it
+/// is set on every open.
+///
+/// # Errors
+///
+/// Returns an error if either pragma cannot be applied.
+fn configure_journal(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        tracing::warn!(
+            journal_mode = %mode,
+            "SQLite event store could not switch to WAL mode; readers may block event writes"
+        );
+    }
+    conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
+    Ok(())
+}
+
 fn row_to_message(row: &rusqlite::Row<'_>) -> Result<EmergentMessage, rusqlite::Error> {
     let id_str: String = row.get(0)?;
     let message_type_str: String = row.get(1)?;
@@ -349,6 +383,48 @@ mod tests {
 
         let timer_events = store.query_by_type("timer.tick")?;
         assert_eq!(timer_events.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_store_uses_wal_with_normal_sync() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteEventStore::new(dir.path().join("events.db"))?;
+        let conn = store.conn.lock().map_err(|e| format!("conn lock: {e}"))?;
+
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        assert_eq!(mode.to_ascii_lowercase(), "wal");
+
+        // 1 is NORMAL (0 OFF, 2 FULL, 3 EXTRA).
+        let synchronous: i64 = conn.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
+        assert_eq!(synchronous, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_reader_does_not_block_a_write() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("events.db");
+        let store = SqliteEventStore::new(&path)?;
+        store.store(&EmergentMessage::new("timer.tick").with_source("timer"))?;
+
+        // An external reader, such as a control plane tailing events, holding
+        // a read transaction open. In rollback-journal mode its shared lock
+        // makes the insert below fail with SQLITE_BUSY.
+        let reader = Connection::open(&path)?;
+        reader.execute_batch("BEGIN")?;
+        let seen: i64 = reader.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
+        assert_eq!(seen, 1);
+
+        store.store(&EmergentMessage::new("timer.tick").with_source("timer"))?;
+        assert_eq!(store.count()?, 2);
+
+        // The reader keeps its snapshot until it ends the transaction.
+        let still: i64 = reader.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
+        assert_eq!(still, 1);
+        reader.execute_batch("COMMIT")?;
+        let now: i64 = reader.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
+        assert_eq!(now, 2);
         Ok(())
     }
 

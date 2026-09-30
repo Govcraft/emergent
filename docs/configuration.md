@@ -9,7 +9,7 @@ emergent --config /path/to/config.toml
 emergent --config ./emergent.toml
 ```
 
-Use `emergent init` to generate a starter config interactively.
+Use `emergent init` to generate a starter config interactively, and `emergent validate` to check one without starting anything (see [Validation](#validation)).
 
 On engine 0.10.10 and earlier an unknown key was ignored without a word, so `retension_days` or a singular `subscribe` loaded cleanly and did nothing. From 0.14.0 an unknown key is a load error that names the key, the keys its table accepts, and the file it came from.
 
@@ -421,6 +421,8 @@ retention_days = 30
 
 Both paths support `"auto"` for XDG data directory placement.
 
+The SQLite database is opened in write-ahead-log mode (`journal_mode = WAL`, `synchronous = NORMAL`), so another process can read it while the engine runs, whether `sqlite3` or a dashboard tailing new events, without making the engine's inserts fail with `database is locked`. A reader sees the last committed events. SQLite keeps `events.db-wal` and `events.db-shm` next to the database while it is open. Do not back it up by copying those files while the engine runs: a commit or checkpoint between copies leaves a backup that is inconsistent and can be corrupt ([SQLite: backup while a transaction is active](https://sqlite.org/howtocorrupt.html#backup_or_restore_while_a_transaction_is_active)). Take a consistent snapshot instead, with the online backup API (`sqlite3 events.db ".backup events-backup.db"`) or `sqlite3 events.db "VACUUM INTO 'events-backup.db'"`, or stop the engine first and then copy the database, together with any `-wal` file still beside it. `NORMAL` can lose the last few events on a power failure or OS crash, never on an engine crash, and never corrupts the file.
+
 **Retention:** on engine 0.10.10 and earlier `retention_days` was parsed and never enforced, so both stores grew without bound. From 0.14.0 the engine prunes at startup and once a day afterwards: SQLite rows older than the window are deleted, and `events-YYYY-MM-DD.jsonl` files dated before the window are removed. The day at the edge of the window is kept, and files that are not rotated event logs are never touched. Each pass logs what it removed. `retention_days = 0` disables pruning and keeps every event, which the engine states at startup.
 
 ## Sources
@@ -808,4 +810,41 @@ The engine validates configuration at startup:
 - `restart` must be one of `never`, `on-failure` or `always` (from 0.14.0)
 - Unknown keys are a load error that names the key and its table (from 0.14.0). That is what rejects `subscribes` on a source and `publishes` on a sink, since neither table has that key
 
+- The IPC connection limit (`[engine].max_connections`, else acton's `ipc.toml`, else its default) must cover every enabled primitive plus 4 reserved connections (from 0.14.0)
+
 `subscribes` and `publishes` may be empty or omitted. The engine does not require them, and an empty `subscribes` on a handler or sink loads and receives nothing.
+
+### Checking a config without starting it
+
+`emergent validate` runs the same checks, through the same code, and reports every problem rather than stopping at the first. It spawns nothing and touches neither the socket nor the event store. It exits `0` when the engine would start and `1` when it would not.
+
+```bash
+emergent validate --config ./emergent.toml
+emergent validate --config ./emergent.toml --json
+emergent validate --config ./emergent.toml --json --skip-path-check
+```
+
+`--skip-path-check` leaves out the check that each enabled primitive's `path` exists, for a host (a CI job, a control plane) that validates configs for primitives installed somewhere else. `--json` prints one object on stdout:
+
+```json
+{
+  "ok": false,
+  "engine_version": "0.14.0",
+  "errors": [
+    {
+      "code": "unknown_field",
+      "message": "unknown field `publishes` (line 540, column 1)",
+      "path": "sinks[0].publishes"
+    }
+  ],
+  "warnings": []
+}
+```
+
+`path` locates the problem in the file (`sinks[0]` is the first `[[sinks]]` table) and is omitted when there is nothing to point at. `code` is one of `config_not_found`, `read_error`, `parse_error`, `unknown_field`, `invalid_name`, `duplicate_name`, `invalid_restart_policy`, `invalid_subscription_topic`, `invalid_api_allowed_host`, `path_not_found` and `connection_capacity` for errors, and `wire_format_ignored` for warnings. TOML parsing stops at the first unknown key or syntax error, so a file with several gets one of them reported per run; everything checked after parsing is reported in full.
+
+The connection limit is resolved on the host that runs `validate`, from its own `$XDG_CONFIG_HOME/acton/ipc.toml` when `[engine].max_connections` is not set.
+
+## Logging
+
+A running engine logs to `~/.local/share/emergent/<engine.name>/emergent.log`. `--verbose` sends the same lines to the terminal instead. In a container, or under a supervisor that collects stdout, pass `--log-stdout` or set `EMERGENT_LOG_STDOUT=1` (also `true`, `yes`, `on`): the lines go to stdout, without colour codes unless stdout is a terminal, and no log file is written. `RUST_LOG` sets the level in every mode.

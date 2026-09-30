@@ -612,41 +612,196 @@ impl PrimitiveConfig for SinkConfig {
     }
 }
 
-/// Check for duplicate names across a collection of primitives (pure function).
-fn check_duplicate_names<'a, T: PrimitiveConfig + 'a>(
-    primitives: impl IntoIterator<Item = &'a T>,
-    names: &mut std::collections::HashSet<&'a str>,
-) -> Result<(), ConfigError> {
-    for primitive in primitives {
-        if !names.insert(primitive.name()) {
-            return Err(ConfigError::ValidationError(format!(
-                "Duplicate name: {}",
-                primitive.name()
-            )));
-        }
-    }
-    Ok(())
+/// What kind of problem a [`ConfigIssue`] reports.
+///
+/// Serialized in `snake_case`, which is the `code` field of
+/// `emergent validate --json`, so a control plane can branch on it without
+/// parsing the message. A new variant is an addition to that contract; renaming
+/// one breaks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueCode {
+    /// No configuration file was found at the given path or the default locations.
+    ConfigNotFound,
+    /// The file exists but could not be read.
+    ReadError,
+    /// The file is not valid TOML, or a value has the wrong type.
+    ParseError,
+    /// A table holds a key the schema does not define.
+    UnknownField,
+    /// A primitive name cannot form the last segment of a message type.
+    InvalidName,
+    /// Two primitives share a name.
+    DuplicateName,
+    /// A primitive's `restart` value is not a known policy.
+    InvalidRestartPolicy,
+    /// A subscription topic can never match a message type.
+    InvalidSubscriptionTopic,
+    /// An `[engine].api_allowed_hosts` entry is not a bare host name.
+    InvalidApiAllowedHost,
+    /// An enabled primitive's executable does not exist.
+    PathNotFound,
+    /// The IPC connection limit cannot host every enabled primitive.
+    ConnectionCapacity,
+    /// `[engine].wire_format` is set, and selects nothing.
+    WireFormatIgnored,
 }
 
-/// Check that every primitive names a known restart policy (pure function).
-///
-/// The error names both the primitive and the offending value so a typo in a
-/// large config is findable without bisecting the file.
-fn check_restart_policies<'a, T: PrimitiveConfig + 'a>(
-    primitives: impl IntoIterator<Item = &'a T>,
-) -> Result<(), ConfigError> {
-    for primitive in primitives {
-        let cfg = primitive.restart_config();
-        if cfg.policy().is_none() {
-            return Err(ConfigError::ValidationError(format!(
-                "Invalid restart policy for primitive '{}': '{}' (expected one of {})",
-                primitive.name(),
-                cfg.restart,
-                RestartPolicy::variants().join(", ")
-            )));
+impl IssueCode {
+    /// The code as it appears in JSON output.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfigNotFound => "config_not_found",
+            Self::ReadError => "read_error",
+            Self::ParseError => "parse_error",
+            Self::UnknownField => "unknown_field",
+            Self::InvalidName => "invalid_name",
+            Self::DuplicateName => "duplicate_name",
+            Self::InvalidRestartPolicy => "invalid_restart_policy",
+            Self::InvalidSubscriptionTopic => "invalid_subscription_topic",
+            Self::InvalidApiAllowedHost => "invalid_api_allowed_host",
+            Self::PathNotFound => "path_not_found",
+            Self::ConnectionCapacity => "connection_capacity",
+            Self::WireFormatIgnored => "wire_format_ignored",
         }
     }
-    Ok(())
+}
+
+impl std::fmt::Display for IssueCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One problem found in a configuration.
+///
+/// Every check the engine runs before spawning anything reports through this
+/// type, so startup and `emergent validate` cannot disagree about what is
+/// wrong: startup refuses on the first error, `validate` lists them all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConfigIssue {
+    /// What kind of problem this is.
+    pub code: IssueCode,
+    /// The sentence an operator reads.
+    pub message: String,
+    /// Where in the configuration the problem is, such as `sinks[2].path`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The missing executable, for a [`IssueCode::PathNotFound`] issue.
+    #[serde(skip)]
+    missing: Option<PathBuf>,
+}
+
+impl ConfigIssue {
+    /// An issue with no location.
+    #[must_use]
+    pub fn new(code: IssueCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            path: None,
+            missing: None,
+        }
+    }
+
+    /// The same issue, located at `path` in the configuration.
+    #[must_use]
+    pub fn at(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    /// The error startup refuses with for this issue.
+    ///
+    /// A missing executable stays [`ConfigError::PathNotFound`] and everything
+    /// else is [`ConfigError::ValidationError`] carrying the message, which is
+    /// what `EmergentConfig::validate` returned before the checks reported
+    /// issues.
+    #[must_use]
+    pub fn into_error(self) -> ConfigError {
+        match self.missing {
+            Some(path) => ConfigError::PathNotFound(path),
+            None => ConfigError::ValidationError(self.message),
+        }
+    }
+}
+
+/// Whether validation checks that each enabled primitive's `path` exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PathCheck {
+    /// Check the filesystem, as startup does.
+    #[default]
+    Check,
+    /// Skip it, for a host that validates configs whose primitives live elsewhere.
+    Skip,
+}
+
+/// The first issue as an error, or `Ok` when there is none (pure function).
+fn first_error(issues: Vec<ConfigIssue>) -> Result<(), ConfigError> {
+    issues
+        .into_iter()
+        .next()
+        .map_or(Ok(()), |issue| Err(issue.into_error()))
+}
+
+/// Every configured primitive with its table and index, in declaration order.
+fn located_primitives(config: &EmergentConfig) -> Vec<(String, &dyn PrimitiveConfig)> {
+    let sources = config
+        .sources
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (format!("sources[{i}]"), p as &dyn PrimitiveConfig));
+    let handlers = config
+        .handlers
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (format!("handlers[{i}]"), p as &dyn PrimitiveConfig));
+    let sinks = config
+        .sinks
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (format!("sinks[{i}]"), p as &dyn PrimitiveConfig));
+    sources.chain(handlers).chain(sinks).collect()
+}
+
+/// Report every name used more than once, at each repeat (pure function).
+fn duplicate_name_issues(primitives: &[(String, &dyn PrimitiveConfig)]) -> Vec<ConfigIssue> {
+    let mut names = std::collections::HashSet::new();
+    primitives
+        .iter()
+        .filter(|(_, p)| !names.insert(p.name()))
+        .map(|(at, p)| {
+            ConfigIssue::new(
+                IssueCode::DuplicateName,
+                format!("Duplicate name: {}", p.name()),
+            )
+            .at(format!("{at}.name"))
+        })
+        .collect()
+}
+
+/// Report every primitive that names an unknown restart policy (pure function).
+///
+/// The message names both the primitive and the offending value so a typo in a
+/// large config is findable without bisecting the file.
+fn restart_policy_issues(primitives: &[(String, &dyn PrimitiveConfig)]) -> Vec<ConfigIssue> {
+    primitives
+        .iter()
+        .filter(|(_, p)| p.restart_config().policy().is_none())
+        .map(|(at, p)| {
+            ConfigIssue::new(
+                IssueCode::InvalidRestartPolicy,
+                format!(
+                    "Invalid restart policy for primitive '{}': '{}' (expected one of {})",
+                    p.name(),
+                    p.restart_config().restart,
+                    RestartPolicy::variants().join(", ")
+                ),
+            )
+            .at(format!("{at}.restart"))
+        })
+        .collect()
 }
 
 /// Validate that a primitive name can form a message type segment (pure function).
@@ -672,45 +827,63 @@ fn validate_primitive_name(name: &str) -> Result<(), ConfigError> {
     })
 }
 
-/// Check that every primitive in a collection has a usable name (pure function).
-fn check_valid_names<'a, T: PrimitiveConfig + 'a>(
-    primitives: impl IntoIterator<Item = &'a T>,
-) -> Result<(), ConfigError> {
-    for primitive in primitives {
-        validate_primitive_name(primitive.name())?;
-    }
-    Ok(())
+/// Report every primitive whose name cannot form a message type (pure function).
+fn name_issues(primitives: &[(String, &dyn PrimitiveConfig)]) -> Vec<ConfigIssue> {
+    primitives
+        .iter()
+        .filter_map(|(at, p)| {
+            validate_primitive_name(p.name()).err().map(|e| {
+                let message = match e {
+                    ConfigError::ValidationError(message) => message,
+                    other => other.to_string(),
+                };
+                ConfigIssue::new(IssueCode::InvalidName, message).at(format!("{at}.name"))
+            })
+        })
+        .collect()
 }
 
-/// Check that every subscription topic can match something (pure function).
+/// Report every subscription topic that can never match (pure function).
 ///
 /// Delegates the rule to the SDK so the engine and every primitive agree on
 /// what a wildcard means: a single terminal `*`, or no `*` at all.
-fn check_subscription_topics(
+fn subscription_topic_issues(
+    at: &str,
     name: &str,
     kind: &str,
     subscribes: &[String],
-) -> Result<(), ConfigError> {
-    for topic in subscribes {
-        emergent_client::classify_topic(topic).map_err(|e| {
-            ConfigError::ValidationError(format!(
-                "{kind} '{name}' subscribes to an invalid topic: {e}"
-            ))
-        })?;
-    }
-    Ok(())
+) -> Vec<ConfigIssue> {
+    subscribes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, topic)| {
+            emergent_client::classify_topic(topic).err().map(|e| {
+                ConfigIssue::new(
+                    IssueCode::InvalidSubscriptionTopic,
+                    format!("{kind} '{name}' subscribes to an invalid topic: {e}"),
+                )
+                .at(format!("{at}.subscribes[{i}]"))
+            })
+        })
+        .collect()
 }
 
-/// Check that paths exist for enabled primitives (impure function).
-fn check_paths_exist<'a, T: PrimitiveConfig + 'a>(
-    primitives: impl IntoIterator<Item = &'a T>,
-) -> Result<(), ConfigError> {
-    for primitive in primitives {
-        if primitive.is_enabled() && !primitive.path().exists() {
-            return Err(ConfigError::PathNotFound(primitive.path().to_path_buf()));
-        }
-    }
-    Ok(())
+/// Report every enabled primitive whose executable is missing (impure function).
+fn missing_path_issues(primitives: &[(String, &dyn PrimitiveConfig)]) -> Vec<ConfigIssue> {
+    primitives
+        .iter()
+        .filter(|(_, p)| p.is_enabled() && !p.path().exists())
+        .map(|(at, p)| ConfigIssue {
+            code: IssueCode::PathNotFound,
+            message: format!(
+                "Path does not exist: {} (primitive '{}')",
+                p.path().display(),
+                p.name()
+            ),
+            path: Some(format!("{at}.path")),
+            missing: Some(p.path().to_path_buf()),
+        })
+        .collect()
 }
 
 /// IPC connections the engine reserves on top of the one that every enabled
@@ -795,12 +968,13 @@ impl EmergentConfig {
     ///
     /// Paths in primitive configurations are expanded to resolve `~` to the
     /// user's home directory before validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read or parse error, or the first issue
+    /// [`Self::validate`] finds.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
-        let content = std::fs::read_to_string(path)?;
-        let mut config: EmergentConfig = toml::from_str(&content)?;
-        config.expand_paths();
-        config.resolve_path_commands();
-        config.resolve_event_store();
+        let config = Self::read(path)?;
         config.validate()?;
         Ok(config)
     }
@@ -809,12 +983,41 @@ impl EmergentConfig {
     ///
     /// Paths in primitive configurations are expanded to resolve `~` to the
     /// user's home directory before validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parse error, or the first issue [`Self::validate`] finds.
     pub fn parse(content: &str) -> Result<Self, ConfigError> {
+        let config = Self::parse_unchecked(content)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Read and resolve a configuration file without validating it.
+    ///
+    /// The schema still applies, so an unknown key is an error here. What is
+    /// left out is [`Self::issues`], for a caller that wants every problem
+    /// rather than the first: startup and `emergent validate` both read
+    /// through this and then run the same checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ReadError`] or [`ConfigError::ParseError`].
+    pub fn read<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let content = std::fs::read_to_string(path)?;
+        Self::parse_unchecked(&content)
+    }
+
+    /// Parse and resolve a TOML string without validating it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ParseError`] for invalid TOML or an unknown key.
+    pub fn parse_unchecked(content: &str) -> Result<Self, ConfigError> {
         let mut config: EmergentConfig = toml::from_str(content)?;
         config.expand_paths();
         config.resolve_path_commands();
         config.resolve_event_store();
-        config.validate()?;
         Ok(config)
     }
 
@@ -877,41 +1080,44 @@ impl EmergentConfig {
     ///
     /// Checks for duplicate names across all primitives without performing I/O.
     /// This is suitable for testing configuration validity without filesystem access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ValidationError`] for the first repeated name.
     pub fn validate_unique_names(&self) -> Result<(), ConfigError> {
-        let mut names = std::collections::HashSet::new();
-        check_duplicate_names(&self.sources, &mut names)?;
-        check_duplicate_names(&self.handlers, &mut names)?;
-        check_duplicate_names(&self.sinks, &mut names)?;
-        Ok(())
+        first_error(duplicate_name_issues(&located_primitives(self)))
     }
 
     /// Validate every primitive's `restart` value (pure function).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ValidationError`] for the first unknown policy.
     pub fn validate_restart_policies(&self) -> Result<(), ConfigError> {
-        check_restart_policies(&self.sources)?;
-        check_restart_policies(&self.handlers)?;
-        check_restart_policies(&self.sinks)?;
-        Ok(())
+        first_error(restart_policy_issues(&located_primitives(self)))
     }
 
     /// Validate that every primitive name can form a message type (pure function).
     ///
     /// Disabled primitives are checked too: the name is a structural property of
     /// the config, so enabling a primitive later must never be what breaks it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ValidationError`] for the first unusable name.
     pub fn validate_names(&self) -> Result<(), ConfigError> {
-        check_valid_names(&self.sources)?;
-        check_valid_names(&self.handlers)?;
-        check_valid_names(&self.sinks)?;
-        Ok(())
+        first_error(name_issues(&located_primitives(self)))
     }
 
     /// Validate that all enabled primitive paths exist (impure function).
     ///
     /// Performs filesystem checks to verify executable paths exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::PathNotFound`] for the first missing executable.
     pub fn validate_paths(&self) -> Result<(), ConfigError> {
-        check_paths_exist(&self.sources)?;
-        check_paths_exist(&self.handlers)?;
-        check_paths_exist(&self.sinks)?;
-        Ok(())
+        first_error(missing_path_issues(&located_primitives(self)))
     }
 
     /// Validate every configured subscription topic (pure function).
@@ -926,28 +1132,73 @@ impl EmergentConfig {
     /// Returns [`ConfigError::ValidationError`] naming the primitive and the
     /// topic that cannot match.
     pub fn validate_subscription_topics(&self) -> Result<(), ConfigError> {
-        for handler in &self.handlers {
-            check_subscription_topics(&handler.name, "handler", &handler.subscribes)?;
+        first_error(self.subscription_topic_issues())
+    }
+
+    /// Every subscription topic that can never match (pure function).
+    fn subscription_topic_issues(&self) -> Vec<ConfigIssue> {
+        let handlers = self.handlers.iter().enumerate().flat_map(|(i, h)| {
+            subscription_topic_issues(&format!("handlers[{i}]"), &h.name, "handler", &h.subscribes)
+        });
+        let sinks = self.sinks.iter().enumerate().flat_map(|(i, s)| {
+            subscription_topic_issues(&format!("sinks[{i}]"), &s.name, "sink", &s.subscribes)
+        });
+        handlers.chain(sinks).collect()
+    }
+
+    /// Every `[engine].api_allowed_hosts` problem, one per bad entry, in list
+    /// order (pure function).
+    fn allowed_host_issues(&self) -> Vec<ConfigIssue> {
+        self.engine
+            .api_allowed_hosts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, value)| {
+                crate::api_host::parse_allowed_host(value)
+                    .err()
+                    .map(|message| {
+                        ConfigIssue::new(IssueCode::InvalidApiAllowedHost, message)
+                            .at(format!("engine.api_allowed_hosts[{i}]"))
+                    })
+            })
+            .collect()
+    }
+
+    /// Every problem the configuration has on its own, in the order startup
+    /// reports them.
+    ///
+    /// These are the rules that need nothing but the file: names, duplicate
+    /// names, restart policies, subscription topics, `api_allowed_hosts`, and,
+    /// unless `paths` is [`PathCheck::Skip`], that each enabled primitive's
+    /// executable exists. The connection-capacity check also needs the limit
+    /// acton-reactive resolves, so it lives in [`crate::preflight`], which is
+    /// what startup and `emergent validate` both call.
+    #[must_use]
+    pub fn issues(&self, paths: PathCheck) -> Vec<ConfigIssue> {
+        let primitives = located_primitives(self);
+        let mut issues = name_issues(&primitives);
+        issues.extend(duplicate_name_issues(&primitives));
+        issues.extend(restart_policy_issues(&primitives));
+        issues.extend(self.subscription_topic_issues());
+        issues.extend(self.allowed_host_issues());
+        if paths == PathCheck::Check {
+            issues.extend(missing_path_issues(&primitives));
         }
-        for sink in &self.sinks {
-            check_subscription_topics(&sink.name, "sink", &sink.subscribes)?;
-        }
-        Ok(())
+        issues
     }
 
     /// Validate the configuration (combines structure and path validation).
     ///
     /// This is a convenience method that runs both pure validation (name rules,
     /// duplicate names, restart policies and subscription topics) and impure
-    /// validation (path existence checks).
+    /// validation (path existence checks), and returns the first issue
+    /// [`Self::issues`] finds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first issue as a [`ConfigError`].
     pub fn validate(&self) -> Result<(), ConfigError> {
-        self.validate_names()?;
-        self.validate_unique_names()?;
-        self.validate_restart_policies()?;
-        self.validate_subscription_topics()?;
-        self.validate_allowed_hosts()?;
-        self.validate_paths()?;
-        Ok(())
+        first_error(self.issues(PathCheck::Check))
     }
 
     /// Check that every `[engine].api_allowed_hosts` entry is a host name.
@@ -960,9 +1211,7 @@ impl EmergentConfig {
     ///
     /// Returns [`ConfigError::ValidationError`] naming the first bad value.
     pub fn validate_allowed_hosts(&self) -> Result<(), ConfigError> {
-        crate::api_host::parse_allowed_hosts(&self.engine.api_allowed_hosts)
-            .map(|_| ())
-            .map_err(ConfigError::ValidationError)
+        first_error(self.allowed_host_issues())
     }
 
     /// The `api_allowed_hosts` list in the spelling a browser sends.
@@ -1258,6 +1507,47 @@ api_allowed_hosts = ["{value}"]
             assert!(message.contains(value), "{message}");
             assert!(message.contains("api_allowed_hosts"), "{message}");
         }
+    }
+
+    #[test]
+    fn every_bad_api_allowed_host_is_its_own_issue_at_its_index() -> Result<(), ConfigError> {
+        let config: EmergentConfig = toml::from_str(
+            r#"
+[engine]
+name = "test"
+api_allowed_hosts = ["https://a.example", "ok.example", "https://b.example"]
+"#,
+        )
+        .map_err(|e| ConfigError::ValidationError(e.to_string()))?;
+        let issues = config.issues(PathCheck::Skip);
+        let found: Vec<_> = issues
+            .iter()
+            .map(|i| (i.code, i.path.clone().unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    IssueCode::InvalidApiAllowedHost,
+                    "engine.api_allowed_hosts[0]".to_string()
+                ),
+                (
+                    IssueCode::InvalidApiAllowedHost,
+                    "engine.api_allowed_hosts[2]".to_string()
+                ),
+            ]
+        );
+        assert!(issues[0].message.contains("https://a.example"));
+        assert!(issues[1].message.contains("https://b.example"));
+
+        // Startup still refuses on the first bad entry alone.
+        let Err(err) = config.validate_allowed_hosts() else {
+            panic!("two bad hosts should fail validation");
+        };
+        let message = err.to_string();
+        assert!(message.contains("https://a.example"), "{message}");
+        assert!(!message.contains("https://b.example"), "{message}");
+        Ok(())
     }
 
     #[test]
