@@ -1146,15 +1146,21 @@ impl EmergentConfig {
         handlers.chain(sinks).collect()
     }
 
-    /// Every `[engine].api_allowed_hosts` problem (pure function).
+    /// Every `[engine].api_allowed_hosts` problem, one per bad entry, in list
+    /// order (pure function).
     fn allowed_host_issues(&self) -> Vec<ConfigIssue> {
-        crate::api_host::parse_allowed_hosts(&self.engine.api_allowed_hosts)
-            .err()
-            .map(|message| {
-                ConfigIssue::new(IssueCode::InvalidApiAllowedHost, message)
-                    .at("engine.api_allowed_hosts")
+        self.engine
+            .api_allowed_hosts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, value)| {
+                crate::api_host::parse_allowed_host(value)
+                    .err()
+                    .map(|message| {
+                        ConfigIssue::new(IssueCode::InvalidApiAllowedHost, message)
+                            .at(format!("engine.api_allowed_hosts[{i}]"))
+                    })
             })
-            .into_iter()
             .collect()
     }
 
@@ -1501,6 +1507,47 @@ api_allowed_hosts = ["{value}"]
             assert!(message.contains(value), "{message}");
             assert!(message.contains("api_allowed_hosts"), "{message}");
         }
+    }
+
+    #[test]
+    fn every_bad_api_allowed_host_is_its_own_issue_at_its_index() -> Result<(), ConfigError> {
+        let config: EmergentConfig = toml::from_str(
+            r#"
+[engine]
+name = "test"
+api_allowed_hosts = ["https://a.example", "ok.example", "https://b.example"]
+"#,
+        )
+        .map_err(|e| ConfigError::ValidationError(e.to_string()))?;
+        let issues = config.issues(PathCheck::Skip);
+        let found: Vec<_> = issues
+            .iter()
+            .map(|i| (i.code, i.path.clone().unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    IssueCode::InvalidApiAllowedHost,
+                    "engine.api_allowed_hosts[0]".to_string()
+                ),
+                (
+                    IssueCode::InvalidApiAllowedHost,
+                    "engine.api_allowed_hosts[2]".to_string()
+                ),
+            ]
+        );
+        assert!(issues[0].message.contains("https://a.example"));
+        assert!(issues[1].message.contains("https://b.example"));
+
+        // Startup still refuses on the first bad entry alone.
+        let Err(err) = config.validate_allowed_hosts() else {
+            panic!("two bad hosts should fail validation");
+        };
+        let message = err.to_string();
+        assert!(message.contains("https://a.example"), "{message}");
+        assert!(!message.contains("https://b.example"), "{message}");
+        Ok(())
     }
 
     #[test]

@@ -215,16 +215,28 @@ pub fn decide_request_host(
 pub fn parse_allowed_hosts(values: &[String]) -> Result<Vec<String>, String> {
     let mut hosts: Vec<String> = Vec::new();
     for value in values {
-        let Some(host) = parse_host_name(value) else {
-            return Err(format!(
-                "Invalid {ALLOWED_HOSTS_KEY} entry \"{value}\": expected a host name with no scheme, port or path, such as app.example"
-            ));
-        };
+        let host = parse_allowed_host(value)?;
         if !hosts.contains(&host) {
             hosts.push(host);
         }
     }
     Ok(hosts)
+}
+
+/// Parse one configured name (pure function).
+///
+/// The per-entry decision [`parse_allowed_hosts`] makes, for callers that
+/// report every bad entry rather than only the first.
+///
+/// # Errors
+///
+/// Returns the one thing wrong with `value` when it is not a host name.
+pub fn parse_allowed_host(value: &str) -> Result<String, String> {
+    parse_host_name(value).ok_or_else(|| {
+        format!(
+            "Invalid {ALLOWED_HOSTS_KEY} entry \"{value}\": expected a host name with no scheme, port or path, such as app.example"
+        )
+    })
 }
 
 fn parse_host_name(value: &str) -> Option<String> {
@@ -514,6 +526,24 @@ mod tests {
             assert_eq!(
                 parse_allowed_hosts(&["ok.example".to_owned(), value.to_owned()]),
                 Err(expected),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_allowed_host_agrees_with_the_list_parser() {
+        for value in ["app.example", "APP.Example.", "münchen.example", "my_host"] {
+            assert_eq!(
+                parse_allowed_host(value).map(|host| vec![host]),
+                parse_allowed_hosts(&[value.to_owned()]),
+                "{value}"
+            );
+        }
+        for value in ["", "https://app.example", "app.example:8080", "*"] {
+            assert_eq!(
+                parse_allowed_host(value).map(|host| vec![host]),
+                parse_allowed_hosts(&[value.to_owned()]),
                 "{value}"
             );
         }

@@ -412,7 +412,7 @@ subscribes = ["x"]
                 ),
                 (
                     IssueCode::InvalidApiAllowedHost,
-                    "engine.api_allowed_hosts".to_string()
+                    "engine.api_allowed_hosts[0]".to_string()
                 ),
                 (IssueCode::PathNotFound, "handlers[0].path".to_string()),
                 (IssueCode::PathNotFound, "sinks[0].path".to_string()),
