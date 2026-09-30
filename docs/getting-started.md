@@ -81,6 +81,9 @@ emergent marketplace install exec-source exec-handler exec-sink
 
 # Install others as needed
 emergent marketplace install http-source websocket-handler sse-sink topology-viewer
+
+# Calibrated judgment: typed questions about each event, answered with confidence
+emergent marketplace install jev-handler
 ```
 
 Installed primitives are placed in `~/.local/share/emergent/primitives/bin/`.
@@ -237,6 +240,29 @@ args = ["--", "sh", "-c", "jq -r '.uptime' | awk '{if ($NF > 2.0) print \"HIGH L
 ```
 
 The model or tool behind the handler is your choice. Emergent does not know or care what runs inside -- it manages the process, routes the messages, and handles the lifecycle.
+
+### When the Step Is a Judgment
+
+An LLM answers in prose, which you then have to parse and trust. When the step is a judgment (is this unwanted, which category fits, how urgent is it), the marketplace `jev-handler` asks [TypeSafe System One](https://docs.typesafe.ai) a fixed set of typed questions and publishes answers with calibrated confidence. A `jq` selector then routes on the number:
+
+```toml
+[[handlers]]
+name = "judge"
+path = "~/.local/share/emergent/primitives/bin/jev-handler"
+args = ["-s", "exec.output", "--questions", "./questions.toml", "--state-pointer", "/stdout"]
+subscribes = ["exec.output"]
+publishes = ["jev.answered", "jev.error"]
+
+[[handlers]]
+name = "route-confident"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "jev.answered", "--publish-as", "triage.confident",
+        "--", "jq", "-c", "select(.answers.kind.confidence >= 0.9)"]
+subscribes = ["jev.answered"]
+publishes = ["triage.confident"]
+```
+
+The API key comes from the `TYPESAFE_API_KEY` environment variable. The [jev-handler guide](primitives/jev-handler.md) explains the questions file and the answer shapes, and [`config/examples/jev-triage/`](../config/examples/jev-triage/) is a complete topology you can run.
 
 ---
 

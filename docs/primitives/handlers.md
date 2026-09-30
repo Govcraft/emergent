@@ -64,7 +64,9 @@ subscribes = ["mail.fetched"]
 publishes = ["mail.judged", "mail.judge-failed"]
 ```
 
-The API key is read from the `TYPESAFE_API_KEY` environment variable only. The handler publishes one verdict type and never routes: turn confidence into behavior with exclusive `exec-handler` + `jq -c 'select(...)'` routers on the verdict, so thresholds stay a config edit. The [emergent-primitives README](https://github.com/govcraft/emergent-primitives#jev-handler) covers the questions file, the answer shapes, and routing on `error.kind`.
+The API key is read from the `TYPESAFE_API_KEY` environment variable only. The handler publishes one verdict type and never routes: turn confidence into behavior with exclusive `exec-handler` + `jq -c 'select(...)'` routers on the verdict, so thresholds stay a config edit.
+
+The [jev-handler guide](jev-handler.md) covers the questions file, the answer shapes, routing on confidence and on `error.kind`, rate limits, and every flag. [`config/examples/jev-triage/`](../../config/examples/jev-triage/) is a complete topology you can run.
 
 Install with:
 

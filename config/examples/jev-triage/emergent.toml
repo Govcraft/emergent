@@ -1,0 +1,97 @@
+# Jev Triage: exec-source → jev-handler → jq routers → exec-sink
+#
+# Reads one message from disk, asks TypeSafe System One (Jev) three typed
+# questions about it, and routes the answers by confidence. The thresholds are
+# `jq` selectors in this file, so changing the policy is a config edit.
+#
+# Prerequisites:
+#   emergent marketplace install exec-source jev-handler exec-handler exec-sink
+#   export TYPESAFE_API_KEY="..."   # https://console.typesafe.ai
+#
+# Usage (from the repository root, because the paths below are relative):
+#   emergent --config ./config/examples/jev-triage/emergent.toml
+#
+# Each run judges the message once, which is one API call. Edit
+# `message.txt` and run it again to see the answers move.
+
+[engine]
+name = "jev-triage"
+socket_path = "auto"
+
+# Read the message once. The text arrives as `.stdout` in the payload.
+[[sources]]
+name = "inbox"
+path = "~/.local/share/emergent/primitives/bin/exec-source"
+args = ["--command", "cat", "--args", "./config/examples/jev-triage/message.txt"]
+publishes = ["exec.output"]
+
+# Ask the questions. One POST per message. The key is read from the
+# TYPESAFE_API_KEY environment variable and from nowhere else.
+[[handlers]]
+name = "judge"
+path = "~/.local/share/emergent/primitives/bin/jev-handler"
+args = [
+    "-s", "exec.output",
+    "--questions", "./config/examples/jev-triage/questions.toml",
+    "--state-pointer", "/stdout",
+    "--publish-as", "mail.judged",
+    "-e", "mail.judge-failed",
+]
+subscribes = ["exec.output"]
+publishes = ["mail.judged", "mail.judge-failed"]
+
+# Route on confidence. The three selectors are mutually exclusive and cover
+# every value from 0 to 1, so exactly one of them republishes each verdict.
+[[handlers]]
+name = "route-confident"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "mail.judged", "--publish-as", "triage.confident",
+        "--", "jq", "-c", "select(.answers.kind.confidence >= 0.9)"]
+subscribes = ["mail.judged"]
+publishes = ["triage.confident"]
+
+[[handlers]]
+name = "route-uncertain"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "mail.judged", "--publish-as", "triage.uncertain",
+        "--", "jq", "-c", "select(.answers.kind.confidence >= 0.6 and .answers.kind.confidence < 0.9)"]
+subscribes = ["mail.judged"]
+publishes = ["triage.uncertain"]
+
+[[handlers]]
+name = "route-review"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "mail.judged", "--publish-as", "triage.needs-review",
+        "--", "jq", "-c", "select(.answers.kind.confidence < 0.6)"]
+subscribes = ["mail.judged"]
+publishes = ["triage.needs-review"]
+
+# One sink per band. A real topology files, labels, or pages here.
+[[sinks]]
+name = "print-confident"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "triage.confident", "--", "jq",
+        "{band: \"confident\", kind: .answers.kind.choice, confidence: .answers.kind.confidence, lure: .answers.lure.noul, pressure: .answers.pressure.score}"]
+subscribes = ["triage.confident"]
+
+[[sinks]]
+name = "print-uncertain"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "triage.uncertain", "--", "jq",
+        "{band: \"uncertain\", kind: .answers.kind.choice, confidence: .answers.kind.confidence, probabilities: .answers.kind.probabilities}"]
+subscribes = ["triage.uncertain"]
+
+[[sinks]]
+name = "print-review"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "triage.needs-review", "--", "jq",
+        "{band: \"needs-review\", kind: .answers.kind.choice, confidence: .answers.kind.confidence, probabilities: .answers.kind.probabilities}"]
+subscribes = ["triage.needs-review"]
+
+# A failure is an event too. `error.kind` says what to do with the item.
+[[sinks]]
+name = "print-failure"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "mail.judge-failed", "--", "jq",
+        "{failed: .error.kind, status: .error.status, message: .error.message}"]
+subscribes = ["mail.judge-failed"]

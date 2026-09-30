@@ -39,6 +39,16 @@ Connects to a WebSocket echo server, sends a test message, prints the echoed res
 emergent --config ./config/examples/websocket-echo.toml
 ```
 
+### jev-triage/
+
+Reads one message from disk, asks TypeSafe System One (Jev) three typed questions about it, and routes the verdict into a confidence band with `jq` selectors. Each run makes one API call. Edit `message.txt` or the thresholds in `emergent.toml` and run it again. See the [jev-handler guide](../../docs/primitives/jev-handler.md).
+
+```bash
+emergent marketplace install exec-source jev-handler exec-handler exec-sink
+export TYPESAFE_API_KEY="..."
+emergent --config ./config/examples/jev-triage/emergent.toml
+```
+
 ### slack-bot.toml
 
 A Claude-powered Slack chatbot using Socket Mode (no public URL needed). Receives messages via WebSocket, auto-acks envelopes within Slack's 3-second window, sends message text to Claude, and posts the response back to the channel.
@@ -53,6 +63,6 @@ emergent --config ./config/examples/slack-bot.toml
 
 ## Secrets
 
-Never hardcode tokens in TOML. Use environment variables — the engine forwards the parent process environment to all primitives. Set secrets via `export` or `source .env` before running.
+Never hardcode tokens in TOML. Use environment variables: the engine forwards the parent process environment to all primitives. Set secrets via `export` or `source .env` before running.
 
 For production deployments, see [docs/configuration.md](../../docs/configuration.md#secrets) for systemd-creds (Linux) and Keychain (macOS) patterns.

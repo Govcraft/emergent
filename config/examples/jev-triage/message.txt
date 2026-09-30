@@ -1,0 +1,9 @@
+From: IT Service Desk <helpdesk@mail-security-notice.example>
+Subject: Action required: your mailbox will be suspended today
+
+Your mailbox has exceeded its storage quota. To avoid suspension, confirm your
+account within 2 hours using the secure portal below.
+
+https://portal.mail-security-notice.example/verify
+
+Failure to confirm will result in permanent loss of stored messages.

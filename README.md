@@ -158,6 +158,51 @@ args = ["--", "wc", "-l"]
 
 Every tool gets the same lifecycle management, message routing, graceful shutdown, and event sourcing. Add a new step to your pipeline by adding a few lines of TOML. Remove a step by deleting them.
 
+## Judgment as a Pipeline Step: jev-handler
+
+Some steps are a judgment, not a transformation: is this message unwanted, which folder fits, how urgent is it. An LLM call answers in prose, and a confident-sounding answer looks the same as a guess. The marketplace `jev-handler` asks [TypeSafe System One](https://docs.typesafe.ai) (Jev) a fixed set of typed questions about each event and publishes answers with calibrated confidence, so your topology can route on a number.
+
+```toml
+# Ask the questions. One API call per event.
+[[handlers]]
+name = "judge"
+path = "~/.local/share/emergent/primitives/bin/jev-handler"
+args = ["-s", "mail.fetched", "--questions", "./questions.toml",
+        "--state-pointer", "/body", "--publish-as", "mail.judged", "-e", "mail.judge-failed"]
+subscribes = ["mail.fetched"]
+publishes = ["mail.judged", "mail.judge-failed"]
+
+# The policy is a jq selector. Changing a threshold is a config edit.
+[[handlers]]
+name = "route-confident"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "mail.judged", "--publish-as", "triage.confident",
+        "--", "jq", "-c", "select(.answers.kind.confidence >= 0.9)"]
+subscribes = ["mail.judged"]
+publishes = ["triage.confident"]
+```
+
+The questions live in one TOML file, in three types: `noul` (yes/no, answered as a probability), `choice` (one option from a set, with the full distribution), and `score` (a position on an ordered rubric).
+
+```toml
+[questions.kind]
+type = "choice"
+instructions = "What kind of message is this?"
+criteria = { phish = "Credential theft under a false identity.", cold_pitch = "Unsolicited sales.", personal = "Ordinary correspondence." }
+```
+
+- **The handler never decides.** It publishes the answers in the API's own shape, and `jq` routers turn confidence into behavior. The raw judgments stay reusable by any later subscriber.
+- **Failure is an event.** A failed call publishes an error whose `error.kind` (`billing`, `rate_limited`, `invalid_request`, ...) tells a router whether to requeue, quarantine, or page a human.
+- **The key stays out of your config.** It is read from the `TYPESAFE_API_KEY` environment variable only. There is no `--api-key` flag.
+
+```bash
+emergent marketplace install exec-source jev-handler exec-handler exec-sink
+export TYPESAFE_API_KEY="..."
+emergent --config ./config/examples/jev-triage/emergent.toml
+```
+
+[jev-handler guide](docs/primitives/jev-handler.md) | [Runnable triage example](config/examples/jev-triage/) | [Flag reference](https://github.com/Govcraft/emergent-primitives#jev-handler)
+
 ## How It Works: Three Primitives
 
 ```
@@ -248,6 +293,10 @@ emergent --config ./config/examples/basic-pipeline.toml
 ### AI Chatbot (Slack)
 
 Eight marketplace primitives, zero custom code. See [slack-bot.toml](config/examples/slack-bot.toml).
+
+### Jev Triage
+
+Reads a message, asks Jev three typed questions about it, and routes the verdict into a confidence band with `jq` selectors. Needs a `TYPESAFE_API_KEY`. See [jev-triage/](config/examples/jev-triage/) and the [jev-handler guide](docs/primitives/jev-handler.md).
 
 ### Self-Seeding Loop
 
@@ -394,6 +443,7 @@ The skill is a plain directory with a `SKILL.md` and a `references/` folder, so 
 - **Tool-agnostic composition**: Any CLI tool or API call becomes a pipeline building block via exec primitives
 - **TOML-as-architecture**: Your config file is your entire pipeline topology -- readable, auditable, versionable
 - **Built-in marketplace**: Install pre-built primitives as binaries with `emergent marketplace install`
+- **Calibrated judgment**: `jev-handler` turns typed questions about an event into confidence-scored answers you route on with `jq`
 - **Process isolation**: Each primitive runs as its own process -- a crashed model call cannot take down the pipeline
 - **Built-in event sourcing**: Every message logged with causation chains for debugging and replay
 - **Graceful lifecycle management**: Three-phase shutdown (sources stop, handlers drain, sinks drain) with zero message loss
@@ -406,6 +456,7 @@ The skill is a plain directory with a `SKILL.md` and a `references/` folder, so 
 - **[Examples](docs/examples.md)** -- Zero-code pipelines and advanced patterns
 - **[Concepts](docs/concepts.md)** -- Architecture, message flow, event sourcing
 - **[Primitives](docs/primitives/)** -- Reference for Sources, Handlers, Sinks
+- **[jev-handler](docs/primitives/jev-handler.md)** -- Typed questions, calibrated answers, routing on confidence
 - **[Configuration](docs/configuration.md)** -- All configuration options
 - **[SDKs](docs/sdks/)** -- Rust, TypeScript, Python, Go
 - **[Agent Skill](skills/emergent/)** -- Teach a coding agent to build idiomatic topologies
