@@ -413,9 +413,20 @@ fn load_config(path: Option<PathBuf>) -> Result<EmergentConfig> {
 /// `$XDG_CONFIG_HOME/acton/ipc.toml` first. The socket path always comes from
 /// `[engine]`. `max_connections` overrides the resolved limit only when
 /// `[engine].max_connections` is set, so leaving the key out keeps whatever
-/// acton resolved.
+/// acton resolved. Idle reads are disabled for long-lived publish-only primitives;
+/// the independent policy admission and subscription deadlines remain unchanged.
 fn create_ipc_config(socket_path: &std::path::Path, max_connections: Option<usize>) -> IpcConfig {
-    let mut ipc_config = IpcConfig::load();
+    apply_engine_ipc_overrides(IpcConfig::load(), socket_path, max_connections)
+}
+
+/// Apply engine-owned settings without changing admission or subscription deadlines.
+fn apply_engine_ipc_overrides(
+    mut ipc_config: IpcConfig,
+    socket_path: &std::path::Path,
+    max_connections: Option<usize>,
+) -> IpcConfig {
+    // A source can legitimately wait indefinitely between external events.
+    ipc_config.timeouts.read = 0;
     ipc_config.socket.path = Some(socket_path.to_path_buf());
     if let Some(limit) = max_connections {
         ipc_config.limits.max_connections = limit;
@@ -1065,6 +1076,85 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener as StdUnixListener;
     use tempfile::TempDir;
+
+    #[test]
+    fn ipc_idle_override_keeps_default_admission_deadline() {
+        let config =
+            apply_engine_ipc_overrides(IpcConfig::default(), Path::new("engine.sock"), None);
+        assert_eq!(config.read_timeout(), None);
+        assert_eq!(
+            config.admission_timeout(),
+            Some(std::time::Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn ipc_overrides_preserve_resolved_settings_and_optional_capacity() {
+        let mut resolved = IpcConfig::default();
+        resolved.timeouts.admission = 175;
+        resolved.timeouts.read = 25;
+        resolved.timeouts.subscription_read = 350;
+        resolved.timeouts.write = 450;
+        resolved.limits.max_connections = 77;
+        let socket = Path::new("engine.sock");
+        let config = apply_engine_ipc_overrides(resolved.clone(), socket, None);
+        assert_eq!(config.socket.path.as_deref(), Some(socket));
+        assert_eq!(config.read_timeout(), None);
+        assert_eq!(config.timeouts.admission, 175);
+        assert_eq!(config.timeouts.subscription_read, 350);
+        assert_eq!(config.timeouts.write, 450);
+        assert_eq!(config.limits.max_connections, 77);
+        let overridden = apply_engine_ipc_overrides(resolved, socket, Some(123));
+        assert_eq!(overridden.limits.max_connections, 123);
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct IdlePublishProbe {
+        sequence: usize,
+    }
+
+    #[tokio::test]
+    async fn ipc_publish_only_source_delivers_after_resolved_idle_deadline() -> Result<()> {
+        use acton_reactive::ipc::{IpcClient, IpcEnvelope};
+        use std::time::Duration;
+
+        let dir = TempDir::new()?;
+        let socket = dir.path().join("idle.sock");
+        let mut resolved = IpcConfig::default();
+        resolved.timeouts.read = 25;
+        let config = apply_engine_ipc_overrides(resolved, &socket, None);
+        let mut runtime = ActonApp::launch_async().await;
+        runtime
+            .ipc_registry()
+            .register::<IdlePublishProbe>("IdlePublishProbe");
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut actor = runtime.new_actor::<()>();
+        actor.act_on::<IdlePublishProbe>(move |_, context| {
+            let _ = seen_tx.send(context.message().sequence);
+            Reply::ready()
+        });
+        runtime.ipc_expose("probe", actor.start().await)?;
+        let listener = runtime.start_ipc_listener_with_config(config).await?;
+        let client = IpcClient::connect(&socket).await?;
+        for sequence in 0..2 {
+            client
+                .send(IpcEnvelope::new(
+                    "probe",
+                    "IdlePublishProbe",
+                    serde_json::json!({ "sequence": sequence }),
+                ))
+                .await?;
+            let observed = tokio::time::timeout(Duration::from_secs(2), seen_rx.recv()).await?;
+            assert_eq!(observed, Some(sequence));
+            if sequence == 0 {
+                // Deliberately remain idle longer than the loaded read deadline.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        listener.stop();
+        runtime.shutdown_all().await?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn stale_socket_check_no_file_is_ok() -> Result<()> {

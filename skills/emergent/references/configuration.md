@@ -197,6 +197,13 @@ A request naming no host, naming two, or arriving over HTTP/2 with only an
 authority is decided by the same rule. It is the rule the `sse-sink` and
 `topology-viewer` primitives apply, and the engine mirrors their table test.
 
+The engine forces the unsubscribed IPC read idle timeout to `0`, keeping
+publish-only sources connected during quiet periods. It overrides
+`[timeouts] read_timeout_ms` from `$XDG_CONFIG_HOME/acton/ipc.toml` while
+preserving `admission_timeout_ms` (default `60000`, `0` disables admission's
+deadline) and `subscription_read_timeout_ms`. Admission and established
+connection lifetimes are independent in acton-reactive 10.
+
 Every enabled primitive holds one IPC connection for the life of its process,
 so the connection ceiling is a hard cap on topology size. On engine 0.10.10 and
 earlier the engine never checked it: an oversized topology started, the
