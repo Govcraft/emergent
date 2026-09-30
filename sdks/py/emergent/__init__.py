@@ -25,7 +25,7 @@ Example (Handler with causation):
     ...             )
 """
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 
 # Types
 # Protocol utilities (for advanced users)
