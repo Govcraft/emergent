@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-acton-reactive.workspace = true
+acton-reactive = { version = "10.0.0", features = ["ipc", "ipc-messagepack"] }
 directories = "6.0.0"
 futures = "0.3.31"
 mti.workspace = true

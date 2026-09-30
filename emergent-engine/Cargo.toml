@@ -1,6 +1,6 @@
 [package]
 name = "emergent-engine"
-version = "0.14.0"
+version = "0.15.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -26,10 +26,9 @@ tracing-subscriber.workspace = true
 mti.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
-acton-reactive.workspace = true
 
 # Local dependencies
-emergent-client = { version = "0.14.0", path = "../sdks/rust" }
+emergent-client = { version = "0.15.0", path = "../sdks/rust" }
 
 # Additional dependencies
 directories = "5"
@@ -53,6 +52,7 @@ axum = "0.8.8"
 which = "8.0.2"
 async-trait = "0.1.92"
 url = "2.5.8"
+acton-reactive = { version = "10.0.0", features = ["ipc", "ipc-messagepack"] }
 
 [dev-dependencies]
 semver = "1.0.28"

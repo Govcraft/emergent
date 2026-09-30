@@ -182,6 +182,14 @@ Declaration enforcement: `[engine].enforce_declarations` is `"off"`, `"warn"` or
 
 HTTP API host guard: the API has no authentication and binding `127.0.0.1` does not keep a browser out, because a page can re-resolve its own name to `127.0.0.1` and the browser then treats the API as that page's own origin. Up to engine 0.10.10 `curl -H 'Host: attacker.example' http://127.0.0.1:8891/api/topology` returned every primitive's name, kind, state, pid and topics. From 0.14.0 the API answers only when every host the request names is an IP literal, `localhost`, or a name in `[engine].api_allowed_hosts`, and returns `421 Misdirected Request` with a body naming that key otherwise. The port is never compared, so a port forward or a container opened as `localhost` is unaffected. Every `Host` header is checked rather than the first, and the request URI's authority as well, because hyper keeps a duplicate `Host` and an absolute-form request line intact, and `axum::serve` speaks HTTP/2 over cleartext where there is no `Host` header at all. A request naming no host is refused. The decisions are pure functions in `emergent-engine/src/api_host.rs`, whose table mirrors `primitives/sse-sink/host_test.ts` in emergent-primitives row for row so the two implementations cannot drift; `api_allowed_hosts` entries are validated at load, since a value with a scheme, port, path or `*` would be listed and never match.
 
+Connection lifetime: `create_ipc_config` loads acton's config, then forces
+`timeouts.read = 0` because publish-only sources may remain quiet indefinitely.
+Keep acton-reactive 10's independent `timeouts.admission` and
+`timeouts.subscription_read` unchanged; never disable admission to fix idle
+source disconnects. Operators configure those in `$XDG_CONFIG_HOME/acton/ipc.toml`
+using `[timeouts] admission_timeout_ms` (default 60000) and
+`subscription_read_timeout_ms`. The engine owns the unsubscribed idle lifetime.
+
 Connection limit: every enabled primitive holds one IPC connection for the life of its process. The ceiling comes from acton-reactive, resolved from `$XDG_CONFIG_HOME/acton/ipc.toml` (`[limits] max_connections`) or its own default; `[engine].max_connections` overrides both, and leaving the key out keeps whatever acton resolved. From 0.14.0 the engine refuses to start when that limit cannot cover every enabled primitive plus `RESERVED_IPC_CONNECTIONS` (4: one for a restart overlap, three for CLI and topology-viewer queries), with an error naming both numbers. On 0.10.10 and earlier there was no check, so an oversized topology started with some primitives silently dropped at the accept semaphore while `/api/topology` still reported them running. The decision lives in `emergent-engine/src/config.rs` as `check_connection_capacity`, a pure function.
 
 Marketplace: from 0.14.0 the registry is two files fetched over HTTPS,
@@ -301,6 +309,6 @@ Workspace-level clippy configuration denies `unwrap_used` and `expect_used`. Use
 
 ## Dependencies
 
-- **acton-reactive**: Published crate (version 9.4.1) with features `ipc` and `ipc-messagepack` — provides the actor framework, IPC, message routing, and lifecycle management
+- **acton-reactive**: Published crate (version 10.0.0) with features `ipc` and `ipc-messagepack`; provides the actor framework, IPC, message routing, and lifecycle management
 - Uses Rust 2024 edition
 - Release profile optimized for binary size: `opt-level = "z"`, LTO, single codegen unit, panic = abort, stripped

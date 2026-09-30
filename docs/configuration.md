@@ -145,6 +145,13 @@ SDK, trips the same shutdown signal `run_source` already gives a Source. On
 0.10.10 and earlier the primitives were orphaned and kept running until killed by
 hand (Govcraft/emergent#56).
 
+**Idle connections:** the engine disables acton-reactive's unsubscribed read
+idle timeout so publish-only sources stay connected while waiting for work.
+`[timeouts] read_timeout_ms` in `$XDG_CONFIG_HOME/acton/ipc.toml` is overridden
+with `0`. Security policy admission remains bounded independently by
+`admission_timeout_ms` (default `60000`; `0` disables it). The engine preserves
+`subscription_read_timeout_ms` and all other acton timeout settings.
+
 **Connection limit:** every enabled primitive opens exactly one IPC connection
 at startup and holds it for the life of its process, so a topology of 20
 primitives needs 20 connections plus a little headroom. The ceiling comes from
